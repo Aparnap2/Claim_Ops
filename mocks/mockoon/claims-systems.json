@@ -1,0 +1,965 @@
+{
+  "uuid": "318b87c3-01e4-4661-9a31-22039cda3190",
+  "lastMigration": 33,
+  "name": "claimops-external-systems",
+  "endpointPrefix": "",
+  "latency": 0,
+  "port": 3000,
+  "hostname": "0.0.0.0",
+  "folders": [],
+  "routes": [
+    {
+      "uuid": "b9e9704f-0ffd-437d-8e73-4d8908b1b47d",
+      "type": "http",
+      "documentation": "Upstream policy source mock",
+      "method": "get",
+      "endpoint": "v1/policies/:policyId",
+      "responses": [
+        {
+          "uuid": "e7d9345f-e41c-47de-81bc-9a4408d87234",
+          "body": "{\n  \"error\": \"not found\",\n  \"code\": \"NOT_FOUND\"\n}",
+          "latency": 0,
+          "statusCode": 404,
+          "label": "policy notfound",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "notfound",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "135452fc-e635-411b-b82f-4d1a6c2fe9a7",
+          "body": "{\n  \"error\": \"upstream failure\",\n  \"code\": \"UPSTREAM\"\n}",
+          "latency": 0,
+          "statusCode": 500,
+          "label": "policy error",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "error",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "38c49bf6-0bf6-463e-ab68-a55e1681eabe",
+          "body": "{invalid-json",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "policy malformed",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "malformed",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "87007245-7141-40f0-ae0f-602aed35ae3a",
+          "body": "{\n  \"policy_id\": \"POL-001\",\n  \"PolicyID\": \"POL-001\",\n  \"tenant_id\": \"tenant-b\",\n  \"TenantID\": \"tenant-b\",\n  \"status\": \"ACTIVE\",\n  \"Status\": \"ACTIVE\",\n  \"effective_from\": \"2026-01-01T00:00:00Z\",\n  \"EffectiveFrom\": \"2026-01-01T00:00:00Z\",\n  \"effective_to\": \"2026-12-31T23:59:59Z\",\n  \"EffectiveTo\": \"2026-12-31T23:59:59Z\",\n  \"available_paise\": 42000000,\n  \"AvailablePaise\": 42000000,\n  \"waiting_periods\": [\n    {\n      \"condition_code\": \"CATARACT\",\n      \"ConditionCode\": \"CATARACT\",\n      \"ends_on\": \"2026-06-30T00:00:00Z\",\n      \"EndsOn\": \"2026-06-30T00:00:00Z\"\n    }\n  ],\n  \"WaitingPeriods\": [\n    {\n      \"ConditionCode\": \"CATARACT\",\n      \"EndsOn\": \"2026-06-30T00:00:00Z\",\n      \"condition_code\": \"CATARACT\",\n      \"ends_on\": \"2026-06-30T00:00:00Z\"\n    }\n  ],\n  \"source_ref\": \"SRC-POL-001\",\n  \"SourceRef\": \"SRC-POL-001\",\n  \"source_reference\": \"SRC-POL-001\",\n  \"sum_insured_paise\": 50000000,\n  \"SumInsuredPaise\": 50000000\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "policy wrongtenant",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "wrongtenant",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "f1e45fb9-4d65-4a37-8f45-78e4a96b4490",
+          "body": "{\n  \"policy_id\": \"POL-001\",\n  \"PolicyID\": \"POL-001\",\n  \"tenant_id\": \"tenant-a\",\n  \"TenantID\": \"tenant-a\",\n  \"status\": \"ACTIVE\",\n  \"Status\": \"ACTIVE\",\n  \"effective_from\": \"2026-01-01T00:00:00Z\",\n  \"EffectiveFrom\": \"2026-01-01T00:00:00Z\",\n  \"effective_to\": \"2026-12-31T23:59:59Z\",\n  \"EffectiveTo\": \"2026-12-31T23:59:59Z\",\n  \"available_paise\": 42000000,\n  \"AvailablePaise\": 42000000,\n  \"waiting_periods\": [\n    {\n      \"condition_code\": \"CATARACT\",\n      \"ConditionCode\": \"CATARACT\",\n      \"ends_on\": \"2026-06-30T00:00:00Z\",\n      \"EndsOn\": \"2026-06-30T00:00:00Z\"\n    }\n  ],\n  \"WaitingPeriods\": [\n    {\n      \"ConditionCode\": \"CATARACT\",\n      \"EndsOn\": \"2026-06-30T00:00:00Z\",\n      \"condition_code\": \"CATARACT\",\n      \"ends_on\": \"2026-06-30T00:00:00Z\"\n    }\n  ],\n  \"source_ref\": \"SRC-POL-001\",\n  \"SourceRef\": \"SRC-POL-001\",\n  \"source_reference\": \"SRC-POL-001\"\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "policy partial",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "partial",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "66e891fd-dcb2-492a-a754-f11da43b6a7c",
+          "body": "{\n  \"policy_id\": \"POL-001\",\n  \"PolicyID\": \"POL-001\",\n  \"tenant_id\": \"tenant-a\",\n  \"TenantID\": \"tenant-a\",\n  \"status\": \"ACTIVE\",\n  \"Status\": \"ACTIVE\",\n  \"effective_from\": \"2026-01-01T00:00:00Z\",\n  \"EffectiveFrom\": \"2026-01-01T00:00:00Z\",\n  \"effective_to\": \"2026-12-31T23:59:59Z\",\n  \"EffectiveTo\": \"2026-12-31T23:59:59Z\",\n  \"available_paise\": 42000000,\n  \"AvailablePaise\": 42000000,\n  \"waiting_periods\": [\n    {\n      \"condition_code\": \"CATARACT\",\n      \"ConditionCode\": \"CATARACT\",\n      \"ends_on\": \"2026-06-30T00:00:00Z\",\n      \"EndsOn\": \"2026-06-30T00:00:00Z\"\n    }\n  ],\n  \"WaitingPeriods\": [\n    {\n      \"ConditionCode\": \"CATARACT\",\n      \"EndsOn\": \"2026-06-30T00:00:00Z\",\n      \"condition_code\": \"CATARACT\",\n      \"ends_on\": \"2026-06-30T00:00:00Z\"\n    }\n  ],\n  \"source_ref\": \"SRC-POL-001\",\n  \"SourceRef\": \"SRC-POL-001\",\n  \"source_reference\": \"SRC-POL-001\",\n  \"sum_insured_paise\": 50000000,\n  \"SumInsuredPaise\": 50000000\n}",
+          "latency": 3000,
+          "statusCode": 200,
+          "label": "policy slow",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "slow",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "ff43f1d8-0702-4389-bcf7-be090fbc49a4",
+          "body": "{\n  \"policy_id\": \"POL-001\",\n  \"PolicyID\": \"POL-001\",\n  \"tenant_id\": \"tenant-a\",\n  \"TenantID\": \"tenant-a\",\n  \"status\": \"ACTIVE\",\n  \"Status\": \"ACTIVE\",\n  \"effective_from\": \"2026-01-01T00:00:00Z\",\n  \"EffectiveFrom\": \"2026-01-01T00:00:00Z\",\n  \"effective_to\": \"2026-12-31T23:59:59Z\",\n  \"EffectiveTo\": \"2026-12-31T23:59:59Z\",\n  \"available_paise\": 42000000,\n  \"AvailablePaise\": 42000000,\n  \"waiting_periods\": [\n    {\n      \"condition_code\": \"CATARACT\",\n      \"ConditionCode\": \"CATARACT\",\n      \"ends_on\": \"2026-06-30T00:00:00Z\",\n      \"EndsOn\": \"2026-06-30T00:00:00Z\"\n    }\n  ],\n  \"WaitingPeriods\": [\n    {\n      \"ConditionCode\": \"CATARACT\",\n      \"EndsOn\": \"2026-06-30T00:00:00Z\",\n      \"condition_code\": \"CATARACT\",\n      \"ends_on\": \"2026-06-30T00:00:00Z\"\n    }\n  ],\n  \"source_ref\": \"SRC-POL-001\",\n  \"SourceRef\": \"SRC-POL-001\",\n  \"source_reference\": \"SRC-POL-001\",\n  \"sum_insured_paise\": 50000000,\n  \"SumInsuredPaise\": 50000000\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "policy happy",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    },
+    {
+      "uuid": "b49f20e3-f8dc-472a-8b86-bb5e3da26d12",
+      "type": "http",
+      "documentation": "Upstream TPA prior-claims mock; filter via ?policy_id=",
+      "method": "get",
+      "endpoint": "v1/claims",
+      "responses": [
+        {
+          "uuid": "9db2ae0c-56d7-4de0-8885-f21106ecbff3",
+          "body": "{\n  \"error\": \"not found\",\n  \"code\": \"NOT_FOUND\"\n}",
+          "latency": 0,
+          "statusCode": 404,
+          "label": "claims notfound",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "notfound",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "705b6c13-5e69-42d8-8388-0f7db1249257",
+          "body": "{\n  \"error\": \"upstream failure\",\n  \"code\": \"UPSTREAM\"\n}",
+          "latency": 0,
+          "statusCode": 500,
+          "label": "claims error",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "error",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "fedc4c9f-42ae-40c0-9e22-ade5a14e7d6d",
+          "body": "{invalid-json",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "claims malformed",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "malformed",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "1da2f7c6-31b0-4448-8d94-f09f12d82c47",
+          "body": "[\n  {\n    \"claim_id\": \"CLM-OLD-01\",\n    \"ClaimID\": \"CLM-OLD-01\",\n    \"status\": \"SETTLED\",\n    \"Status\": \"SETTLED\",\n    \"admission\": \"2025-11-01T10:00:00Z\",\n    \"Admission\": \"2025-11-01T10:00:00Z\",\n    \"discharge\": \"2025-11-05T14:00:00Z\",\n    \"Discharge\": \"2025-11-05T14:00:00Z\",\n    \"tenant_id\": \"tenant-b\",\n    \"TenantID\": \"tenant-b\",\n    \"approved_paise\": 185000,\n    \"ApprovedPaise\": 185000\n  }\n]",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "claims wrongtenant",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "wrongtenant",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "7a5e62bf-7d01-4d53-ae44-3e582b4532e3",
+          "body": "[\n  {\n    \"claim_id\": \"CLM-OLD-01\",\n    \"ClaimID\": \"CLM-OLD-01\",\n    \"status\": \"SETTLED\",\n    \"Status\": \"SETTLED\",\n    \"admission\": \"2025-11-01T10:00:00Z\",\n    \"Admission\": \"2025-11-01T10:00:00Z\",\n    \"discharge\": \"2025-11-05T14:00:00Z\",\n    \"Discharge\": \"2025-11-05T14:00:00Z\",\n    \"tenant_id\": \"tenant-a\",\n    \"TenantID\": \"tenant-a\"\n  }\n]",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "claims partial",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "partial",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "260e71e7-d9d5-4448-a3a6-128dbd97f237",
+          "body": "[\n  {\n    \"claim_id\": \"CLM-OLD-01\",\n    \"ClaimID\": \"CLM-OLD-01\",\n    \"status\": \"SETTLED\",\n    \"Status\": \"SETTLED\",\n    \"admission\": \"2025-11-01T10:00:00Z\",\n    \"Admission\": \"2025-11-01T10:00:00Z\",\n    \"discharge\": \"2025-11-05T14:00:00Z\",\n    \"Discharge\": \"2025-11-05T14:00:00Z\",\n    \"tenant_id\": \"tenant-a\",\n    \"TenantID\": \"tenant-a\",\n    \"approved_paise\": 185000,\n    \"ApprovedPaise\": 185000\n  }\n]",
+          "latency": 3000,
+          "statusCode": 200,
+          "label": "claims slow",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "slow",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "0e9d0948-b407-41f3-916c-f049f8cb1abd",
+          "body": "[\n  {\n    \"claim_id\": \"CLM-OLD-01\",\n    \"ClaimID\": \"CLM-OLD-01\",\n    \"status\": \"SETTLED\",\n    \"Status\": \"SETTLED\",\n    \"admission\": \"2025-11-01T10:00:00Z\",\n    \"Admission\": \"2025-11-01T10:00:00Z\",\n    \"discharge\": \"2025-11-05T14:00:00Z\",\n    \"Discharge\": \"2025-11-05T14:00:00Z\",\n    \"tenant_id\": \"tenant-a\",\n    \"TenantID\": \"tenant-a\",\n    \"approved_paise\": 185000,\n    \"ApprovedPaise\": 185000\n  }\n]",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "claims happy",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    },
+    {
+      "uuid": "93df2cbc-2857-4caa-9fb8-755adef558f8",
+      "type": "http",
+      "documentation": "Upstream provider encounter mock",
+      "method": "get",
+      "endpoint": "v1/encounters/:encounterId",
+      "responses": [
+        {
+          "uuid": "fd042651-be3d-4320-82cd-85dfd5495744",
+          "body": "{\n  \"error\": \"not found\",\n  \"code\": \"NOT_FOUND\"\n}",
+          "latency": 0,
+          "statusCode": 404,
+          "label": "encounter notfound",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "notfound",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "7059dbf2-0dad-4409-9933-74ee0d84f78d",
+          "body": "{\n  \"error\": \"upstream failure\",\n  \"code\": \"UPSTREAM\"\n}",
+          "latency": 0,
+          "statusCode": 500,
+          "label": "encounter error",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "error",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "3462a260-db7a-4fa8-a0dc-86aea3e0391b",
+          "body": "{invalid-json",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "encounter malformed",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "malformed",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "6404e23e-e0ce-4097-920e-ac12927a4908",
+          "body": "{\n  \"encounter_id\": \"ENC-100\",\n  \"EncounterID\": \"ENC-100\",\n  \"patient_ref\": \"PAT-001\",\n  \"PatientRef\": \"PAT-001\",\n  \"hospital_id\": \"HOSP-001\",\n  \"HospitalID\": \"HOSP-001\",\n  \"discharge_at\": \"2026-02-14T12:00:00Z\",\n  \"DischargeAt\": \"2026-02-14T12:00:00Z\",\n  \"diagnosis\": [\n    {\n      \"code\": \"E11\",\n      \"Code\": \"E11\",\n      \"description\": \"Type 2 diabetes mellitus\",\n      \"Description\": \"Type 2 diabetes mellitus\"\n    }\n  ],\n  \"Diagnosis\": [\n    {\n      \"Code\": \"E11\",\n      \"Description\": \"Type 2 diabetes mellitus\",\n      \"code\": \"E11\",\n      \"description\": \"Type 2 diabetes mellitus\"\n    }\n  ],\n  \"documents\": [\n    {\n      \"document_id\": \"DOC-001\",\n      \"DocumentID\": \"DOC-001\",\n      \"type\": \"DISCHARGE_SUMMARY\",\n      \"Type\": \"DISCHARGE_SUMMARY\",\n      \"sha256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\n      \"SHA256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\"\n    }\n  ],\n  \"Documents\": [\n    {\n      \"DocumentID\": \"DOC-001\",\n      \"Type\": \"DISCHARGE_SUMMARY\",\n      \"SHA256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\n      \"document_id\": \"DOC-001\",\n      \"type\": \"DISCHARGE_SUMMARY\",\n      \"sha256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\"\n    }\n  ],\n  \"tenant_id\": \"tenant-b\",\n  \"TenantID\": \"tenant-b\",\n  \"admission_at\": \"2026-02-10T08:00:00Z\",\n  \"AdmissionAt\": \"2026-02-10T08:00:00Z\"\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "encounter wrongtenant",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "wrongtenant",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "88e2a9ad-2643-4328-badc-eeb19cb716ec",
+          "body": "{\n  \"encounter_id\": \"ENC-100\",\n  \"EncounterID\": \"ENC-100\",\n  \"patient_ref\": \"PAT-001\",\n  \"PatientRef\": \"PAT-001\",\n  \"hospital_id\": \"HOSP-001\",\n  \"HospitalID\": \"HOSP-001\",\n  \"discharge_at\": \"2026-02-14T12:00:00Z\",\n  \"DischargeAt\": \"2026-02-14T12:00:00Z\",\n  \"diagnosis\": [\n    {\n      \"code\": \"E11\",\n      \"Code\": \"E11\",\n      \"description\": \"Type 2 diabetes mellitus\",\n      \"Description\": \"Type 2 diabetes mellitus\"\n    }\n  ],\n  \"Diagnosis\": [\n    {\n      \"Code\": \"E11\",\n      \"Description\": \"Type 2 diabetes mellitus\",\n      \"code\": \"E11\",\n      \"description\": \"Type 2 diabetes mellitus\"\n    }\n  ],\n  \"documents\": [\n    {\n      \"document_id\": \"DOC-001\",\n      \"DocumentID\": \"DOC-001\",\n      \"type\": \"DISCHARGE_SUMMARY\",\n      \"Type\": \"DISCHARGE_SUMMARY\",\n      \"sha256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\n      \"SHA256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\"\n    }\n  ],\n  \"Documents\": [\n    {\n      \"DocumentID\": \"DOC-001\",\n      \"Type\": \"DISCHARGE_SUMMARY\",\n      \"SHA256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\n      \"document_id\": \"DOC-001\",\n      \"type\": \"DISCHARGE_SUMMARY\",\n      \"sha256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\"\n    }\n  ],\n  \"tenant_id\": \"tenant-a\",\n  \"TenantID\": \"tenant-a\"\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "encounter partial",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "partial",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "bee38980-864a-4a58-9ffe-f8ceb5f1d4eb",
+          "body": "{\n  \"encounter_id\": \"ENC-100\",\n  \"EncounterID\": \"ENC-100\",\n  \"patient_ref\": \"PAT-001\",\n  \"PatientRef\": \"PAT-001\",\n  \"hospital_id\": \"HOSP-001\",\n  \"HospitalID\": \"HOSP-001\",\n  \"discharge_at\": \"2026-02-14T12:00:00Z\",\n  \"DischargeAt\": \"2026-02-14T12:00:00Z\",\n  \"diagnosis\": [\n    {\n      \"code\": \"E11\",\n      \"Code\": \"E11\",\n      \"description\": \"Type 2 diabetes mellitus\",\n      \"Description\": \"Type 2 diabetes mellitus\"\n    }\n  ],\n  \"Diagnosis\": [\n    {\n      \"Code\": \"E11\",\n      \"Description\": \"Type 2 diabetes mellitus\",\n      \"code\": \"E11\",\n      \"description\": \"Type 2 diabetes mellitus\"\n    }\n  ],\n  \"documents\": [\n    {\n      \"document_id\": \"DOC-001\",\n      \"DocumentID\": \"DOC-001\",\n      \"type\": \"DISCHARGE_SUMMARY\",\n      \"Type\": \"DISCHARGE_SUMMARY\",\n      \"sha256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\n      \"SHA256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\"\n    }\n  ],\n  \"Documents\": [\n    {\n      \"DocumentID\": \"DOC-001\",\n      \"Type\": \"DISCHARGE_SUMMARY\",\n      \"SHA256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\n      \"document_id\": \"DOC-001\",\n      \"type\": \"DISCHARGE_SUMMARY\",\n      \"sha256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\"\n    }\n  ],\n  \"tenant_id\": \"tenant-a\",\n  \"TenantID\": \"tenant-a\",\n  \"admission_at\": \"2026-02-10T08:00:00Z\",\n  \"AdmissionAt\": \"2026-02-10T08:00:00Z\"\n}",
+          "latency": 3000,
+          "statusCode": 200,
+          "label": "encounter slow",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "slow",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "53d9a14a-082d-4e5f-86a7-fd883a442d8a",
+          "body": "{\n  \"encounter_id\": \"ENC-100\",\n  \"EncounterID\": \"ENC-100\",\n  \"patient_ref\": \"PAT-001\",\n  \"PatientRef\": \"PAT-001\",\n  \"hospital_id\": \"HOSP-001\",\n  \"HospitalID\": \"HOSP-001\",\n  \"discharge_at\": \"2026-02-14T12:00:00Z\",\n  \"DischargeAt\": \"2026-02-14T12:00:00Z\",\n  \"diagnosis\": [\n    {\n      \"code\": \"E11\",\n      \"Code\": \"E11\",\n      \"description\": \"Type 2 diabetes mellitus\",\n      \"Description\": \"Type 2 diabetes mellitus\"\n    }\n  ],\n  \"Diagnosis\": [\n    {\n      \"Code\": \"E11\",\n      \"Description\": \"Type 2 diabetes mellitus\",\n      \"code\": \"E11\",\n      \"description\": \"Type 2 diabetes mellitus\"\n    }\n  ],\n  \"documents\": [\n    {\n      \"document_id\": \"DOC-001\",\n      \"DocumentID\": \"DOC-001\",\n      \"type\": \"DISCHARGE_SUMMARY\",\n      \"Type\": \"DISCHARGE_SUMMARY\",\n      \"sha256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\n      \"SHA256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\"\n    }\n  ],\n  \"Documents\": [\n    {\n      \"DocumentID\": \"DOC-001\",\n      \"Type\": \"DISCHARGE_SUMMARY\",\n      \"SHA256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\",\n      \"document_id\": \"DOC-001\",\n      \"type\": \"DISCHARGE_SUMMARY\",\n      \"sha256\": \"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e\"\n    }\n  ],\n  \"tenant_id\": \"tenant-a\",\n  \"TenantID\": \"tenant-a\",\n  \"admission_at\": \"2026-02-10T08:00:00Z\",\n  \"AdmissionAt\": \"2026-02-10T08:00:00Z\"\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "encounter happy",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    },
+    {
+      "uuid": "786976a4-bfaa-4c1e-ac03-0e1b0a2b955f",
+      "type": "http",
+      "documentation": "Upstream risk signals mock",
+      "method": "get",
+      "endpoint": "v1/signals/:subjectId",
+      "responses": [
+        {
+          "uuid": "dda4814d-7665-46e4-b4be-ea5ab43afe5c",
+          "body": "{\n  \"error\": \"not found\",\n  \"code\": \"NOT_FOUND\"\n}",
+          "latency": 0,
+          "statusCode": 404,
+          "label": "signals notfound",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "notfound",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "31c4d04e-5fa4-43e0-96e0-7b2c319a85cf",
+          "body": "{\n  \"error\": \"upstream failure\",\n  \"code\": \"UPSTREAM\"\n}",
+          "latency": 0,
+          "statusCode": 500,
+          "label": "signals error",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "error",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "f575c469-278a-41a4-b8a4-e219bd52b8fb",
+          "body": "{invalid-json",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "signals malformed",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "malformed",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "46961d5f-88f2-42d9-91e5-9c029b7943b6",
+          "body": "[\n  {\n    \"signal_type\": \"RECENT_SIMILAR_CLAIM\",\n    \"SignalType\": \"RECENT_SIMILAR_CLAIM\",\n    \"source_ref\": \"SRC-RISK-001\",\n    \"SourceRef\": \"SRC-RISK-001\",\n    \"source_reference\": \"SRC-RISK-001\",\n    \"tenant_id\": \"tenant-b\",\n    \"TenantID\": \"tenant-b\",\n    \"severity\": \"MEDIUM\",\n    \"Severity\": \"MEDIUM\"\n  }\n]",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "signals wrongtenant",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "wrongtenant",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "85aed3fb-87f2-44f2-9f94-0880f6169c89",
+          "body": "[\n  {\n    \"signal_type\": \"RECENT_SIMILAR_CLAIM\",\n    \"SignalType\": \"RECENT_SIMILAR_CLAIM\",\n    \"source_ref\": \"SRC-RISK-001\",\n    \"SourceRef\": \"SRC-RISK-001\",\n    \"source_reference\": \"SRC-RISK-001\",\n    \"tenant_id\": \"tenant-a\",\n    \"TenantID\": \"tenant-a\"\n  }\n]",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "signals partial",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "partial",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "27253a70-7e37-4c15-ae48-be16ba3a2c57",
+          "body": "[\n  {\n    \"signal_type\": \"RECENT_SIMILAR_CLAIM\",\n    \"SignalType\": \"RECENT_SIMILAR_CLAIM\",\n    \"source_ref\": \"SRC-RISK-001\",\n    \"SourceRef\": \"SRC-RISK-001\",\n    \"source_reference\": \"SRC-RISK-001\",\n    \"tenant_id\": \"tenant-a\",\n    \"TenantID\": \"tenant-a\",\n    \"severity\": \"MEDIUM\",\n    \"Severity\": \"MEDIUM\"\n  }\n]",
+          "latency": 3000,
+          "statusCode": 200,
+          "label": "signals slow",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [
+            {
+              "target": "query",
+              "modifier": "scenario",
+              "value": "slow",
+              "invert": false,
+              "operator": "equals"
+            }
+          ],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": false,
+          "crudKey": "id",
+          "callbacks": []
+        },
+        {
+          "uuid": "eb77b96a-ac74-4fbb-8f90-6e2ec60cc55b",
+          "body": "[\n  {\n    \"signal_type\": \"RECENT_SIMILAR_CLAIM\",\n    \"SignalType\": \"RECENT_SIMILAR_CLAIM\",\n    \"source_ref\": \"SRC-RISK-001\",\n    \"SourceRef\": \"SRC-RISK-001\",\n    \"source_reference\": \"SRC-RISK-001\",\n    \"tenant_id\": \"tenant-a\",\n    \"TenantID\": \"tenant-a\",\n    \"severity\": \"MEDIUM\",\n    \"Severity\": \"MEDIUM\"\n  }\n]",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "signals happy",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    }
+  ],
+  "rootChildren": [
+    {
+      "uuid": "b9e9704f-0ffd-437d-8e73-4d8908b1b47d",
+      "type": "route"
+    },
+    {
+      "uuid": "b49f20e3-f8dc-472a-8b86-bb5e3da26d12",
+      "type": "route"
+    },
+    {
+      "uuid": "93df2cbc-2857-4caa-9fb8-755adef558f8",
+      "type": "route"
+    },
+    {
+      "uuid": "786976a4-bfaa-4c1e-ac03-0e1b0a2b955f",
+      "type": "route"
+    }
+  ],
+  "proxyMode": false,
+  "proxyRemovePrefix": false,
+  "proxyHost": "",
+  "proxyReqHeaders": [],
+  "proxyResHeaders": [],
+  "tlsOptions": {
+    "enabled": false,
+    "type": "CERT",
+    "pfxPath": "",
+    "certPath": "",
+    "keyPath": "",
+    "caPath": "",
+    "passphrase": ""
+  },
+  "cors": true,
+  "headers": [
+    {
+      "key": "Content-Type",
+      "value": "application/json"
+    }
+  ],
+  "data": [],
+  "callbacks": []
+}
