@@ -6,15 +6,24 @@ import (
 	"errors"
 
 	"claimops-api/internal/handlers"
+	"claimops-api/internal/ingest"
 	"claimops-api/internal/middleware"
+	"claimops-api/internal/ports"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
-// New wires middleware, tenant enforcement, and routes.
+// New wires middleware, tenant enforcement, and routes with fresh
+// in-process document dependencies.
 func New() *fiber.App {
+	return NewWithDeps(ingest.New(), ports.NewInMemoryBus())
+}
+
+// NewWithDeps wires the stack with shared document store and event bus
+// instances so tests can inject fresh deps per case.
+func NewWithDeps(docStore *ingest.Store, bus ports.EventBus) *fiber.App {
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
@@ -33,5 +42,6 @@ func New() *fiber.App {
 
 	app.Get("/healthz", handlers.Health)
 	app.Post("/claims", handlers.ClaimSubmit)
+	app.Post("/claims/:id/documents", handlers.PostDocument(docStore, bus))
 	return app
 }
