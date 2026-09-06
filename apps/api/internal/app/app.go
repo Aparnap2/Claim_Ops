@@ -3,6 +3,8 @@
 package app
 
 import (
+	"errors"
+
 	"claimops-api/internal/handlers"
 	"claimops-api/internal/middleware"
 
@@ -17,8 +19,9 @@ func New() *fiber.App {
 		DisableStartupMessage: true,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			code := fiber.StatusInternalServerError
-			if e, ok := err.(*fiber.Error); ok {
-				code = e.Code
+			var ferr *fiber.Error
+			if errors.As(err, &ferr) {
+				code = ferr.Code
 			}
 			return handlers.WriteError(c, code, "INTERNAL_ERROR", "unexpected error")
 		},

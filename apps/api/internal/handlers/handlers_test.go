@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func do(t *testing.T, app interface {
 
 func TestHealthEndpoint(t *testing.T) {
 	app := app.New()
-	req, _ := http.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	resp := do(t, app, req)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -39,7 +40,7 @@ func TestHealthEndpoint(t *testing.T) {
 
 func TestRequestIDPropagation(t *testing.T) {
 	app := app.New()
-	req, _ := http.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	req.Header.Set("X-Request-ID", "req-test-123")
 	resp := do(t, app, req)
 	defer resp.Body.Close()
@@ -50,7 +51,7 @@ func TestRequestIDPropagation(t *testing.T) {
 
 func TestMalformedRequestRejected(t *testing.T) {
 	app := app.New()
-	req, _ := http.NewRequest(http.MethodPost, "/claims", strings.NewReader("{bad json"))
+	req := httptest.NewRequest(http.MethodPost, "/claims", strings.NewReader("{bad json"))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "t-apollo")
 	resp := do(t, app, req)
@@ -66,7 +67,7 @@ func TestMalformedRequestRejected(t *testing.T) {
 
 func TestTenantContextMissingRejected(t *testing.T) {
 	app := app.New()
-	req, _ := http.NewRequest(http.MethodPost, "/claims",
+	req := httptest.NewRequest(http.MethodPost, "/claims",
 		strings.NewReader(`{"claim_reference":"CLM-1","policy_id":"P-1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp := do(t, app, req)
@@ -78,11 +79,16 @@ func TestTenantContextMissingRejected(t *testing.T) {
 	if !strings.Contains(string(body), "TENANT_MISSING") {
 		t.Fatalf("expected TENANT_MISSING envelope, got %s", body)
 	}
+	// RequestID runs before tenant enforcement, so even rejected
+	// requests carry a correlation ID (Fiber middleware-order pattern).
+	if resp.Header.Get("X-Request-ID") == "" {
+		t.Fatal("expected X-Request-ID on 401 response")
+	}
 }
 
 func TestValidClaimAcceptedWithTenant(t *testing.T) {
 	app := app.New()
-	req, _ := http.NewRequest(http.MethodPost, "/claims",
+	req := httptest.NewRequest(http.MethodPost, "/claims",
 		strings.NewReader(`{"claim_reference":"CLM-1","policy_id":"P-1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "t-apollo")
