@@ -69,6 +69,26 @@ func TestPostDocumentCreated(t *testing.T) {
 	if len(bus.Events[ports.TopicDocumentUploaded]) != 1 {
 		t.Fatalf("expected 1 document.uploaded event, got %d", len(bus.Events[ports.TopicDocumentUploaded]))
 	}
+	var evt struct {
+		SchemaVersion string `json:"schema_version"`
+		Tenant        string `json:"tenant"`
+		Claim         string `json:"claim"`
+		DocumentID    string `json:"document_id"`
+		SHA256        string `json:"sha256"`
+	}
+	if err := json.Unmarshal(bus.Events[ports.TopicDocumentUploaded][0], &evt); err != nil {
+		t.Fatalf("event decode failed: %v", err)
+	}
+	if evt.SchemaVersion != ports.DocumentUploadedSchemaVersion {
+		t.Fatalf("expected schema_version %q, got %q",
+			ports.DocumentUploadedSchemaVersion, evt.SchemaVersion)
+	}
+	if evt.SchemaVersion != "document-uploaded.v1" {
+		t.Fatalf("expected schema_version %q, got %q", "document-uploaded.v1", evt.SchemaVersion)
+	}
+	if evt.Tenant == "" || evt.Claim == "" || evt.DocumentID == "" || evt.SHA256 == "" {
+		t.Fatalf("event missing required fields: %+v", evt)
+	}
 }
 
 func TestPostDocumentDuplicate(t *testing.T) {

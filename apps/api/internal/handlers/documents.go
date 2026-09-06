@@ -11,11 +11,14 @@ import (
 )
 
 // documentUploaded is the payload published on ports.TopicDocumentUploaded.
+// SchemaVersion carries the versioned-contract marker
+// ports.DocumentUploadedSchemaVersion ("document-uploaded.v1").
 type documentUploaded struct {
-	Tenant     string `json:"tenant"`
-	Claim      string `json:"claim"`
-	DocumentID string `json:"document_id"`
-	SHA256     string `json:"sha256"`
+	SchemaVersion string `json:"schema_version"`
+	Tenant        string `json:"tenant"`
+	Claim         string `json:"claim"`
+	DocumentID    string `json:"document_id"`
+	SHA256        string `json:"sha256"`
 }
 
 // PostDocument ingests one document for claim :id.
@@ -55,10 +58,11 @@ func PostDocument(store *ingest.Store, bus ports.EventBus) fiber.Handler {
 			})
 		}
 		payload, _ := json.Marshal(documentUploaded{
-			Tenant:     string(doc.Tenant),
-			Claim:      string(doc.ClaimID),
-			DocumentID: doc.ID,
-			SHA256:     doc.SHA256,
+			SchemaVersion: ports.DocumentUploadedSchemaVersion,
+			Tenant:        string(doc.Tenant),
+			Claim:         string(doc.ClaimID),
+			DocumentID:    doc.ID,
+			SHA256:        doc.SHA256,
 		})
 		if err := bus.Publish(c.Context(), ports.TopicDocumentUploaded, payload); err != nil {
 			return WriteError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR",
