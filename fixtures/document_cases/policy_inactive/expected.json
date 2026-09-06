@@ -1,0 +1,1 @@
+{"exceptions": [{"code": "POLICY_NOT_ACTIVE", "severity": "HIGH"}], "note": "incident admission 2026-08-10 outside policy window 2026-04-01 to 2026-06-30", "status": "EXCEPTION"}
