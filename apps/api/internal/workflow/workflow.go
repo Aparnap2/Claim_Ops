@@ -126,14 +126,8 @@ func Apply(tenant claims.TenantID, s *Store, id claims.ClaimID, to claims.ClaimS
 	k := storeKey{tenant: tenant, id: id}
 	stored, ok := s.claims[k]
 	if !ok {
-		// Distinguish "absent for this tenant" from "owned by another
-		// tenant" without leaking which: both report not-found unless a
-		// same-ID claim exists elsewhere, which is a tenant mismatch.
-		for existing := range s.claims {
-			if existing.id == id {
-				return claims.Claim{}, ErrTenantMismatch
-			}
-		}
+		// A claim owned by another tenant is simply absent under this
+		// tenant's composite key. Never reveal cross-tenant existence.
 		return claims.Claim{}, ErrNotFound
 	}
 	from := stored.Status
