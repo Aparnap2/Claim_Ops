@@ -36,17 +36,26 @@ type Event struct {
 }
 
 // Store is a tenant-scoped in-memory claim registry with per-claim events.
+// Both maps are keyed by the composite (tenant, claim) identifier so two
+// tenants holding the same ClaimID can never observe or overwrite each
+// other's claims or audit trails.
 type Store struct {
 	mu     sync.Mutex
-	claims map[claims.ClaimID]claims.Claim
-	events map[claims.ClaimID][]Event
+	claims map[storeKey]claims.Claim
+	events map[storeKey][]Event
+}
+
+// storeKey is the composite tenant-and-claim identifier.
+type storeKey struct {
+	tenant claims.TenantID
+	id     claims.ClaimID
 }
 
 // New returns an empty Store ready for use.
 func New() *Store {
 	return &Store{
-		claims: make(map[claims.ClaimID]claims.Claim),
-		events: make(map[claims.ClaimID][]Event),
+		claims: make(map[storeKey]claims.Claim),
+		events: make(map[storeKey][]Event),
 	}
 }
 
@@ -63,46 +72,41 @@ func cloneClaim(c claims.Claim) claims.Claim {
 	return c
 }
 
-// Put stores c under its ID. It rejects a tenant mismatch with a plain
-// error and mutates nothing on rejection.
+// Put stores c under its composite (tenant, ID) key. It rejects a tenant
+// mismatch with a plain error and mutates nothing on rejection.
 func (s *Store) Put(tenant claims.TenantID, c claims.Claim) error {
 	if c.Tenant != tenant {
 		return ErrTenantMismatch
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.claims[c.ID] = cloneClaim(c)
+	s.claims[storeKey{tenant: tenant, id: c.ID}] = cloneClaim(c)
 	return nil
 }
 
-// Get returns a copy of the claim when it exists and the tenant owns it.
-// Cross-tenant or missing lookups report (zero, false).
+// Get returns a copy of the claim when the composite (tenant, ID) key
+// exists. Cross-tenant or missing lookups report (zero, false): the key
+// itself enforces isolation, so another tenant's ClaimID is simply absent.
 func (s *Store) Get(tenant claims.TenantID, id claims.ClaimID) (claims.Claim, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stored, ok := s.claims[id]
+	stored, ok := s.claims[storeKey{tenant: tenant, id: id}]
 	if !ok {
-		return claims.Claim{}, false
-	}
-	if stored.Tenant != tenant {
 		return claims.Claim{}, false
 	}
 	return cloneClaim(stored), true
 }
 
-// Events returns a copy of the audit trail for the claim when it exists and
-// the tenant owns it. Cross-tenant or missing lookups return nil.
+// Events returns a copy of the audit trail for the composite (tenant, ID)
+// key. Cross-tenant or missing lookups return nil.
 func (s *Store) Events(tenant claims.TenantID, id claims.ClaimID) []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stored, ok := s.claims[id]
-	if !ok {
+	k := storeKey{tenant: tenant, id: id}
+	if _, ok := s.claims[k]; !ok {
 		return nil
 	}
-	if stored.Tenant != tenant {
-		return nil
-	}
-	list := s.events[id]
+	list := s.events[k]
 	if len(list) == 0 {
 		return nil
 	}
@@ -119,12 +123,18 @@ func (s *Store) Events(tenant claims.TenantID, id claims.ClaimID) []Event {
 func Apply(tenant claims.TenantID, s *Store, id claims.ClaimID, to claims.ClaimStatus, eventID string, expectedVersion int) (claims.Claim, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stored, ok := s.claims[id]
+	k := storeKey{tenant: tenant, id: id}
+	stored, ok := s.claims[k]
 	if !ok {
+		// Distinguish "absent for this tenant" from "owned by another
+		// tenant" without leaking which: both report not-found unless a
+		// same-ID claim exists elsewhere, which is a tenant mismatch.
+		for existing := range s.claims {
+			if existing.id == id {
+				return claims.Claim{}, ErrTenantMismatch
+			}
+		}
 		return claims.Claim{}, ErrNotFound
-	}
-	if stored.Tenant != tenant {
-		return claims.Claim{}, ErrTenantMismatch
 	}
 	from := stored.Status
 	replay := stored.HasEvent(eventID)
@@ -136,7 +146,7 @@ func Apply(tenant claims.TenantID, s *Store, id claims.ClaimID, to claims.ClaimS
 		return next, nil
 	}
 	evt := Event{
-		Seq:     len(s.events[id]) + 1,
+		Seq:     len(s.events[k]) + 1,
 		Type:    EventTypeTransitioned,
 		ClaimID: id,
 		Tenant:  tenant,
@@ -144,7 +154,7 @@ func Apply(tenant claims.TenantID, s *Store, id claims.ClaimID, to claims.ClaimS
 		To:      next.Status,
 		EventID: eventID,
 	}
-	s.events[id] = append(s.events[id], evt)
-	s.claims[id] = cloneClaim(next)
+	s.events[k] = append(s.events[k], evt)
+	s.claims[k] = cloneClaim(next)
 	return next, nil
 }

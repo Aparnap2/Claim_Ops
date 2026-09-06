@@ -129,7 +129,7 @@ func isKnownStatus(s ClaimStatus) bool {
 // version equality, known statuses, then legality.
 func Transition(c Claim, to ClaimStatus, eventID string, expectedVersion int, actingTenant TenantID) (Claim, error) {
 	// 1. Malformed: a claim must carry a status, a version, and a tenant.
-	if c.Status == "" || c.Version == 0 || c.Tenant == "" {
+	if c.Status == "" || c.Version < 1 || c.Tenant == "" {
 		return Claim{}, &TransitionError{
 			Code:    CodeMalformedClaim,
 			ClaimID: string(c.ID),
@@ -157,8 +157,18 @@ func Transition(c Claim, to ClaimStatus, eventID string, expectedVersion int, ac
 	}
 	// 4. Idempotent replay: an already-seen event returns the claim
 	// unchanged (golden case 09) before any version or legality check.
+	// The idempotency set is deep-copied so callers cannot mutate the
+	// stored claim through the returned map.
 	if c.HasEvent(eventID) {
-		return c, nil
+		replayed := c
+		if c.ProcessedEvents != nil {
+			copied := make(map[string]bool, len(c.ProcessedEvents))
+			for k, v := range c.ProcessedEvents {
+				copied[k] = v
+			}
+			replayed.ProcessedEvents = copied
+		}
+		return replayed, nil
 	}
 	// 5. Optimistic concurrency: the caller must present the current
 	// version (golden case 08; stale wins over legality).

@@ -158,6 +158,7 @@ func (c *Claim) MarkEvent(eventID string) {
 
 // NewClaim builds a Claim, enforcing the deterministic invariants:
 //
+//   - claim id must be non-empty after trim (validated first),
 //   - tenant and policy identifiers must be non-empty after trim,
 //   - reference must be non-empty after trim (stored trimmed),
 //   - version must be >= 1,
@@ -176,6 +177,9 @@ func NewClaim(
 	admissionDate time.Time,
 	dischargeDate time.Time,
 ) (*Claim, error) {
+	if err := id.Validate(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(string(tenant)) == "" {
 		return nil, ErrBlankTenant
 	}

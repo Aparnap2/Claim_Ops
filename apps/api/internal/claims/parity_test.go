@@ -20,6 +20,7 @@ import (
 
 	"claimops-api/internal/claims"
 	"claimops-api/internal/validation"
+	"claimops-api/internal/workflow"
 )
 
 // goldenPath is the fixture location relative to apps/api/internal/claims:
@@ -486,7 +487,25 @@ func TestGolden08StaleVersion(t *testing.T) {
 	assertUnchanged(t, before, s, v, n, "GOLDEN-08")
 
 	if workflowPresent() {
-		t.Log("workflow package present — extended Store+Apply assertions live in workflow tests")
+		// GOLDEN-08 via Store.Apply: stale version leaves stored state
+		// unchanged (no version bump, no event).
+		store := workflow.New()
+		if err := store.Put("tenant-01", before); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if _, err := workflow.Apply("tenant-01", store, before.ID, claims.ClaimStatusDocumentsReceived, "evt-golden-08", in.ExpectedVersion); err == nil {
+			t.Fatal("Apply with stale version must error")
+		}
+		stored, ok := store.Get("tenant-01", before.ID)
+		if !ok {
+			t.Fatal("stored claim vanished after failed Apply")
+		}
+		if stored.Version != in.CurrentVersion || stored.Status != claims.ClaimStatusRegistered {
+			t.Fatalf("stored = (%s, v%d), want (REGISTERED, v3)", stored.Status, stored.Version)
+		}
+		if got := store.Events("tenant-01", before.ID); len(got) != 0 {
+			t.Fatalf("events = %d, want 0 after failed Apply", len(got))
+		}
 	} else {
 		t.Log("workflow package absent (concurrent agent) — direct claims.Transition assertions only")
 	}
@@ -546,8 +565,96 @@ func TestGolden09IdempotentReplay(t *testing.T) {
 	}
 
 	if workflowPresent() {
-		t.Log("workflow package present — exactly-one-Event assertion lives in workflow tests")
+		// GOLDEN-09 via Store.Apply: applying the same event twice
+		// produces exactly one Store.Events entry.
+		store := workflow.New()
+		seed, err := claims.NewClaim(
+			"claim-01",
+			"tenant-01",
+			"policy-01",
+			"CLM-0001",
+			claims.MustPaise(79500, 0),
+			claims.ClaimStatusReceived,
+			1,
+			time.Time{}, time.Time{}, time.Time{},
+		)
+		if err != nil {
+			t.Fatalf("NewClaim: %v", err)
+		}
+		if err := store.Put("tenant-01", *seed); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if _, err := workflow.Apply("tenant-01", store, seed.ID, claims.ClaimStatusRegistered, in.EventID, 1); err != nil {
+			t.Fatalf("first Apply: %v", err)
+		}
+		if _, err := workflow.Apply("tenant-01", store, seed.ID, claims.ClaimStatusRegistered, in.EventID, 2); err != nil {
+			t.Fatalf("replay Apply must not error: %v", err)
+		}
+		evts := store.Events("tenant-01", seed.ID)
+		if len(evts) != exp.AuditCount {
+			t.Fatalf("events = %d, want %d", len(evts), exp.AuditCount)
+		}
+		stored, ok := store.Get("tenant-01", seed.ID)
+		if !ok || stored.Version != 2 {
+			t.Fatalf("stored version = %d, want 2 after one real apply", stored.Version)
+		}
 	} else {
 		t.Log("workflow package absent (concurrent agent) — replay-equality assertion only")
+	}
+}
+
+// Same ClaimID under two tenants: claims and audit trails stay isolated.
+func TestStoreTenantIsolationSameClaimID(t *testing.T) {
+	if !workflowPresent() {
+		t.Skip("workflow package absent")
+	}
+	mkClaim := func(tenant string, status claims.ClaimStatus) claims.Claim {
+		t.Helper()
+		c, err := claims.NewClaim(
+			"shared-claim-id",
+			claims.TenantID(tenant),
+			"policy-01",
+			"CLM-0001",
+			claims.MustPaise(100, 0),
+			status,
+			1,
+			time.Time{}, time.Time{}, time.Time{},
+		)
+		if err != nil {
+			t.Fatalf("NewClaim(%s): %v", tenant, err)
+		}
+		return *c
+	}
+	store := workflow.New()
+	a := mkClaim("tenant-a", claims.ClaimStatusReceived)
+	b := mkClaim("tenant-b", claims.ClaimStatusReceived)
+	if err := store.Put("tenant-a", a); err != nil {
+		t.Fatalf("Put A: %v", err)
+	}
+	if err := store.Put("tenant-b", b); err != nil {
+		t.Fatalf("Put B: %v", err)
+	}
+	// B's put must not have clobbered A's stored claim.
+	gotA, ok := store.Get("tenant-a", "shared-claim-id")
+	if !ok || gotA.Tenant != "tenant-a" {
+		t.Fatalf("tenant-a readback = (%v, %q), want owned claim", ok, gotA.Tenant)
+	}
+	// Transition A's claim; B's stored claim and trail stay untouched.
+	if _, err := workflow.Apply("tenant-a", store, "shared-claim-id", claims.ClaimStatusRegistered, "evt-a-1", 1); err != nil {
+		t.Fatalf("Apply A: %v", err)
+	}
+	gotB, ok := store.Get("tenant-b", "shared-claim-id")
+	if !ok || gotB.Version != 1 || gotB.Status != claims.ClaimStatusReceived {
+		t.Fatalf("tenant-b claim disturbed: (%s, v%d)", gotB.Status, gotB.Version)
+	}
+	if got := store.Events("tenant-b", "shared-claim-id"); len(got) != 0 {
+		t.Fatalf("tenant-b events = %d, want 0", len(got))
+	}
+	if got := store.Events("tenant-a", "shared-claim-id"); len(got) != 1 {
+		t.Fatalf("tenant-a events = %d, want 1", len(got))
+	}
+	// A third tenant sees neither claim despite knowing the ID.
+	if _, ok := store.Get("tenant-c", "shared-claim-id"); ok {
+		t.Fatal("cross-tenant Get must report absent")
 	}
 }
