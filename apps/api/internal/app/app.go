@@ -7,6 +7,7 @@ import (
 
 	"claimops-api/internal/handlers"
 	"claimops-api/internal/ingest"
+	"claimops-api/internal/metrics"
 	"claimops-api/internal/middleware"
 	"claimops-api/internal/ports"
 
@@ -36,11 +37,17 @@ func NewWithDeps(docStore *ingest.Store, bus ports.EventBus) *fiber.App {
 		},
 	})
 	app.Use(recover.New())
-	app.Use(logger.New(logger.Config{Format: "${method} ${path} ${status} ${locals:request_id}\n"}))
+	app.Use(middleware.Correlation())
 	app.Use(middleware.RequestID())
+	app.Use(middleware.Metrics())
+	app.Use(logger.New(logger.Config{Format: "${method} ${path} ${status} ${locals:request_id}\n"}))
 	app.Use(middleware.TenantContext())
 
 	app.Get("/healthz", handlers.Health)
+	app.Get("/metrics", func(c *fiber.Ctx) error {
+		c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4")
+		return metrics.WritePrometheus(c.Response().BodyWriter())
+	})
 	app.Post("/claims", handlers.ClaimSubmit)
 	app.Post("/claims/:id/documents", handlers.PostDocument(docStore, bus))
 	return app
