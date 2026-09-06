@@ -123,9 +123,9 @@ def _read_field(claim: Any, names: tuple[str, ...], *, default: Any = None) -> A
 
 def _copy_with[T](claim: T, **updates: Any) -> T:
     if _PydanticBaseModel is not None and isinstance(claim, _PydanticBaseModel):
-        return claim.model_copy(update=updates)  # type: ignore[return-value]
+        return claim.model_copy(update=updates)
     if dataclasses.is_dataclass(claim) and not isinstance(claim, type):
-        return dataclasses.replace(claim, **updates)  # type: ignore[return-value]
+        return dataclasses.replace(claim, **updates)
     if isinstance(claim, Mapping):
         return {**claim, **updates}  # type: ignore[return-value]
     import copy as _copy

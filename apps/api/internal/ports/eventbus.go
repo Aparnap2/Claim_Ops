@@ -11,6 +11,14 @@ import (
 // TopicDocumentUploaded is emitted when a new document is ingested.
 const TopicDocumentUploaded = "document.uploaded"
 
+// DocumentUploadedSchemaVersion is the versioned-contract marker for the
+// DocumentUploaded event payload (see documentUploaded in the handlers
+// package). Convention: every event payload carries a `schema_version`
+// string of the form `<event-name>.vN` (e.g. "document-uploaded.v1") so
+// consumers can gate on breaking payload changes without inspecting the
+// topic name.
+const DocumentUploadedSchemaVersion = "document-uploaded.v1"
+
 // EventBus publishes serialized domain events to a topic.
 type EventBus interface {
 	Publish(ctx context.Context, topic string, event []byte) error

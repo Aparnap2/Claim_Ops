@@ -10,9 +10,11 @@ import (
 
 const tenantHeader = "X-Tenant-ID"
 
-// openPaths bypass tenant enforcement (liveness only — never claim data).
+// openPaths bypass tenant enforcement (operational endpoints only —
+// liveness and telemetry, never claim data).
 var openPaths = map[string]bool{
 	"/healthz": true,
+	"/metrics": true,
 }
 
 // TenantContext is a stub that enforces tenant identity at the edge.

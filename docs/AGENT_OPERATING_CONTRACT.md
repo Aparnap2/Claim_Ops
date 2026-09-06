@@ -10,3 +10,7 @@
 8. Every bug → fixture + test + classification. No fix without regression.
 9. Commits: `feat(domain): ...`, `test(domain): ...`. One concern per commit. No direct-to-main after init.
 10. Done = implementation + tests pass + acceptance criteria + audit event + docs updated.
+11. Every new component is born observable, typed, testable, replaceable: structured logs with request/correlation/tenant/claim IDs (never raw docs, secrets, PII — IDs and hashes only), stable metric names (`internal/metrics` vocabulary; renames need ADR), versioned event contracts (`<event>.vN`), narrow repository ports, explicit transaction boundaries. No hardening later.
+12. Dev loop per change: status → issue → acceptance criteria → inspect → failing test → small implementation → targeted tests → full gates (`make check`) → diff review → commit atomically → push → PR.
+13. Before declaring done, answer: timeout? called twice? state changed underneath? wrong tenant? malformed external data? LLM nonsense (future)? Log the answers or the handling code.
+14. Reject: TODO without issue link, dead code, `utils.go` dumps, untyped service boundaries, magic constants, temporary bypasses without an issue.
