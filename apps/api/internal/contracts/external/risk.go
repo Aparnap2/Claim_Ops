@@ -1,0 +1,13 @@
+// Package external holds wire DTOs for upstream risk payloads.
+//
+// Each DTO is a type alias of its ports counterpart so adapters decode
+// directly into the contract shape and return ports types with no
+// conversion layer. A future NHCX adapter will implement
+// ports.RiskPort by decoding this contract.
+package external
+
+import "claimops-api/internal/ports"
+
+// RiskSignalResponse is the wire DTO for an upstream risk-signal payload.
+// Alias of ports.RiskSignal.
+type RiskSignalResponse = ports.RiskSignal
