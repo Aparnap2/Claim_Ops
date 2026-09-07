@@ -1,42 +1,32 @@
 package handlers
 
 import (
-	"encoding/json"
+	"context"
 	"strings"
-	"time"
 
+	"claimops-api/internal/documents"
 	"claimops-api/internal/ingest"
-	"claimops-api/internal/ports"
 
 	"github.com/gofiber/fiber/v2"
 )
 
-// documentUploaded is the payload published on ports.TopicDocumentUploaded.
-// SchemaVersion carries the versioned-contract marker
-// ports.DocumentUploadedSchemaVersion ("document-uploaded.v1").
-// EventID is unique per emission ("evt-"+document ID) for end-to-end
-// idempotency (tenant, claim, event_id); OccurredAt is RFC3339 UTC.
-// Additive envelope fields do not bump the schema version (see ports
-// EventEnvelope convention).
-type documentUploaded struct {
-	SchemaVersion string `json:"schema_version"`
-	EventID       string `json:"event_id"`
-	OccurredAt    string `json:"occurred_at"`
-	Tenant        string `json:"tenant"`
-	Claim         string `json:"claim"`
-	DocumentID    string `json:"document_id"`
-	SHA256        string `json:"sha256"`
+// Uploader ingests one document's opaque bytes and records the RECEIVED
+// document row plus its outbox event atomically. It is satisfied by
+// ingest.Service.Upload; handlers stay transport-agnostic (no DB, no blob,
+// no bus) so unit tests inject a stub.
+type Uploader interface {
+	Upload(ctx context.Context, tenant, claimID, fileName, mime string, content []byte) (documents.Document, bool, error)
 }
 
-// PostDocument ingests one document for claim :id.
+// PostDocument ingests one document for claim :id via u.
 //
 // Body: {file_name, mime, content_text}. Tenant comes from middleware locals
 // tenant_id (401 TENANT_MISSING if absent). Duplicate content for the same
-// tenant+claim returns 200 with duplicate:true; new documents stage their
-// content bytes into blob (for the document worker's fetch bridge), publish
-// a DocumentUploaded event and return 201. Publish failure keeps the stored
-// document and returns 500 INTERNAL_ERROR.
-func PostDocument(store *ingest.Store, blob *ingest.BlobStore, bus ports.EventBus) fiber.Handler {
+// tenant+claim returns 200 with duplicate:true; new documents return 201.
+// Request-shape failures (ingest.IsValidation) return 400 VALIDATION_ERROR;
+// backend failures return 500 INTERNAL_ERROR. Event emission is owned by
+// the transactional outbox inside Upload, never by this handler.
+func PostDocument(u Uploader) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenant, _ := c.Locals("tenant_id").(string)
 		if strings.TrimSpace(tenant) == "" {
@@ -56,35 +46,17 @@ func PostDocument(store *ingest.Store, blob *ingest.BlobStore, bus ports.EventBu
 		if err := c.BodyParser(&body); err != nil {
 			return WriteError(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "malformed JSON body")
 		}
-		doc, created, err := store.Put(tenant, claimID, body.FileName, body.MIME, body.ContentText)
+		doc, created, err := u.Upload(c.Context(), tenant, claimID, body.FileName, body.MIME, []byte(body.ContentText))
 		if err != nil {
-			return WriteError(c, fiber.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+			if ingest.IsValidation(err) {
+				return WriteError(c, fiber.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+			}
+			return WriteError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "internal error")
 		}
 		if !created {
 			return c.Status(fiber.StatusOK).JSON(fiber.Map{
 				"ok": true, "duplicate": true, "document": doc,
 			})
-		}
-		// Stage content for the worker fetch bridge. BlobStore.Put is
-		// infallible in-memory (it only rejects a blank docID, which the
-		// store never generates), so a failure here is a programming
-		// error surfaced as INTERNAL_ERROR by document choice.
-		if err := blob.Put(doc.ID, body.FileName, body.MIME, body.ContentText); err != nil {
-			return WriteError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR",
-				"failed to stage document content")
-		}
-		payload, _ := json.Marshal(documentUploaded{
-			SchemaVersion: ports.DocumentUploadedSchemaVersion,
-			EventID:       "evt-" + doc.ID,
-			OccurredAt:    time.Now().UTC().Format(time.RFC3339),
-			Tenant:        string(doc.Tenant),
-			Claim:         string(doc.ClaimID),
-			DocumentID:    doc.ID,
-			SHA256:        doc.SHA256,
-		})
-		if err := bus.Publish(c.Context(), ports.TopicDocumentUploaded, payload); err != nil {
-			return WriteError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR",
-				"failed to publish document event")
 		}
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 			"ok": true, "duplicate": false, "document": doc,
