@@ -21,14 +21,14 @@ func TestStartDocumentWorkerDispatchAndStop(t *testing.T) {
 		return nil
 	})
 	evt, _ := json.Marshal(map[string]string{"document_id": "doc-1"})
-	if err := bus.Publish(context.Background(), ports.TopicDocumentUploaded, evt); err != nil {
+	if err := bus.Publish(context.Background(), ports.TopicDocumentIngested, evt); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("expected 1 dispatch, got %d", len(got))
 	}
 	stop()
-	if err := bus.Publish(context.Background(), ports.TopicDocumentUploaded, evt); err != nil {
+	if err := bus.Publish(context.Background(), ports.TopicDocumentIngested, evt); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
@@ -46,7 +46,7 @@ func TestDocumentEventHandlerScopesTenant(t *testing.T) {
 	)
 	h := DocumentEventHandler(proc)
 	evt, _ := json.Marshal(map[string]string{
-		"schema_version": ports.DocumentUploadedSchemaVersion,
+		"schema_version": ports.DocumentIngestedSchemaVersion,
 		"tenant":         "t-scope",
 		"claim":          "CLM-9",
 		"document_id":    "doc-9",

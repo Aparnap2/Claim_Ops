@@ -3,28 +3,43 @@
 package app
 
 import (
+	"context"
 	"errors"
+	"fmt"
 
+	"claimops-api/internal/documents"
 	"claimops-api/internal/handlers"
-	"claimops-api/internal/ingest"
 	"claimops-api/internal/metrics"
 	"claimops-api/internal/middleware"
-	"claimops-api/internal/ports"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
-// New wires middleware, tenant enforcement, and routes with fresh
-// in-process document dependencies.
-func New() *fiber.App {
-	return NewWithDeps(ingest.New(), ingest.NewBlobStore(), ports.NewInMemoryBus())
+// PendingUploader is a fail-closed handlers.Uploader for stacks without a
+// database pool (tests, degraded boot). Production main always passes a
+// real *ingest.Service; uploads through PendingUploader return 500.
+type PendingUploader struct{}
+
+// Upload implements handlers.Uploader by always failing closed.
+func (PendingUploader) Upload(_ context.Context, _, _, _, _ string, _ []byte) (documents.Document, bool, error) {
+	return documents.Document{}, false, fmt.Errorf("app: no document uploader wired (database unavailable)")
 }
 
-// NewWithDeps wires the stack with shared document store, blob store, and
-// event bus instances so tests can inject fresh deps per case.
-func NewWithDeps(docStore *ingest.Store, blob *ingest.BlobStore, bus ports.EventBus) *fiber.App {
+// compile-time check: PendingUploader satisfies the handler contract.
+var _ handlers.Uploader = PendingUploader{}
+
+// New wires middleware, tenant enforcement, and routes with a fail-closed
+// document uploader. Tests use New for non-document routes; document tests
+// build their own stack via NewWithDeps with a stub uploader.
+func New() *fiber.App {
+	return NewWithDeps(PendingUploader{})
+}
+
+// NewWithDeps wires the stack with the uploader serving
+// POST /claims/:id/documents (usually *ingest.Service).
+func NewWithDeps(uploader handlers.Uploader) *fiber.App {
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
@@ -49,6 +64,6 @@ func NewWithDeps(docStore *ingest.Store, blob *ingest.BlobStore, bus ports.Event
 		return metrics.WritePrometheus(c.Response().BodyWriter())
 	})
 	app.Post("/claims", handlers.ClaimSubmit)
-	app.Post("/claims/:id/documents", handlers.PostDocument(docStore, blob, bus))
+	app.Post("/claims/:id/documents", handlers.PostDocument(uploader))
 	return app
 }
