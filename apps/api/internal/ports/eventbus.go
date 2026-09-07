@@ -9,15 +9,15 @@ import (
 	"sync"
 )
 
-// TopicDocumentUploaded is emitted when a new document is ingested.
-const TopicDocumentUploaded = "document.uploaded"
+// TopicDocumentIngested is emitted when a new document is ingested
+// (PRD §10 Stage 2, §34 Event Model: `document.ingested`).
+const TopicDocumentIngested = "document.ingested"
 
-// DocumentUploadedSchemaVersion is the versioned-contract marker for the
-// DocumentUploaded event payload (see documentUploaded in the handlers
-// package). Convention: every event payload carries a `schema_version`
-// string of the form `<event-name>.vN` (e.g. "document-uploaded.v1") so
-// consumers can gate on breaking payload changes without inspecting the
-// topic name.
+// DocumentIngestedSchemaVersion is the versioned-contract marker for the
+// DocumentIngested event payload. Convention: every event payload carries
+// a `schema_version` string of the form `<event-name>.vN`
+// (e.g. "document-ingested.v1") so consumers can gate on breaking payload
+// changes without inspecting the topic name.
 // EventEnvelope is the canonical envelope every domain event payload
 // carries, alongside its event-specific fields:
 //
@@ -28,8 +28,8 @@ const TopicDocumentUploaded = "document.uploaded"
 //	                (tenant, claim, event_id).
 //	occurred_at     RFC3339 UTC emission time.
 //
-// Example: document.uploaded carries schema_version "document-uploaded.v1".
-const DocumentUploadedSchemaVersion = "document-uploaded.v1"
+// Example: document.ingested carries schema_version "document-ingested.v1".
+const DocumentIngestedSchemaVersion = "document-ingested.v1"
 
 // EventBus publishes serialized domain events to a topic.
 type EventBus interface {

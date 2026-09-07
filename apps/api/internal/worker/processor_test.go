@@ -132,7 +132,7 @@ func eventBytes(t *testing.T, schemaVersion, tenant, claim, docID string) []byte
 
 func goodEvent(t *testing.T, docID string) []byte {
 	t.Helper()
-	return eventBytes(t, ports.DocumentUploadedSchemaVersion, "t1", "c1", docID)
+	return eventBytes(t, ports.DocumentIngestedSchemaVersion, "t1", "c1", docID)
 }
 
 // happyFixture wires fakes for a zero-exception run: the current doc is a
@@ -221,7 +221,7 @@ func TestHandleBadSchemaVersionTerminal(t *testing.T) {
 	fetch, store, loader, checker := happyFixture()
 	p := NewProcessor(fetch, store, loader, checker)
 
-	out := p.Handle(context.Background(), eventBytes(t, "document-uploaded.v9", "t1", "c1", "doc-bad"))
+	out := p.Handle(context.Background(), eventBytes(t, "document-ingested.v9", "t1", "c1", "doc-bad"))
 
 	if out.Status != documents.StFailed {
 		t.Fatalf("bad schema status = %q, want %q", out.Status, documents.StFailed)
