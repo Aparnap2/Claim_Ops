@@ -19,12 +19,12 @@ import (
 // New wires middleware, tenant enforcement, and routes with fresh
 // in-process document dependencies.
 func New() *fiber.App {
-	return NewWithDeps(ingest.New(), ports.NewInMemoryBus())
+	return NewWithDeps(ingest.New(), ingest.NewBlobStore(), ports.NewInMemoryBus())
 }
 
-// NewWithDeps wires the stack with shared document store and event bus
-// instances so tests can inject fresh deps per case.
-func NewWithDeps(docStore *ingest.Store, bus ports.EventBus) *fiber.App {
+// NewWithDeps wires the stack with shared document store, blob store, and
+// event bus instances so tests can inject fresh deps per case.
+func NewWithDeps(docStore *ingest.Store, blob *ingest.BlobStore, bus ports.EventBus) *fiber.App {
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
@@ -49,6 +49,6 @@ func NewWithDeps(docStore *ingest.Store, bus ports.EventBus) *fiber.App {
 		return metrics.WritePrometheus(c.Response().BodyWriter())
 	})
 	app.Post("/claims", handlers.ClaimSubmit)
-	app.Post("/claims/:id/documents", handlers.PostDocument(docStore, bus))
+	app.Post("/claims/:id/documents", handlers.PostDocument(docStore, blob, bus))
 	return app
 }

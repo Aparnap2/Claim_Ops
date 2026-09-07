@@ -7,18 +7,20 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"claimops-api/internal/app"
 	"claimops-api/internal/ingest"
 	"claimops-api/internal/ports"
 )
 
-func newDocApp() (*ingest.Store, *ports.InMemoryBus, interface {
+func newDocApp() (*ingest.Store, *ingest.BlobStore, *ports.InMemoryBus, interface {
 	Test(*http.Request, ...int) (*http.Response, error)
 }) {
 	store := ingest.New()
+	blob := ingest.NewBlobStore()
 	bus := ports.NewInMemoryBus()
-	return store, bus, app.NewWithDeps(store, bus)
+	return store, blob, bus, app.NewWithDeps(store, blob, bus)
 }
 
 func postDoc(t *testing.T, a interface {
@@ -43,7 +45,7 @@ func postDoc(t *testing.T, a interface {
 }
 
 func TestPostDocumentCreated(t *testing.T) {
-	_, bus, a := newDocApp()
+	_, blob, bus, a := newDocApp()
 	resp := postDoc(t, a, "CLM-1", "t-apollo",
 		`{"file_name":"bill.pdf","mime":"application/pdf","content_text":"hello"}`, "")
 	defer resp.Body.Close()
@@ -71,6 +73,8 @@ func TestPostDocumentCreated(t *testing.T) {
 	}
 	var evt struct {
 		SchemaVersion string `json:"schema_version"`
+		EventID       string `json:"event_id"`
+		OccurredAt    string `json:"occurred_at"`
 		Tenant        string `json:"tenant"`
 		Claim         string `json:"claim"`
 		DocumentID    string `json:"document_id"`
@@ -78,6 +82,12 @@ func TestPostDocumentCreated(t *testing.T) {
 	}
 	if err := json.Unmarshal(bus.Events[ports.TopicDocumentUploaded][0], &evt); err != nil {
 		t.Fatalf("event decode failed: %v", err)
+	}
+	if evt.EventID == "" {
+		t.Fatal("event missing event_id")
+	}
+	if _, err := time.Parse(time.RFC3339, evt.OccurredAt); err != nil {
+		t.Fatalf("occurred_at not RFC3339: %q (%v)", evt.OccurredAt, err)
 	}
 	if evt.SchemaVersion != ports.DocumentUploadedSchemaVersion {
 		t.Fatalf("expected schema_version %q, got %q",
@@ -89,10 +99,17 @@ func TestPostDocumentCreated(t *testing.T) {
 	if evt.Tenant == "" || evt.Claim == "" || evt.DocumentID == "" || evt.SHA256 == "" {
 		t.Fatalf("event missing required fields: %+v", evt)
 	}
+	fn, mime, content, err := blob.Get(evt.DocumentID)
+	if err != nil {
+		t.Fatalf("blob missing staged content: %v", err)
+	}
+	if fn != "bill.pdf" || mime != "application/pdf" || content != "hello" {
+		t.Fatalf("blob content mismatch: %q %q %q", fn, mime, content)
+	}
 }
 
 func TestPostDocumentDuplicate(t *testing.T) {
-	_, bus, a := newDocApp()
+	_, blob, bus, a := newDocApp()
 	body := `{"file_name":"bill.pdf","mime":"application/pdf","content_text":"hello"}`
 	r1 := postDoc(t, a, "CLM-1", "t-apollo", body, "")
 	r1.Body.Close()
@@ -112,10 +129,28 @@ func TestPostDocumentDuplicate(t *testing.T) {
 	if len(bus.Events[ports.TopicDocumentUploaded]) != 1 {
 		t.Fatalf("duplicate must not publish again, events=%d", len(bus.Events[ports.TopicDocumentUploaded]))
 	}
+	if n := blob.Len(); n != 1 {
+		t.Fatalf("duplicate must not restage blob, entries=%d", n)
+	}
+	_, _, content, err := blob.Get(gotDocID(bus))
+	if err != nil {
+		t.Fatalf("original blob missing after duplicate: %v", err)
+	}
+	if content != "hello" {
+		t.Fatalf("duplicate overwrote blob content: %q", content)
+	}
+}
+
+func gotDocID(bus *ports.InMemoryBus) string {
+	var evt struct {
+		DocumentID string `json:"document_id"`
+	}
+	_ = json.Unmarshal(bus.Events[ports.TopicDocumentUploaded][0], &evt)
+	return evt.DocumentID
 }
 
 func TestPostDocumentMalformed(t *testing.T) {
-	_, _, a := newDocApp()
+	_, _, _, a := newDocApp()
 	resp := postDoc(t, a, "CLM-1", "t-apollo", "{bad json", "")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -128,7 +163,7 @@ func TestPostDocumentMalformed(t *testing.T) {
 }
 
 func TestPostDocumentNoTenant(t *testing.T) {
-	_, _, a := newDocApp()
+	_, _, _, a := newDocApp()
 	resp := postDoc(t, a, "CLM-1", "",
 		`{"file_name":"bill.pdf","mime":"application/pdf","content_text":"hello"}`, "")
 	defer resp.Body.Close()
