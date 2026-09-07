@@ -1,4 +1,4 @@
-// Package worker consumes ports.TopicDocumentUploaded events and runs the
+// Package worker consumes ports.TopicDocumentIngested events and runs the
 // deterministic Tier-1 document pipeline: fetch content, classify, extract
 // fields, persist document + field evidence, then verify the claim.
 //
@@ -141,9 +141,9 @@ type Outcome struct {
 	Err            error
 }
 
-// documentUploadedEvent mirrors handlers.documentUploaded, the JSON
-// payload consumed from ports.TopicDocumentUploaded.
-type documentUploadedEvent struct {
+// documentIngestedEvent mirrors ingest.BuildUploadPayload, the JSON
+// payload consumed from ports.TopicDocumentIngested.
+type documentIngestedEvent struct {
 	SchemaVersion string `json:"schema_version"`
 	Tenant        string `json:"tenant"`
 	Claim         string `json:"claim"`
@@ -164,17 +164,17 @@ type documentUploadedEvent struct {
 //  4. The outcome edge (observe) runs exactly once per non-duplicate
 //     terminal outcome.
 func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
-	var ev documentUploadedEvent
+	var ev documentIngestedEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		out := Outcome{Status: documents.StFailed, Err: fmt.Errorf("worker: malformed event: %w", err)}
 		p.observe(ctx, "", "", "", "", out)
 		return out
 	}
-	if ev.SchemaVersion != ports.DocumentUploadedSchemaVersion {
+	if ev.SchemaVersion != ports.DocumentIngestedSchemaVersion {
 		out := Outcome{
 			DocumentID: ev.DocumentID,
 			Status:     documents.StFailed,
-			Err:        fmt.Errorf("worker: unsupported schema_version %q (want %q)", ev.SchemaVersion, ports.DocumentUploadedSchemaVersion),
+			Err:        fmt.Errorf("worker: unsupported schema_version %q (want %q)", ev.SchemaVersion, ports.DocumentIngestedSchemaVersion),
 		}
 		p.remember(ev.DocumentID, out)
 		p.observe(ctx, ev.Tenant, ev.Claim, ev.DocumentID, "", out)
@@ -213,7 +213,7 @@ func (p *Processor) remember(docID string, out Outcome) {
 
 // process runs the retry loop. It returns the terminal Outcome and the
 // classified doc-type string ("" when fetch never succeeded, for logging).
-func (p *Processor) process(ctx context.Context, ev documentUploadedEvent) (Outcome, string) {
+func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outcome, string) {
 	var lastErr error
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		fileName, mime, content, err := p.Fetcher.Fetch(ctx, ev.Tenant, ev.Claim, ev.DocumentID)
@@ -361,7 +361,7 @@ func (p *Processor) process(ctx context.Context, ev documentUploadedEvent) (Outc
 // persistFailedDoc best-effort stores a FAILED doc row when evidence
 // construction rejects the content. Persist errors are swallowed: the
 // caller's outcome is already terminal FAILED.
-func (p *Processor) persistFailedDoc(ctx context.Context, ev documentUploadedEvent, docType documents.DocType, fileName, mime, content string) {
+func (p *Processor) persistFailedDoc(ctx context.Context, ev documentIngestedEvent, docType documents.DocType, fileName, mime, content string) {
 	doc := documents.Document{
 		ID:        ev.DocumentID,
 		Tenant:    claims.TenantID(ev.Tenant),

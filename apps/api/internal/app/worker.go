@@ -10,17 +10,17 @@ import (
 	"claimops-api/internal/worker"
 )
 
-// documentTenant carries just the tenant field of a DocumentUploaded event
+// documentTenant carries just the tenant field of a DocumentIngested event
 // for request-scoped tenant propagation into the processor.
 type documentTenant struct {
 	Tenant string `json:"tenant"`
 }
 
-// StartDocumentWorker subscribes handle to document-uploaded events and
+// StartDocumentWorker subscribes handle to document.ingested events and
 // returns a stop func (unsubscribe). The bus owns delivery semantics;
 // this is registration only.
 func StartDocumentWorker(bus ports.Subscriber, handle func(ctx context.Context, event []byte) error) func() {
-	return bus.Subscribe(ports.TopicDocumentUploaded, handle)
+	return bus.Subscribe(ports.TopicDocumentIngested, handle)
 }
 
 // DocumentEventHandler adapts a worker.Processor to the subscriber

@@ -80,7 +80,28 @@ local:
 	@echo "  API      :8000 — cd apps/api && PORT=8000 go run ./cmd/api"
 	@echo "  Postgres :5433 — TEST_POSTGRES_DSN=postgres://claimops_app:claimops_app@localhost:5433/claimops"
 	@echo "  Mockoon  :3001 — serve mocks/mockoon/claims-systems.json; go tests gate on http://localhost:3001/v1/policies/POL-001"
+	@echo "  localgcp — localgcp up (Pub/Sub :8085, Storage :4443); then 'eval $$(localgcp env)'"
 	@echo "local: start services manually (no docker-compose per repo rule); then run 'make integration'"
+
+localgcp-test:
+	@echo "localgcp-test: emulator-gated transport suites (skip, never fail, when emulator down)"
+	@printf '%s\n' \
+		'import socket' \
+		's = socket.socket(); s.settimeout(2)' \
+		"print('localgcp-test: Pub/Sub :8085 reachable' if s.connect_ex(('localhost', 8085)) == 0 else 'SKIP: Pub/Sub emulator down — emulator tests will self-skip')" \
+		's.close()' \
+		| python3 -
+	@printf '%s\n' \
+		'import urllib.request' \
+		'try:' \
+		'    r = urllib.request.urlopen("http://localhost:4443", timeout=3)' \
+		"    print('localgcp-test: Storage :4443 reachable')" \
+		'except Exception as e:' \
+		"    print(f'SKIP: Storage emulator down ({e}) — emulator tests will self-skip')" \
+		| python3 -
+	@echo "localgcp-test: go test transport suites in $(GO_DIR)"
+	cd $(GO_DIR) && PUBSUB_EMULATOR_HOST=localhost:8085 STORAGE_EMULATOR_HOST=localhost:4443 TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" go test ./internal/adapters/pubsubadapter/ ./internal/adapters/gcsblob/ ./internal/ingest/ ./internal/outbox/ -count=1
+	@echo "localgcp-test: done (exit 0)"
 
 check: format lint typecheck test
 	@echo "check: format + lint + typecheck + unit tests all passed"
