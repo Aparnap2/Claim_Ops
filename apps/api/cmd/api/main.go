@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"claimops-api/internal/adapters/gcsblob"
-	httpadapter "claimops-api/internal/adapters/http"
 	"claimops-api/internal/adapters/pubsubadapter"
 	workeradapter "claimops-api/internal/adapters/worker"
 	"claimops-api/internal/app"
@@ -26,7 +25,6 @@ import (
 	"claimops-api/internal/observability"
 	"claimops-api/internal/outbox"
 	"claimops-api/internal/repository/postgres"
-	"claimops-api/internal/worker"
 
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/storage"
@@ -113,14 +111,11 @@ func startTransportPlane(ctx context.Context, cfg config.Config, svc *ingest.Ser
 	)
 	go runDispatcher(ctx, disp, cfg.OutboxPollMS)
 
-	storeBridge := workeradapter.NewStoreBridge(svc.Pool)
-	proc := worker.NewProcessor(
-		workeradapter.NewBlobFetchBridge(svc.Blobs, storeBridge),
-		storeBridge,
-		workeradapter.NewClaimBridge(svc.Pool),
-		workeradapter.NewPolicyBridge(httpadapter.NewPolicyClient(
-			httpadapter.New(cfg.PolicyBaseURL, 5*time.Second))),
-	)
+	proc := app.BuildProcessor(app.ProcessorDeps{
+		Blobs:         svc.Blobs,
+		Pool:          svc.Pool,
+		PolicyBaseURL: cfg.PolicyBaseURL,
+	})
 	sub := pubsubadapter.NewSubscriber(pclient, cfg.PubSubSubDocuments)
 	handle := app.DocumentEventHandler(proc)
 	go func() {

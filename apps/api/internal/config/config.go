@@ -23,6 +23,12 @@ type Config struct {
 	WorkerDatabaseURL    string
 	DatabaseURL          string
 	PolicyBaseURL        string
+
+	// Worker binary (cmd/worker) push settings.
+	WorkerPort         string
+	PushAuthMode       string
+	PushAudience       string
+	PushServiceAccount string
 }
 
 // Load reads configuration from the environment with safe defaults.
@@ -37,6 +43,10 @@ func Load() (Config, error) {
 		WorkerDatabaseURL:    envOr("WORKER_DATABASE_URL", "postgres://claimops_worker:claimops_worker@localhost:5433/claimops"),
 		DatabaseURL:          envOr("DATABASE_URL", os.Getenv("TEST_POSTGRES_DSN")),
 		PolicyBaseURL:        envOr("POLICY_BASE_URL", "http://localhost:3001"),
+		WorkerPort:           envOr("WORKER_PORT", "8081"),
+		PushAuthMode:         envOr("PUSH_AUTH_MODE", "none"),
+		PushAudience:         os.Getenv("PUSH_AUDIENCE"),
+		PushServiceAccount:   os.Getenv("PUSH_SERVICE_ACCOUNT"),
 	}
 	pollRaw := envOr("OUTBOX_POLL_MS", "1000")
 	poll, err := strconv.Atoi(pollRaw)
@@ -55,6 +65,18 @@ func Load() (Config, error) {
 	}
 	if cfg.GCPProject == "" {
 		return Config{}, fmt.Errorf("GCP_PROJECT must not be empty")
+	}
+	switch cfg.PushAuthMode {
+	case "none":
+		if cfg.AppEnv == "prod" {
+			return Config{}, fmt.Errorf("PUSH_AUTH_MODE=none is rejected with APP_ENV=prod")
+		}
+	case "oidc":
+		if cfg.PushAudience == "" || cfg.PushServiceAccount == "" {
+			return Config{}, fmt.Errorf("PUSH_AUTH_MODE=oidc requires PUSH_AUDIENCE and PUSH_SERVICE_ACCOUNT")
+		}
+	default:
+		return Config{}, fmt.Errorf("invalid PUSH_AUTH_MODE %q: must be none or oidc", cfg.PushAuthMode)
 	}
 	return cfg, nil
 }

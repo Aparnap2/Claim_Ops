@@ -36,3 +36,24 @@ func TestLoadRejectsBadPoll(t *testing.T) {
 		t.Fatal("expected error for OUTBOX_POLL_MS=fast")
 	}
 }
+
+func TestLoadPushValidation(t *testing.T) {
+	t.Setenv("PUSH_AUTH_MODE", "mystery")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for PUSH_AUTH_MODE=mystery")
+	}
+	t.Setenv("PUSH_AUTH_MODE", "oidc")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for oidc without audience/sender")
+	}
+	t.Setenv("PUSH_AUDIENCE", "https://worker.example")
+	t.Setenv("PUSH_SERVICE_ACCOUNT", "push@proj.iam.gserviceaccount.com")
+	if _, err := Load(); err != nil {
+		t.Fatalf("valid oidc config rejected: %v", err)
+	}
+	t.Setenv("PUSH_AUTH_MODE", "none")
+	t.Setenv("APP_ENV", "prod")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for none+prod")
+	}
+}
