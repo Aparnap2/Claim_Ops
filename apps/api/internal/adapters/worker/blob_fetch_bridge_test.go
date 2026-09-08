@@ -38,6 +38,7 @@ func TestBlobFetchBridgeHit(t *testing.T) {
 	docs := stubLister{docs: []documents.Document{{
 		ID: "doc-1", Tenant: "t1", ClaimID: "c1",
 		FileName: "bill.pdf", MIME: "application/pdf",
+		SHA256: "dd1fb82ed53df87c98fa9397b0ceba6b166374eab810ab351e5d955652613f37",
 	}}}
 	f := workeradapter.NewBlobFetchBridge(blobs, docs)
 	fn, mime, content, err := f.Fetch(context.Background(), "t1", "c1", "doc-1")

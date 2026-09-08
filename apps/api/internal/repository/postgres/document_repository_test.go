@@ -90,7 +90,7 @@ func TestDocumentInsert_DedupAndListRoundTrip(t *testing.T) {
 	// the stored row keeps the original status.
 	dup := doc
 	dup.ID = "doc-" + uniqueDocSuffix("doct-dup")
-	dup.Status = documents.StExtracted
+	dup.Status = documents.StProcessed
 	tctx, tx = beginAs(t, ctx, pool, tenant)
 	inserted, err = repo.InsertDocument(tctx, tx, dup)
 	if err != nil {
@@ -146,7 +146,7 @@ func TestFieldEvidenceInsert_DedupAndListRoundTrip(t *testing.T) {
 	}
 	commit(t, tctx, tx)
 
-	doc := newTestDocument(tenant, claimID, documents.DocHospitalBill, documents.StExtracted)
+	doc := newTestDocument(tenant, claimID, documents.DocHospitalBill, documents.StProcessed)
 	tctx, tx = beginAs(t, ctx, pool, tenant)
 	if _, err := repo.InsertDocument(tctx, tx, doc); err != nil {
 		rollback(t, tctx, tx)

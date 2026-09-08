@@ -230,7 +230,7 @@ func TestServiceUploadHappyPath(t *testing.T) {
 	claimID := claims.ClaimID(svcSuffix("svc-happy-claim"))
 	mustSaveSvcClaim(t, pool, tenant, claimID)
 
-	content := []byte("opaque-bytes-" + svcSuffix("svc-happy-body"))
+	content := []byte("%PDF-1.4\nopaque-bytes-" + svcSuffix("svc-happy-body") + strings.Repeat(" ", 600))
 	doc, created, err := svc.Upload(ctx, string(tenant), string(claimID), "bill.pdf", "application/pdf", content)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -293,7 +293,7 @@ func TestServiceUploadDuplicate(t *testing.T) {
 	claimID := claims.ClaimID(svcSuffix("svc-dup-claim"))
 	mustSaveSvcClaim(t, pool, tenant, claimID)
 
-	content := []byte("opaque-bytes-" + svcSuffix("svc-dup-body"))
+	content := []byte("%PDF-1.4\nopaque-bytes-" + svcSuffix("svc-dup-body") + strings.Repeat(" ", 600))
 	first, created, err := svc.Upload(ctx, string(tenant), string(claimID), "bill.pdf", "application/pdf", content)
 	if err != nil {
 		t.Fatalf("first Upload: %v", err)
@@ -349,7 +349,7 @@ func TestServiceUploadBlobFailure(t *testing.T) {
 	claimID := claims.ClaimID(svcSuffix("svc-fail-claim"))
 	mustSaveSvcClaim(t, pool, tenant, claimID)
 
-	if _, _, err := svc.Upload(ctx, string(tenant), string(claimID), "bill.pdf", "application/pdf", []byte("opaque")); err == nil {
+	if _, _, err := svc.Upload(ctx, string(tenant), string(claimID), "bill.pdf", "application/pdf", []byte("%PDF-1.4\nopaque"+strings.Repeat(" ", 600))); err == nil {
 		t.Fatal("expected error on blob failure, got nil")
 	}
 	if rows := listSvcDocs(t, pool, tenant, claimID); len(rows) != 0 {

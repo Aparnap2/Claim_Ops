@@ -2,6 +2,8 @@ package workeradapter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 
@@ -15,6 +17,23 @@ import (
 type DocLister interface {
 	ListDocuments(ctx context.Context, claim claims.ClaimID) ([]documents.Document, error)
 }
+
+// MaxFetchBytes bounds a single blob read (10MB, matching the upload
+// admission limit). Reads use LimitReader(MaxFetchBytes+1) so an oversized
+// object is detected without unbounded worker memory growth.
+const MaxFetchBytes = 10 << 20
+
+var (
+	// ErrCorruptedBlob is returned when SHA256(blob bytes) != the
+	// ingestion-recorded hash. Alias of the contract sentinel owned by
+	// the worker package (which this package already imports for
+	// ContentFetcher; a local errors.New here would be a distinct
+	// instance invisible to errors.Is across the interface boundary).
+	ErrCorruptedBlob = worker.ErrCorruptedBlob
+	// ErrBlobTooLarge is returned when the stored object exceeds
+	// MaxFetchBytes. Alias of the worker contract sentinel (see above).
+	ErrBlobTooLarge = worker.ErrBlobTooLarge
+)
 
 // BlobFetchBridge implements worker.ContentFetcher over a ports.BlobStore
 // (GCS in production, emulator locally, memblob in tests). File name and
@@ -57,9 +76,23 @@ func (b *BlobFetchBridge) Fetch(ctx context.Context, tenant, claimID, docID stri
 		return "", "", "", fmt.Errorf("blobfetch: get object: %w", err)
 	}
 	defer func() { _ = rc.Close() }()
-	data, err := io.ReadAll(rc)
+	// Bounded read: LimitReader caps worker memory at MaxFetchBytes+1 so
+	// a pathological object cannot OOM the worker via unbounded ReadAll.
+	data, err := io.ReadAll(io.LimitReader(rc, MaxFetchBytes+1))
 	if err != nil {
 		return "", "", "", fmt.Errorf("blobfetch: read object: %w", err)
+	}
+	if len(data) > MaxFetchBytes {
+		return "", "", "", fmt.Errorf("blobfetch: blob for document %q exceeds %d bytes: %w", docID, MaxFetchBytes, ErrBlobTooLarge)
+	}
+	// Integrity boundary: hash what was read and compare against the
+	// ingestion-recorded hash. On mismatch return NOTHING: the bytes must
+	// never be parsed. Hashes are not PII; both ride in the error for
+	// operator triage.
+	sum := sha256.Sum256(data)
+	actual := hex.EncodeToString(sum[:])
+	if actual != meta.SHA256 {
+		return "", "", "", fmt.Errorf("blobfetch: blob SHA256 mismatch for document %q: expected %s got %s: %w", docID, meta.SHA256, actual, ErrCorruptedBlob)
 	}
 	return meta.FileName, meta.MIME, string(data), nil
 }

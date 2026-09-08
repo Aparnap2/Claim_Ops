@@ -11,11 +11,12 @@ import (
 	"testing"
 
 	"claimops-api/internal/repository/postgres"
+	"claimops-api/internal/worker"
 
 	"github.com/gofiber/fiber/v2"
 )
 
-func pushApp(handle func(ctx context.Context, event []byte) error, verify TokenVerifier, auth PushAuth) *fiber.App {
+func pushApp(handle func(ctx context.Context, event []byte) worker.Outcome, verify TokenVerifier, auth PushAuth) *fiber.App {
 	a := fiber.New()
 	a.Post("/events/document-ingested", DocumentPushHandler(handle, verify, auth))
 	return a
@@ -44,12 +45,12 @@ func pushBody(t *testing.T, event map[string]string, attrs map[string]string) st
 func TestPushHappyAck(t *testing.T) {
 	var got []byte
 	var tenantSeen string
-	a := pushApp(func(ctx context.Context, event []byte) error {
+	a := pushApp(func(ctx context.Context, event []byte) worker.Outcome {
 		got = append([]byte(nil), event...)
 		if tenant, err := postgres.TenantFrom(ctx); err == nil {
 			tenantSeen = string(tenant)
 		}
-		return nil
+		return worker.Outcome{Kind: worker.OutcomeSuccess}
 	}, nil, PushAuth{Mode: "none"})
 	req := httptest.NewRequest(http.MethodPost, "/events/document-ingested",
 		strings.NewReader(pushBody(t,
@@ -74,8 +75,10 @@ func TestPushHappyAck(t *testing.T) {
 
 func TestPushReplayAcksTwice(t *testing.T) {
 	calls := 0
-	a := pushApp(func(_ context.Context, _ []byte) error { calls++; return nil },
-		nil, PushAuth{Mode: "none"})
+	a := pushApp(func(_ context.Context, _ []byte) worker.Outcome {
+		calls++
+		return worker.Outcome{Kind: worker.OutcomeSuccess}
+	}, nil, PushAuth{Mode: "none"})
 	body := pushBody(t,
 		map[string]string{"tenant": "t1", "claim": "c1", "document_id": "d1", "sha256": "ab"},
 		map[string]string{"tenant_id": "t1"})
@@ -97,8 +100,9 @@ func TestPushReplayAcksTwice(t *testing.T) {
 }
 
 func TestPushTerminalStillAcks(t *testing.T) {
-	a := pushApp(func(_ context.Context, _ []byte) error { return errors.New("boom") },
-		nil, PushAuth{Mode: "none"})
+	a := pushApp(func(_ context.Context, _ []byte) worker.Outcome {
+		return worker.Outcome{Kind: worker.OutcomeTerminal, Err: errors.New("boom")}
+	}, nil, PushAuth{Mode: "none"})
 	req := httptest.NewRequest(http.MethodPost, "/events/document-ingested",
 		strings.NewReader(pushBody(t,
 			map[string]string{"tenant": "t1", "claim": "c1", "document_id": "d1", "sha256": "ab"},
@@ -114,6 +118,43 @@ func TestPushTerminalStillAcks(t *testing.T) {
 	}
 }
 
+func TestPushTransientReturns503(t *testing.T) {
+	a := pushApp(func(_ context.Context, _ []byte) worker.Outcome {
+		return worker.Outcome{Kind: worker.OutcomeTransient, Err: errors.New("db timeout")}
+	}, nil, PushAuth{Mode: "none"})
+	req := httptest.NewRequest(http.MethodPost, "/events/document-ingested",
+		strings.NewReader(pushBody(t,
+			map[string]string{"tenant": "t1", "claim": "c1", "document_id": "d1", "sha256": "ab"},
+			map[string]string{"tenant_id": "t1"})))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 503 {
+		t.Fatalf("transient outcome must NACK for redelivery: status = %d", resp.StatusCode)
+	}
+}
+
+func TestPushDuplicateAcks(t *testing.T) {
+	a := pushApp(func(_ context.Context, _ []byte) worker.Outcome {
+		return worker.Outcome{Kind: worker.OutcomeDuplicate}
+	}, nil, PushAuth{Mode: "none"})
+	req := httptest.NewRequest(http.MethodPost, "/events/document-ingested",
+		strings.NewReader(pushBody(t,
+			map[string]string{"tenant": "t1", "claim": "c1", "document_id": "d1", "sha256": "ab"},
+			map[string]string{"tenant_id": "t1"})))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("duplicate outcome must ack: status = %d", resp.StatusCode)
+	}
+}
 func TestPushMalformed(t *testing.T) {
 	a := pushApp(nil, nil, PushAuth{Mode: "none"})
 	for _, body := range []string{"{bad json", `{"message":{}}`, `{"message":{"data":""}}`} {
@@ -161,7 +202,9 @@ func TestPushOIDC(t *testing.T) {
 		{"wrong sender", "good-token", PushAuth{Mode: "oidc", Audience: "https://worker.example", ServiceAccount: "other@proj.iam.gserviceaccount.com"}, 403},
 	}
 	for _, tc := range cases {
-		a := pushApp(func(_ context.Context, _ []byte) error { return nil }, verify, tc.auth)
+		a := pushApp(func(_ context.Context, _ []byte) worker.Outcome {
+			return worker.Outcome{Kind: worker.OutcomeSuccess}
+		}, verify, tc.auth)
 		resp, err := a.Test(newReq(tc.token))
 		if err != nil {
 			t.Fatal(err)

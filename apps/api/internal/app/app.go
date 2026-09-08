@@ -42,6 +42,7 @@ func New() *fiber.App {
 func NewWithDeps(uploader handlers.Uploader) *fiber.App {
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
+		BodyLimit:             10 << 20,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			code := fiber.StatusInternalServerError
 			var ferr *fiber.Error

@@ -51,15 +51,44 @@ const (
 
 // Document lifecycle states. Status is a plain string (not a dedicated
 // type) so storage layers can persist it without conversion.
+//
+// Lifecycle and extraction quality are deliberately separate vocabularies:
+// Status tracks where the document is in the pipeline (RECEIVED ->
+// PROCESSED | FAILED; CLASSIFIED marks the classify step), while
+// ExtractionOutcome reports what the extractor found. A PROCESSED status
+// must never be read as an AI/data-quality verdict — quality travels in
+// ExtractionOutcome (see worker.Outcome.Extraction), logs, and metrics.
 const (
 	// StReceived is the initial state at upload.
 	StReceived = "RECEIVED"
 	// StClassified follows successful Classify.
 	StClassified = "CLASSIFIED"
-	// StExtracted follows successful ExtractFields.
-	StExtracted = "EXTRACTED"
+	// StProcessed is the success-terminal lifecycle state: the pipeline
+	// ran to completion and persisted the document, regardless of how
+	// much (if anything) was extracted. See ExtractionOutcome for
+	// data-quality.
+	StProcessed = "PROCESSED"
 	// StFailed marks a document that failed classification or extraction.
 	StFailed = "FAILED"
+)
+
+// ExtractionOutcome is the extraction-quality verdict for one document.
+// It is orthogonal to the lifecycle Status: a PROCESSED document may
+// carry any outcome except NOT_ATTEMPTED, and Failed documents never
+// carry a quality verdict beyond NOT_ATTEMPTED/NO_CONTENT.
+type ExtractionOutcome string
+
+const (
+	// ExtractionNotAttempted means extraction never ran (fetch failure,
+	// schema mismatch, malformed event).
+	ExtractionNotAttempted ExtractionOutcome = "NOT_ATTEMPTED"
+	// ExtractionNoContent means extraction ran but found nothing (empty
+	// content, or no key rule matched).
+	ExtractionNoContent ExtractionOutcome = "NO_CONTENT"
+	// ExtractionPartial means some but not all key rules matched.
+	ExtractionPartial ExtractionOutcome = "PARTIAL"
+	// ExtractionComplete means every key rule matched.
+	ExtractionComplete ExtractionOutcome = "COMPLETE"
 )
 
 // Document is the deterministic document entity. Tenant and ClaimID reuse
@@ -219,6 +248,30 @@ func ExtractFields(docType DocType, content string) []Field {
 		}
 	}
 	return out
+}
+
+// ClassifyExtraction maps extractor output to an ExtractionOutcome with
+// a deterministic rule: empty content or zero fields is NO_CONTENT;
+// COMPLETE when every keyRules name appears in fields, PARTIAL
+// otherwise. It never touches Status — lifecycle and quality stay
+// separate.
+func ClassifyExtraction(content string, fields []Field) ExtractionOutcome {
+	if len(content) == 0 {
+		return ExtractionNoContent
+	}
+	if len(fields) == 0 {
+		return ExtractionNoContent
+	}
+	seen := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		seen[f.Name] = true
+	}
+	for _, r := range keyRules {
+		if !seen[r.name] {
+			return ExtractionPartial
+		}
+	}
+	return ExtractionComplete
 }
 
 // truncateRunes caps s at n runes.

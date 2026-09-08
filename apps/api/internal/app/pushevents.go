@@ -7,6 +7,7 @@ import (
 	"claimops-api/internal/claims"
 	"claimops-api/internal/observability"
 	"claimops-api/internal/repository/postgres"
+	"claimops-api/internal/worker"
 
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/api/idtoken"
@@ -47,10 +48,13 @@ type pushEnvelope struct {
 
 // DocumentPushHandler serves POST /events/document-ingested for Pub/Sub
 // push delivery. Contract: 2xx = ack, anything else = redeliver (DLQ after
-// max_delivery_attempts server-side). Terminal worker outcomes still ack
-// (200) — they are logged, and idempotency makes redelivery a no-op —
-// while malformed envelopes and auth failures return 4xx.
-func DocumentPushHandler(handle func(ctx context.Context, event []byte) error, verify TokenVerifier, auth PushAuth) fiber.Handler {
+// max_delivery_attempts server-side). Delivery semantics branch on
+// worker.Outcome.Kind (#23): SUCCESS and DUPLICATE ack silently, TERMINAL
+// outcomes ack (200) after a worker.push.terminal Warn — they are logged,
+// persisted as FAILED, and idempotency makes redelivery a no-op — while
+// TRANSIENT outcomes return 503 so Pub/Sub redelivers. Malformed envelopes
+// and auth failures return 4xx.
+func DocumentPushHandler(handle func(ctx context.Context, event []byte) worker.Outcome, verify TokenVerifier, auth PushAuth) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		switch auth.Mode {
 		case "oidc":
@@ -81,14 +85,43 @@ func DocumentPushHandler(handle func(ctx context.Context, event []byte) error, v
 		if t := env.Message.Attributes["tenant_id"]; t != "" {
 			ctx = postgres.WithTenant(ctx, claims.TenantID(t))
 		}
-		if err := handle(ctx, env.Message.Data); err != nil {
+		out := handle(ctx, env.Message.Data)
+		errStr := "unknown transient failure"
+		if out.Err != nil {
+			errStr = out.Err.Error()
+		}
+		switch out.Kind {
+		case worker.OutcomeSuccess, worker.OutcomeDuplicate:
+			return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
+		case worker.OutcomeTerminal:
 			observability.With(ctx).Warn("worker.push.terminal",
 				"tenant", env.Message.Attributes["tenant_id"],
 				"message_id", env.Message.MessageID,
-				"error", err.Error(),
+				"error", errStr,
 			)
+			return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
+		case worker.OutcomeTransient:
+			observability.With(ctx).Warn("worker.push.transient",
+				"tenant", env.Message.Attributes["tenant_id"],
+				"message_id", env.Message.MessageID,
+				"error", errStr,
+			)
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"ok": false, "code": "PUSH_TRANSIENT", "message": "transient failure, will retry",
+			})
+		default:
+			// Unknown/zero Kind: fail open toward retry. Acking an
+			// unclassified outcome would silently drop the event (#23);
+			// a spurious redelivery is idempotent by design.
+			observability.With(ctx).Warn("worker.push.transient",
+				"tenant", env.Message.Attributes["tenant_id"],
+				"message_id", env.Message.MessageID,
+				"error", "unclassified outcome kind, treating as transient",
+			)
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"ok": false, "code": "PUSH_TRANSIENT", "message": "transient failure, will retry",
+			})
 		}
-		return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
 	}
 }
 
