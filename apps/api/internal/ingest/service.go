@@ -12,8 +12,6 @@ package ingest
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +20,7 @@ import (
 
 	"claimops-api/internal/claims"
 	"claimops-api/internal/documents"
+	"claimops-api/internal/documents/admission"
 	"claimops-api/internal/ports"
 	"claimops-api/internal/repository/postgres"
 
@@ -86,8 +85,12 @@ func BuildUploadPayload(doc documents.Document, occurredAt time.Time) map[string
 
 // Upload ingests one document's opaque bytes idempotently.
 //
-//  1. Validates identifiers/content (blank -> validation error).
-//  2. Hashes content (sha256 hex) and mints docID "doc-"+12hex via newID.
+//  1. Validates identifiers (blank -> validation error), then enforces
+//     the admission boundary: admission.Validate checks file name, size,
+//     MIME allowlist, and content sniff BEFORE anything crosses into
+//     ingestion. Only a ValidatedDocument flows downstream; admission
+//     failures are validation errors.
+//  2. Mints docID "doc-"+12hex via newID from the validated SHA256.
 //  3. Puts bytes to the blob port FIRST under
 //     ports.DocumentObjectKey(tenant, claimID, docID). A blob failure is
 //     a 500-class error with zero DB writes.
@@ -122,13 +125,17 @@ func (s *Service) Upload(ctx context.Context, tenant, claimID, fileName, mime st
 	if f == "" {
 		return documents.Document{}, false, validationError("blank file name")
 	}
-	if len(content) == 0 {
-		return documents.Document{}, false, fmt.Errorf("%w: %w", errValidation, ErrEmptyDocument)
+	// Admission boundary: untrusted upload input is structurally and
+	// content validated BEFORE it crosses into ingestion. Only a
+	// ValidatedDocument flows downstream.
+	validated, err := admission.Validate(fileName, mime, content, admission.DefaultPolicy())
+	if err != nil {
+		return documents.Document{}, false, fmt.Errorf("%w: %v", errValidation, err)
 	}
-	m := strings.TrimSpace(mime)
+	f = validated.Filename
+	m := validated.MediaType
+	sha := validated.SHA256
 
-	sum := sha256.Sum256(content)
-	sha := hex.EncodeToString(sum[:])
 	docID := newID(sha)
 	docType, _ := documents.Classify(f, m)
 	doc := documents.Document{
@@ -139,12 +146,12 @@ func (s *Service) Upload(ctx context.Context, tenant, claimID, fileName, mime st
 		FileName:  f,
 		MIME:      m,
 		SHA256:    sha,
-		SizeBytes: int64(len(content)),
+		SizeBytes: validated.SizeBytes,
 		Status:    documents.StReceived,
 	}
 
 	key := ports.DocumentObjectKey(t, c, docID)
-	ref := ports.ObjectRef{Key: key, SHA256: sha, MIME: m, SizeBytes: int64(len(content))}
+	ref := ports.ObjectRef{Key: key, SHA256: sha, MIME: m, SizeBytes: validated.SizeBytes}
 	if err := s.Blobs.Put(ctx, ref, bytes.NewReader(content)); err != nil {
 		return documents.Document{}, false, fmt.Errorf("ingest: stage blob: %w", err)
 	}
@@ -152,24 +159,32 @@ func (s *Service) Upload(ctx context.Context, tenant, claimID, fileName, mime st
 	tctx := postgres.WithTenant(ctx, claims.TenantID(t))
 	tx, err := postgres.BeginTenantTx(tctx, s.Pool)
 	if err != nil {
-		_ = s.Blobs.Delete(ctx, ref)
+		if derr := s.Blobs.Delete(ctx, ref); derr != nil {
+			cleanupReporter(ctx, ref, doc.ID, t, "begin_tx", derr)
+		}
 		return documents.Document{}, false, fmt.Errorf("ingest: begin tx: %w", err)
 	}
 	inserted, err := s.Repo.InsertDocument(tctx, tx, doc)
 	if err != nil {
 		_ = tx.Rollback(tctx)
-		_ = s.Blobs.Delete(ctx, ref)
+		if derr := s.Blobs.Delete(ctx, ref); derr != nil {
+			cleanupReporter(ctx, ref, doc.ID, t, "insert_document", derr)
+		}
 		return documents.Document{}, false, fmt.Errorf("ingest: insert document: %w", err)
 	}
 	if !inserted {
 		_ = tx.Rollback(tctx)
-		_ = s.Blobs.Delete(ctx, ref)
+		if derr := s.Blobs.Delete(ctx, ref); derr != nil {
+			cleanupReporter(ctx, ref, doc.ID, t, "duplicate_rollback", derr)
+		}
 		return documents.Document{}, false, nil
 	}
 	payload, err := json.Marshal(BuildUploadPayload(doc, time.Now().UTC()))
 	if err != nil {
 		_ = tx.Rollback(tctx)
-		_ = s.Blobs.Delete(ctx, ref)
+		if derr := s.Blobs.Delete(ctx, ref); derr != nil {
+			cleanupReporter(ctx, ref, doc.ID, t, "marshal_event", derr)
+		}
 		return documents.Document{}, false, fmt.Errorf("ingest: marshal event: %w", err)
 	}
 	// EventType/EventVersion split the schema_version contract marker
@@ -186,11 +201,15 @@ func (s *Service) Upload(ctx context.Context, tenant, claimID, fileName, mime st
 	})
 	if outboxErr != nil {
 		_ = tx.Rollback(tctx)
-		_ = s.Blobs.Delete(ctx, ref)
+		if derr := s.Blobs.Delete(ctx, ref); derr != nil {
+			cleanupReporter(ctx, ref, doc.ID, t, "append_outbox", derr)
+		}
 		return documents.Document{}, false, fmt.Errorf("ingest: append outbox: %w", outboxErr)
 	}
 	if err := tx.Commit(tctx); err != nil {
-		_ = s.Blobs.Delete(ctx, ref)
+		if derr := s.Blobs.Delete(ctx, ref); derr != nil {
+			cleanupReporter(ctx, ref, doc.ID, t, "commit", derr)
+		}
 		return documents.Document{}, false, fmt.Errorf("ingest: commit: %w", err)
 	}
 	return doc, true, nil
