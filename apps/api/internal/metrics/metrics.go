@@ -15,6 +15,8 @@
 //	workflow_retries_total             Total workflow retry attempts (transient errors).
 //	documents_processed_total          Total documents fully processed.
 //	document_failures_total            Total document processing failures.
+//	blob_integrity_failures_total      Total blob integrity boundary failures
+//	                                   (SHA256 mismatch on fetch).
 //	claim_exceptions_total             Aggregate claim exceptions across all types.
 //	claim_exceptions_by_type{type="T"} Per-type claim exceptions, one series per
 //	                                   exception type (e.g. AMOUNT_CONFLICT).
@@ -59,6 +61,8 @@ const (
 	NameDocumentsProcessedTotal    = "documents_processed_total"
 	NameDocumentFailuresTotal      = "document_failures_total"
 	NameClaimExceptionsTotal       = "claim_exceptions_total"
+	NameBlobIntegrityFailuresTotal = "blob_integrity_failures_total"
+	NameBlobCleanupFailuresTotal   = "blob_cleanup_failures_total"
 	// NameClaimExceptionsByType is the base family name for per-type series.
 	// Series keys are rendered as claim_exceptions_by_type{type="<TYPE>"}.
 	NameClaimExceptionsByType = "claim_exceptions_by_type"
@@ -180,6 +184,16 @@ func IncDocumentsProcessed() {
 // IncDocumentFailure increments document_failures_total by 1.
 func IncDocumentFailure() {
 	getOrCreate(NameDocumentFailuresTotal).Inc()
+}
+
+// IncBlobIntegrityFailure increments blob_integrity_failures_total by 1.
+func IncBlobIntegrityFailure() {
+	getOrCreate(NameBlobIntegrityFailuresTotal).Inc()
+}
+
+// IncBlobCleanupFailure increments blob_cleanup_failures_total by 1.
+func IncBlobCleanupFailure() {
+	getOrCreate(NameBlobCleanupFailuresTotal).Inc()
 }
 
 // exceptionSeriesKey renders the per-type series key for exceptionType,
