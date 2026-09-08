@@ -51,7 +51,7 @@ func main() {
 		Pool:          pool,
 		PolicyBaseURL: cfg.PolicyBaseURL,
 	})
-	handle := app.DocumentEventHandler(proc)
+	handle := app.DocumentOutcomeHandler(proc)
 	auth := app.PushAuth{
 		Mode:           cfg.PushAuthMode,
 		Audience:       cfg.PushAudience,
