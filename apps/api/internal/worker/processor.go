@@ -16,18 +16,22 @@
 // explicitly to dependencies.
 //
 // Status-const choice: documents.go defines only RECEIVED, CLASSIFIED,
-// EXTRACTED, and FAILED for documents. There is deliberately NO
+// PROCESSED, and FAILED for documents. There is deliberately NO
 // document-level EXCEPTION const (claims.ClaimStatusException is
 // claim-level and must not leak into Document.Status). A document that
 // processes successfully but yields verify exceptions is therefore
-// persisted and reported as documents.StExtracted, with the verify
+// persisted and reported as documents.StProcessed, with the verify
 // findings recorded in Outcome.ExceptionCodes and via
-// metrics.IncClaimException per code.
+// metrics.IncClaimException per code. PROCESSED is a pure lifecycle
+// claim (the pipeline ran to completion); extraction quality travels
+// separately in Outcome.Extraction (documents.ExtractionOutcome) and
+// must never be inferred from Status.
 package worker
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -46,6 +50,21 @@ import (
 // failures) within a single Handle call. Attempts in Outcome counts the
 // pipeline tries actually executed.
 const MaxAttempts = 3
+
+// Integrity boundary sentinels. These are the canonical instances owned
+// by the ContentFetcher contract: BlobFetchBridge (internal/adapters/
+// worker) aliases and wraps them, so errors.Is detects them across the
+// interface boundary. They live here — not in the adapter — because the
+// adapter already imports this package for ContentFetcher and the reverse
+// import would be a cycle.
+var (
+	// ErrCorruptedBlob marks bytes whose SHA256 does not match the
+	// ingestion-recorded hash. Permanent: never retried, never parsed.
+	ErrCorruptedBlob = errors.New("workeradapter: blob SHA256 mismatch")
+	// ErrBlobTooLarge marks a blob exceeding the fetch bound. Permanent:
+	// never retried.
+	ErrBlobTooLarge = errors.New("workeradapter: blob too large")
+)
 
 // extractorTier1Regex is the extractor name pinned on every Tier-1
 // regex-built FieldEvidence row.
@@ -128,16 +147,34 @@ func NewProcessor(f ContentFetcher, s DocumentStore, c ClaimLoader, p PolicyChec
 	}
 }
 
+// OutcomeKind classifies an Outcome for delivery semantics. Push (Pub/Sub)
+// and pull transports both branch on it: TRANSIENT means the failure may
+// heal on redelivery (non-2xx / Nack), while TERMINAL, SUCCESS, and
+// DUPLICATE all acknowledge (2xx / Ack) because redelivery could never
+// change the result. See #23 ([#16C] Event delivery semantics).
+type OutcomeKind string
+
+const (
+	OutcomeSuccess   OutcomeKind = "SUCCESS"
+	OutcomeDuplicate OutcomeKind = "DUPLICATE"
+	OutcomeTerminal  OutcomeKind = "TERMINAL"
+	OutcomeTransient OutcomeKind = "TRANSIENT"
+)
+
 // Outcome is the terminal result of one Handle call. Err is set on
 // terminal failures only; verify exceptions are data (ExceptionCodes),
 // not errors. Duplicate reports a redelivery of an already-processed
-// document ID.
+// document ID. Kind drives transport ack/nack decisions; it must be set
+// on every construction site (see the Kind assignment table in Handle
+// and process).
 type Outcome struct {
 	DocumentID     string
 	Status         string
+	Extraction     documents.ExtractionOutcome
 	ExceptionCodes []string
 	Attempts       int
 	Duplicate      bool
+	Kind           OutcomeKind
 	Err            error
 }
 
@@ -151,22 +188,44 @@ type documentIngestedEvent struct {
 	SHA256        string `json:"sha256"`
 }
 
+// isPermanent reports whether err wraps a non-retryable integrity failure
+// (ErrCorruptedBlob / ErrBlobTooLarge from the #16B integrity boundary).
+// errors.As/Is is the seam: fetch adapters alias and wrap these sentinels,
+// so detection survives the ContentFetcher interface boundary.
+func isPermanent(err error) bool {
+	return errors.Is(err, ErrCorruptedBlob) || errors.Is(err, ErrBlobTooLarge)
+}
+
 // Handle processes one raw event payload to a terminal Outcome.
+// Kind assignment table (delivery semantics, #23):
 //
-//  1. JSON parse + schema_version gate: mismatch is terminal
-//     (documents.StFailed, Err set, no retry, Attempts 0).
-//  2. Idempotency: a document ID already in the processed-set returns the
-//     stored Outcome with Duplicate=true and zero side effects (no fetch,
-//     no store calls, no log/metrics emission).
-//  3. Pipeline loop (up to MaxAttempts): fetch (transient), classify +
-//     extract + evidence build (permanent on build error), persist
-//     (transient), read-model load (transient), verify.
-//  4. The outcome edge (observe) runs exactly once per non-duplicate
-//     terminal outcome.
+//		Handle malformed JSON event          -> TERMINAL (Attempts 0)
+//		Handle schema_version mismatch       -> TERMINAL (Attempts 0)
+//		Handle processed-set hit (redelivery)-> DUPLICATE (stored outcome + Duplicate=true)
+//		process integrity failure
+//		  (ErrCorruptedBlob/ErrBlobTooLarge) -> TERMINAL (no retry, FAILED row best-effort)
+//		process invalid extracted field
+//		  (buildErr permanent path)          -> TERMINAL (FAILED row best-effort)
+//		process persistFailedDoc path        -> TERMINAL (same outcome as above)
+//		process verify success               -> SUCCESS
+//		process exhausted retries (lastErr)  -> TRANSIENT, unless lastErr is a
+//		                                        permanent integrity failure, in
+//		                                        which case TERMINAL
+//
+//	 1. JSON parse + schema_version gate: mismatch is terminal
+//	    (documents.StFailed, Err set, no retry, Attempts 0).
+//	 2. Idempotency: a document ID already in the processed-set returns the
+//	    stored Outcome with Duplicate=true and zero side effects (no fetch,
+//	    no store calls, no log/metrics emission).
+//	 3. Pipeline loop (up to MaxAttempts): fetch (transient), classify +
+//	    extract + evidence build (permanent on build error), persist
+//	    (transient), read-model load (transient), verify.
+//	 4. The outcome edge (observe) runs exactly once per non-duplicate
+//	    terminal outcome.
 func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
 	var ev documentIngestedEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
-		out := Outcome{Status: documents.StFailed, Err: fmt.Errorf("worker: malformed event: %w", err)}
+		out := Outcome{Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTerminal, Err: fmt.Errorf("worker: malformed event: %w", err)}
 		p.observe(ctx, "", "", "", "", out)
 		return out
 	}
@@ -174,6 +233,8 @@ func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
 		out := Outcome{
 			DocumentID: ev.DocumentID,
 			Status:     documents.StFailed,
+			Extraction: documents.ExtractionNotAttempted,
+			Kind:       OutcomeTerminal,
 			Err:        fmt.Errorf("worker: unsupported schema_version %q (want %q)", ev.SchemaVersion, ports.DocumentIngestedSchemaVersion),
 		}
 		p.remember(ev.DocumentID, out)
@@ -185,6 +246,7 @@ func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
 	if prev, ok := p.done[ev.DocumentID]; ok {
 		dup := prev
 		dup.Duplicate = true
+		dup.Kind = OutcomeDuplicate
 		p.mu.Unlock()
 		return dup
 	}
@@ -218,7 +280,24 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		fileName, mime, content, err := p.Fetcher.Fetch(ctx, ev.Tenant, ev.Claim, ev.DocumentID)
 		if err != nil {
-			lastErr = fmt.Errorf("worker: fetch document: %w", err)
+			fetchErr := fmt.Errorf("worker: fetch document: %w", err)
+			if isPermanent(err) {
+				// Permanent: the stored bytes failed the integrity
+				// boundary (hash mismatch) or exceeded the fetch bound.
+				// Retrying cannot heal it, and the bytes must never be
+				// parsed. Best-effort FAILED doc row for audit; the
+				// outcome stays FAILED regardless of persist fate.
+				p.persistFailedDoc(ctx, ev, "", "", "", "")
+				return Outcome{
+					DocumentID: ev.DocumentID,
+					Status:     documents.StFailed,
+					Kind:       OutcomeTerminal,
+					Extraction: documents.ExtractionNotAttempted,
+					Attempts:   attempt,
+					Err:        fetchErr,
+				}, ""
+			}
+			lastErr = fetchErr
 			continue
 		}
 		docType, _ := documents.Classify(fileName, mime)
@@ -240,10 +319,18 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 		if buildErr != nil {
 			// Permanent: invalid content. Best-effort FAILED doc row for
 			// audit; the outcome stays FAILED regardless of persist fate.
+			// Extraction ran but failed to build: NO_CONTENT when there
+			// was nothing to build from, else PARTIAL.
+			buildExtraction := documents.ExtractionPartial
+			if len(content) == 0 {
+				buildExtraction = documents.ExtractionNoContent
+			}
 			p.persistFailedDoc(ctx, ev, docType, fileName, mime, content)
 			return Outcome{
 				DocumentID: ev.DocumentID,
 				Status:     documents.StFailed,
+				Extraction: buildExtraction,
+				Kind:       OutcomeTerminal,
 				Attempts:   attempt,
 				Err:        fmt.Errorf("worker: invalid extracted field: %w", buildErr),
 			}, string(docType)
@@ -258,7 +345,7 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 			MIME:      mime,
 			SHA256:    ev.SHA256,
 			SizeBytes: int64(len(content)),
-			Status:    documents.StExtracted,
+			Status:    documents.StProcessed,
 		}
 		if inserted, err := p.Store.InsertDocument(ctx, doc); err != nil {
 			lastErr = fmt.Errorf("worker: persist document: %w", err)
@@ -340,19 +427,35 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 		for _, ex := range res.Exceptions {
 			codes = append(codes, ex.Code)
 		}
-		// Success with exceptions keeps documents.StExtracted by design
+		// Success with exceptions keeps documents.StProcessed by design
 		// (no document-level EXCEPTION const exists); findings travel in
-		// ExceptionCodes + per-code metrics.
+		// ExceptionCodes + per-code metrics. Lifecycle stays PROCESSED in
+		// all extraction outcomes; quality travels in Extraction.
 		return Outcome{
 			DocumentID:     doc.ID,
-			Status:         documents.StExtracted,
+			Status:         documents.StProcessed,
+			Extraction:     documents.ClassifyExtraction(content, fields),
+			Kind:           OutcomeSuccess,
 			ExceptionCodes: codes,
 			Attempts:       attempt,
 		}, string(docType)
 	}
+	// The retry loop gave up: infrastructure may recover, so this is
+	// TRANSIENT (transport must redeliver). A permanent integrity failure
+	// surfacing as the final error stays TERMINAL via the isPermanent
+	// seam, so poison bytes can never spin on redelivery.
+	kind := OutcomeTransient
+	if isPermanent(lastErr) {
+		kind = OutcomeTerminal
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("worker: pipeline exhausted without error")
+	}
 	return Outcome{
 		DocumentID: ev.DocumentID,
 		Status:     documents.StFailed,
+		Extraction: documents.ExtractionNotAttempted,
+		Kind:       kind,
 		Attempts:   MaxAttempts,
 		Err:        lastErr,
 	}, ""
@@ -391,12 +494,25 @@ func (p *Processor) observe(ctx context.Context, tenant, claimID, docID, docType
 		"document", docID,
 		"type", docType,
 		"status", out.Status,
+		"extraction", string(out.Extraction),
 		"exceptions", out.ExceptionCodes,
 		"attempts", out.Attempts,
 	)
 	metrics.IncDocumentsProcessed()
 	if out.Status == documents.StFailed {
 		metrics.IncDocumentFailure()
+	}
+	if out.Err != nil && errors.Is(out.Err, ErrCorruptedBlob) {
+		// Distinct operator signal for the integrity boundary: alertable
+		// on its own, in addition to the normal document.processed line
+		// above (which still fires with status FAILED). Hashes stay out
+		// of the log; IDs suffice for triage.
+		observability.With(ctx).Warn("document.integrity_failure",
+			"tenant", tenant,
+			"claim", claimID,
+			"document", docID,
+		)
+		metrics.IncBlobIntegrityFailure()
 	}
 	for _, c := range out.ExceptionCodes {
 		metrics.IncClaimException(c)

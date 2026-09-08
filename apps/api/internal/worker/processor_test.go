@@ -147,8 +147,8 @@ func happyFixture() (*fakeFetcher, *fakeStore, *fakeClaimLoader, *fakePolicyChec
 	}
 	store := &fakeStore{
 		seedDocs: []documents.Document{
-			{ID: "doc-dis", Tenant: "t1", ClaimID: "c1", Type: documents.DocDischargeSummary, Status: documents.StExtracted},
-			{ID: "doc-bill", Tenant: "t1", ClaimID: "c1", Type: documents.DocHospitalBill, Status: documents.StExtracted},
+			{ID: "doc-dis", Tenant: "t1", ClaimID: "c1", Type: documents.DocDischargeSummary, Status: documents.StProcessed},
+			{ID: "doc-bill", Tenant: "t1", ClaimID: "c1", Type: documents.DocHospitalBill, Status: documents.StProcessed},
 		},
 	}
 	loader := &fakeClaimLoader{view: ClaimView{
@@ -167,8 +167,11 @@ func TestHandleHappyPath(t *testing.T) {
 	if out.Err != nil {
 		t.Fatalf("happy path err = %v", out.Err)
 	}
-	if out.Status != documents.StExtracted {
-		t.Fatalf("happy path status = %q, want %q", out.Status, documents.StExtracted)
+	if out.Status != documents.StProcessed {
+		t.Fatalf("happy path status = %q, want %q", out.Status, documents.StProcessed)
+	}
+	if out.Extraction != documents.ExtractionPartial {
+		t.Fatalf("happy path extraction = %q, want %q (2 of 7 key rules matched)", out.Extraction, documents.ExtractionPartial)
 	}
 	if len(out.ExceptionCodes) != 0 {
 		t.Fatalf("happy path exceptions = %v, want none", out.ExceptionCodes)
@@ -229,6 +232,9 @@ func TestHandleBadSchemaVersionTerminal(t *testing.T) {
 	if out.Err == nil {
 		t.Fatal("bad schema Err = nil, want terminal error")
 	}
+	if out.Extraction != documents.ExtractionNotAttempted {
+		t.Fatalf("bad schema extraction = %q, want %q", out.Extraction, documents.ExtractionNotAttempted)
+	}
 	if out.Attempts != 0 {
 		t.Fatalf("bad schema Attempts = %d, want 0 (no fetch tried)", out.Attempts)
 	}
@@ -247,8 +253,11 @@ func TestHandleFetchFailsTwiceThenSucceeds(t *testing.T) {
 	if out.Err != nil {
 		t.Fatalf("retry err = %v", out.Err)
 	}
-	if out.Status != documents.StExtracted {
-		t.Fatalf("retry status = %q, want %q", out.Status, documents.StExtracted)
+	if out.Status != documents.StProcessed {
+		t.Fatalf("retry status = %q, want %q", out.Status, documents.StProcessed)
+	}
+	if out.Extraction != documents.ExtractionPartial {
+		t.Fatalf("retry extraction = %q, want %q", out.Extraction, documents.ExtractionPartial)
 	}
 	if out.Attempts != 3 {
 		t.Fatalf("retry Attempts = %d, want 3", out.Attempts)
@@ -268,6 +277,12 @@ func TestHandleFetchAlwaysFails(t *testing.T) {
 	if out.Err == nil {
 		t.Fatal("fetch-dead Err = nil, want terminal error")
 	}
+	if out.Kind != OutcomeTransient {
+		t.Fatalf("fetch-dead kind = %q, want %q", out.Kind, OutcomeTransient)
+	}
+	if out.Extraction != documents.ExtractionNotAttempted {
+		t.Fatalf("fetch-dead extraction = %q, want %q", out.Extraction, documents.ExtractionNotAttempted)
+	}
 	if out.Attempts != MaxAttempts {
 		t.Fatalf("fetch-dead Attempts = %d, want %d", out.Attempts, MaxAttempts)
 	}
@@ -276,13 +291,83 @@ func TestHandleFetchAlwaysFails(t *testing.T) {
 	}
 }
 
+func TestHandleIntegrityFailureTerminal(t *testing.T) {
+	fetch, store, loader, checker := happyFixture()
+	p := NewProcessor(&corruptFetcher{inner: fetch}, store, loader, checker)
+
+	out := p.Handle(context.Background(), goodEvent(t, "doc-corrupt"))
+
+	if out.Status != documents.StFailed {
+		t.Fatalf("corrupt status = %q, want %q", out.Status, documents.StFailed)
+	}
+	if out.Kind != OutcomeTerminal {
+		t.Fatalf("corrupt kind = %q, want %q", out.Kind, OutcomeTerminal)
+	}
+	if out.Extraction != documents.ExtractionNotAttempted {
+		t.Fatalf("corrupt extraction = %q, want %q", out.Extraction, documents.ExtractionNotAttempted)
+	}
+	if out.Attempts != 1 {
+		t.Fatalf("corrupt Attempts = %d, want 1 (no retry on integrity failure)", out.Attempts)
+	}
+	if out.Err == nil {
+		t.Fatal("corrupt Err = nil, want integrity error")
+	}
+}
+
+// corruptFetcher wraps a fetcher and fails every call with ErrCorruptedBlob.
+type corruptFetcher struct {
+	inner *fakeFetcher
+}
+
+func (f *corruptFetcher) Fetch(ctx context.Context, tenant, claimID, docID string) (string, string, string, error) {
+	f.inner.Fetch(ctx, tenant, claimID, docID)
+	return "", "", "", ErrCorruptedBlob
+}
+
+func TestOutcomeKindMatrix(t *testing.T) {
+	fetch, store, loader, checker := happyFixture()
+	p := NewProcessor(fetch, store, loader, checker)
+
+	// malformed JSON → TERMINAL
+	out := p.Handle(context.Background(), []byte("{bad"))
+	if out.Kind != OutcomeTerminal {
+		t.Fatalf("malformed kind = %q, want TERMINAL", out.Kind)
+	}
+	// schema mismatch → TERMINAL
+	out = p.Handle(context.Background(), eventBytes(t, "document-ingested.v9", "t1", "c1", "doc-kind-bad"))
+	if out.Kind != OutcomeTerminal {
+		t.Fatalf("bad-schema kind = %q, want TERMINAL", out.Kind)
+	}
+	// success → SUCCESS
+	out = p.Handle(context.Background(), goodEvent(t, "doc-kind-ok"))
+	if out.Kind != OutcomeSuccess {
+		t.Fatalf("success kind = %q, want SUCCESS", out.Kind)
+	}
+	// redelivery → DUPLICATE
+	dup := p.Handle(context.Background(), goodEvent(t, "doc-kind-ok"))
+	if dup.Kind != OutcomeDuplicate || !dup.Duplicate {
+		t.Fatalf("redelivery kind = %q dup=%v, want DUPLICATE/true", dup.Kind, dup.Duplicate)
+	}
+}
+
+func TestExtractionCompleteAndNoContent(t *testing.T) {
+	full := "claim_number: CLM-1\npolicy_number: POL-1\npatient_name: Alice\nhospital_name: City\nadmission_date: 2024-01-01\ndischarge_date: 2024-01-05\ntotal_bill: 500\n"
+	fields := documents.ExtractFields(documents.DocClaimForm, full)
+	if got := documents.ClassifyExtraction(full, fields); got != documents.ExtractionComplete {
+		t.Fatalf("full extraction = %q, want COMPLETE", got)
+	}
+	if got := documents.ClassifyExtraction("", nil); got != documents.ExtractionNoContent {
+		t.Fatalf("empty extraction = %q, want NO_CONTENT", got)
+	}
+}
+
 func TestCrossRestartSameContentConverges(t *testing.T) {
 	fetch, _, loader, checker := happyFixture()
 	store := &replayConflictStore{
-		canonical: documents.Document{ID: "doc-orig", Tenant: "t1", ClaimID: "c1", Type: documents.DocClaimForm, SHA256: "abc123", Status: documents.StExtracted},
+		canonical: documents.Document{ID: "doc-orig", Tenant: "t1", ClaimID: "c1", Type: documents.DocClaimForm, SHA256: "abc123", Status: documents.StProcessed},
 		extraDocs: []documents.Document{
-			{ID: "doc-dis", Tenant: "t1", ClaimID: "c1", Type: documents.DocDischargeSummary, Status: documents.StExtracted},
-			{ID: "doc-bill", Tenant: "t1", ClaimID: "c1", Type: documents.DocHospitalBill, Status: documents.StExtracted},
+			{ID: "doc-dis", Tenant: "t1", ClaimID: "c1", Type: documents.DocDischargeSummary, Status: documents.StProcessed},
+			{ID: "doc-bill", Tenant: "t1", ClaimID: "c1", Type: documents.DocHospitalBill, Status: documents.StProcessed},
 		},
 	}
 	p := NewProcessor(fetch, store, loader, checker)
@@ -292,8 +377,11 @@ func TestCrossRestartSameContentConverges(t *testing.T) {
 	if out.Err != nil {
 		t.Fatalf("cross-restart err = %v, want nil", out.Err)
 	}
-	if out.Status != documents.StExtracted {
-		t.Fatalf("cross-restart status = %q, want %q", out.Status, documents.StExtracted)
+	if out.Status != documents.StProcessed {
+		t.Fatalf("cross-restart status = %q, want %q", out.Status, documents.StProcessed)
+	}
+	if out.Extraction != documents.ExtractionPartial {
+		t.Fatalf("cross-restart extraction = %q, want %q", out.Extraction, documents.ExtractionPartial)
 	}
 	if out.DocumentID != "doc-orig" {
 		t.Fatalf("cross-restart DocumentID = %q, want canonical %q", out.DocumentID, "doc-orig")
@@ -365,8 +453,11 @@ func TestHandleExceptionPath(t *testing.T) {
 	if out.Err != nil {
 		t.Fatalf("exception path err = %v", out.Err)
 	}
-	if out.Status != documents.StExtracted {
-		t.Fatalf("exception path status = %q, want %q (exceptions are data, not failure)", out.Status, documents.StExtracted)
+	if out.Status != documents.StProcessed {
+		t.Fatalf("exception path status = %q, want %q (exceptions are data, not failure)", out.Status, documents.StProcessed)
+	}
+	if out.Extraction != documents.ExtractionPartial {
+		t.Fatalf("exception path extraction = %q, want %q", out.Extraction, documents.ExtractionPartial)
 	}
 	found := false
 	for _, c := range out.ExceptionCodes {
