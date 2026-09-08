@@ -1,0 +1,24 @@
+# ClaimOps Worker — production image (Cloud Run contract).
+# Serves POST /events/document-ingested for Pub/Sub push delivery.
+# Build from the module root: docker build -f Dockerfile.worker .
+# Alpine-only, squeezed: static binary on minimal Alpine, non-root,
+# ca-certificates for TLS. No shell tools in the final layer.
+FROM golang:1.25-alpine AS build
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker \
+ && ls -la /out/worker
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates \
+ && adduser -D -H -u 10001 apprunner \
+ && rm -rf /var/cache/apk/*
+WORKDIR /app
+COPY --from=build /out/worker /app/worker
+ENV PORT=8080 APP_ENV=prod PUSH_AUTH_MODE=oidc
+EXPOSE 8080
+USER apprunner
+ENTRYPOINT ["/app/worker"]
