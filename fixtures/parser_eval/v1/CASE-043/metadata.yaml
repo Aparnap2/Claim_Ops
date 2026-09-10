@@ -1,0 +1,17 @@
+bundle_id: null
+case_id: CASE-043
+claim_id: null
+difficulty: D7
+document_type: unknown
+expected_fields: []
+expected_provenance: derived:None:synthetic-blank
+expected_tables: false
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: 411525563946d37695c119e26ba5e3f5a61c381edf838f897cbd2fdfe0a2c8da
+source_type: synthetic
+synthetic_seed: 2900043
+tier: C
+transform: synthetic-blank

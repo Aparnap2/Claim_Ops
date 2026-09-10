@@ -1,0 +1,68 @@
+{
+  "admission_date": "2026-06-25",
+  "bundle_id": null,
+  "case_id": "CASE-009",
+  "claim_number": "CLM-2026-01009",
+  "discharge_date": "2026-06-29",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Chennai Marina Health Institute",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 1078500,
+      "description": "Radiology - Ultrasound",
+      "quantity": 3,
+      "rate_paise": 359500
+    },
+    {
+      "amount_paise": 703000,
+      "description": "Pharmacy and Consumables",
+      "quantity": 2,
+      "rate_paise": 351500
+    },
+    {
+      "amount_paise": 462000,
+      "description": "Oxygen and Respiratory Support",
+      "quantity": 2,
+      "rate_paise": 231000
+    },
+    {
+      "amount_paise": 1979200,
+      "description": "Room Rent - Semi-Private",
+      "quantity": 4,
+      "rate_paise": 494800
+    },
+    {
+      "amount_paise": 48100,
+      "description": "Wound Dressing and Care",
+      "quantity": 1,
+      "rate_paise": 48100
+    },
+    {
+      "amount_paise": 2760800,
+      "description": "Anaesthesia Charges",
+      "quantity": 2,
+      "rate_paise": 1380400
+    },
+    {
+      "amount_paise": 1719100,
+      "description": "Operation Theatre Charges",
+      "quantity": 1,
+      "rate_paise": 1719100
+    },
+    {
+      "amount_paise": 4960400,
+      "description": "ICU Charges",
+      "quantity": 4,
+      "rate_paise": 1240100
+    }
+  ],
+  "patient_name": "Rahul Khanna",
+  "policy_number": "POL-IND-585833",
+  "synthetic_seed": 2900009,
+  "total_amount_paise": 13711100,
+  "transform": null
+}

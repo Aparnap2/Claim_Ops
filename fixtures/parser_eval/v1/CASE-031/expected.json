@@ -1,0 +1,69 @@
+{
+  "admission_date": "2026-03-05",
+  "bundle_id": null,
+  "case_id": "CASE-031",
+  "claim_number": "CLM-2026-01031",
+  "discharge_date": "2026-03-13",
+  "document_type": "lab_report",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Hyderabad Deccan Care Hospital",
+  "lab_results": [
+    {
+      "flag": "L",
+      "reference": "4000 - 11000",
+      "test": "Total WBC Count",
+      "unit": "/uL",
+      "value": "1,623"
+    },
+    {
+      "flag": "",
+      "reference": "7 - 56",
+      "test": "SGPT (ALT)",
+      "unit": "U/L",
+      "value": "29.8"
+    },
+    {
+      "flag": "",
+      "reference": "125 - 200",
+      "test": "Total Cholesterol",
+      "unit": "mg/dL",
+      "value": "187.3"
+    },
+    {
+      "flag": "",
+      "reference": "4 - 5.6",
+      "test": "HbA1c",
+      "unit": "%",
+      "value": "5.3"
+    },
+    {
+      "flag": "",
+      "reference": "0 - 20",
+      "test": "ESR",
+      "unit": "mm/hr",
+      "value": "10.2"
+    },
+    {
+      "flag": "",
+      "reference": "136 - 145",
+      "test": "Serum Sodium",
+      "unit": "mmol/L",
+      "value": "138.4"
+    },
+    {
+      "flag": "H",
+      "reference": "13 - 17",
+      "test": "Haemoglobin",
+      "unit": "g/dL",
+      "value": "18.2"
+    }
+  ],
+  "line_items": [],
+  "patient_name": "Aditya Rao",
+  "policy_number": "POL-IND-025526",
+  "synthetic_seed": 2900031,
+  "total_amount_paise": 9108800,
+  "transform": null
+}

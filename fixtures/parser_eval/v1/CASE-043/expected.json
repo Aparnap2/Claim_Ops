@@ -1,0 +1,19 @@
+{
+  "admission_date": null,
+  "bundle_id": null,
+  "case_id": "CASE-043",
+  "claim_number": null,
+  "discharge_date": null,
+  "document_type": "unknown",
+  "expected_conflict": null,
+  "expected_empty": true,
+  "expected_parseable": false,
+  "hospital": null,
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": null,
+  "policy_number": null,
+  "synthetic_seed": 2900043,
+  "total_amount_paise": null,
+  "transform": "synthetic-blank"
+}

@@ -1,0 +1,68 @@
+{
+  "admission_date": "2026-03-21",
+  "bundle_id": null,
+  "case_id": "CASE-001",
+  "claim_number": "CLM-2026-01001",
+  "discharge_date": "2026-03-30",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Pune Riverside Medical Centre",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 59600,
+      "description": "Wound Dressing and Care",
+      "quantity": 1,
+      "rate_paise": 59600
+    },
+    {
+      "amount_paise": 1360300,
+      "description": "Dialysis Session",
+      "quantity": 1,
+      "rate_paise": 1360300
+    },
+    {
+      "amount_paise": 159600,
+      "description": "Medical Records and Documentation",
+      "quantity": 3,
+      "rate_paise": 53200
+    },
+    {
+      "amount_paise": 3920400,
+      "description": "Room Rent - General Ward",
+      "quantity": 9,
+      "rate_paise": 435600
+    },
+    {
+      "amount_paise": 170200,
+      "description": "Registration and Admission Fee",
+      "quantity": 2,
+      "rate_paise": 85100
+    },
+    {
+      "amount_paise": 634500,
+      "description": "Diet Charges",
+      "quantity": 9,
+      "rate_paise": 70500
+    },
+    {
+      "amount_paise": 4884300,
+      "description": "Room Rent - Semi-Private",
+      "quantity": 9,
+      "rate_paise": 542700
+    },
+    {
+      "amount_paise": 3357600,
+      "description": "Anaesthesia Charges",
+      "quantity": 3,
+      "rate_paise": 1119200
+    }
+  ],
+  "patient_name": "Kavya Menon",
+  "policy_number": "POL-IND-180235",
+  "synthetic_seed": 2900001,
+  "total_amount_paise": 14546500,
+  "transform": null
+}

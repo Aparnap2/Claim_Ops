@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-05-13",
+  "bundle_id": null,
+  "case_id": "CASE-027",
+  "claim_number": "CLM-2026-01027",
+  "discharge_date": "2026-05-19",
+  "document_type": "preauth_form",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Delhi Capital Multispeciality Hospital",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Kavya Menon",
+  "policy_number": "POL-IND-582511",
+  "synthetic_seed": 2900027,
+  "total_amount_paise": 16172900,
+  "transform": null
+}

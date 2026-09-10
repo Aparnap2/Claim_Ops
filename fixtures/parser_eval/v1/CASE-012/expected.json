@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-06-11",
+  "bundle_id": null,
+  "case_id": "CASE-012",
+  "claim_number": "CLM-2026-01012",
+  "discharge_date": "2026-06-13",
+  "document_type": "discharge_summary",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Chennai Marina Health Institute",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Rahul Khanna",
+  "policy_number": "POL-IND-289859",
+  "synthetic_seed": 2900012,
+  "total_amount_paise": 3673300,
+  "transform": null
+}

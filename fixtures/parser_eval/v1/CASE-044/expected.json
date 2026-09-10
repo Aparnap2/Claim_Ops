@@ -1,0 +1,80 @@
+{
+  "admission_date": "2026-01-27",
+  "bundle_id": null,
+  "case_id": "CASE-044",
+  "claim_number": "CLM-2026-01044",
+  "discharge_date": "2026-02-04",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Bengaluru Garden City Hospital",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 748800,
+      "description": "Diet Charges",
+      "quantity": 8,
+      "rate_paise": 93600
+    },
+    {
+      "amount_paise": 442000,
+      "description": "Oxygen and Respiratory Support",
+      "quantity": 2,
+      "rate_paise": 221000
+    },
+    {
+      "amount_paise": 1332600,
+      "description": "Dialysis Session",
+      "quantity": 1,
+      "rate_paise": 1332600
+    },
+    {
+      "amount_paise": 457800,
+      "description": "Pharmacy and Consumables",
+      "quantity": 3,
+      "rate_paise": 152600
+    },
+    {
+      "amount_paise": 232200,
+      "description": "Radiology - X-Ray",
+      "quantity": 1,
+      "rate_paise": 232200
+    },
+    {
+      "amount_paise": 11031200,
+      "description": "ICU Charges",
+      "quantity": 8,
+      "rate_paise": 1378900
+    },
+    {
+      "amount_paise": 168300,
+      "description": "ECG - 12 Lead",
+      "quantity": 3,
+      "rate_paise": 56100
+    },
+    {
+      "amount_paise": 72000,
+      "description": "Wound Dressing and Care",
+      "quantity": 1,
+      "rate_paise": 72000
+    },
+    {
+      "amount_paise": 179200,
+      "description": "Registration and Admission Fee",
+      "quantity": 2,
+      "rate_paise": 89600
+    },
+    {
+      "amount_paise": 132400,
+      "description": "Physiotherapy Session",
+      "quantity": 2,
+      "rate_paise": 66200
+    }
+  ],
+  "patient_name": "Vikram Mehta",
+  "policy_number": "POL-IND-433507",
+  "synthetic_seed": 2900044,
+  "total_amount_paise": 14796500,
+  "transform": "rasterize-png-d200"
+}

@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-07-01",
+  "bundle_id": "BUNDLE-01",
+  "case_id": "CASE-013",
+  "claim_number": "CLM-2026-02001",
+  "discharge_date": "2026-07-06",
+  "document_type": "discharge_summary",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Bengaluru Garden City Hospital",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Kabir Singh",
+  "policy_number": "POL-IND-808280",
+  "synthetic_seed": 2900013,
+  "total_amount_paise": 8206400,
+  "transform": null
+}

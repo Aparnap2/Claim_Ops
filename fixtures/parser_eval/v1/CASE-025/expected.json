@@ -1,0 +1,22 @@
+{
+  "admission_date": null,
+  "bundle_id": null,
+  "case_id": "CASE-025",
+  "claim_number": null,
+  "discharge_date": null,
+  "document_type": "policy_schedule",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": null,
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Priya Nair",
+  "policy_number": "POL-IND-546165",
+  "policy_period": "2026-01-01 to 2026-12-31",
+  "premium_paise": 1579894,
+  "sum_insured_paise": 100000000,
+  "synthetic_seed": 2900025,
+  "total_amount_paise": null,
+  "transform": null
+}

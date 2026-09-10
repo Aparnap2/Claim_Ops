@@ -1,0 +1,25 @@
+bundle_id: null
+case_id: CASE-003
+claim_id: CLM-2026-01003
+difficulty: D2
+document_type: hospital_bill
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+- line_items
+expected_provenance: rendered-facts
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 2
+pii_status: synthetic
+sha256: 09860bdbc18f6430c57a6984d883b4d44ab42f954498bba6c08c7f14ad206e29
+source_type: synthetic
+synthetic_seed: 2900003
+tier: A
+transform: null

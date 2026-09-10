@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-06-12",
+  "bundle_id": null,
+  "case_id": "CASE-028",
+  "claim_number": "CLM-2026-01028",
+  "discharge_date": "2026-06-15",
+  "document_type": "preauth_form",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Ahmedabad Sabarmati Hospital",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Varun Joshi",
+  "policy_number": "POL-IND-083807",
+  "synthetic_seed": 2900028,
+  "total_amount_paise": 14515500,
+  "transform": null
+}

@@ -1,0 +1,68 @@
+{
+  "admission_date": "2026-02-14",
+  "bundle_id": null,
+  "case_id": "CASE-010",
+  "claim_number": "CLM-2026-01010",
+  "discharge_date": "2026-02-21",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Bengaluru Garden City Hospital",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 16201200,
+      "description": "Implants and Prosthesis",
+      "quantity": 3,
+      "rate_paise": 5400400
+    },
+    {
+      "amount_paise": 723600,
+      "description": "Radiology - CT Scan",
+      "quantity": 1,
+      "rate_paise": 723600
+    },
+    {
+      "amount_paise": 4516400,
+      "description": "Operation Theatre Charges",
+      "quantity": 2,
+      "rate_paise": 2258200
+    },
+    {
+      "amount_paise": 2622600,
+      "description": "Endoscopy Charges",
+      "quantity": 2,
+      "rate_paise": 1311300
+    },
+    {
+      "amount_paise": 558200,
+      "description": "Oxygen and Respiratory Support",
+      "quantity": 2,
+      "rate_paise": 279100
+    },
+    {
+      "amount_paise": 924000,
+      "description": "Nursing Charges",
+      "quantity": 7,
+      "rate_paise": 132000
+    },
+    {
+      "amount_paise": 16857600,
+      "description": "Surgeon Fee",
+      "quantity": 3,
+      "rate_paise": 5619200
+    },
+    {
+      "amount_paise": 298800,
+      "description": "Radiology - X-Ray",
+      "quantity": 3,
+      "rate_paise": 99600
+    }
+  ],
+  "patient_name": "Aditya Rao",
+  "policy_number": "POL-IND-847753",
+  "synthetic_seed": 2900010,
+  "total_amount_paise": 42702400,
+  "transform": null
+}

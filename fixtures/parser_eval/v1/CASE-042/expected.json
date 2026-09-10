@@ -1,0 +1,68 @@
+{
+  "admission_date": "2026-05-24",
+  "bundle_id": null,
+  "case_id": "CASE-042",
+  "claim_number": "CLM-2026-01002",
+  "discharge_date": "2026-05-31",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Bengaluru Garden City Hospital",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 3629500,
+      "description": "Room Rent - Semi-Private",
+      "quantity": 7,
+      "rate_paise": 518500
+    },
+    {
+      "amount_paise": 605500,
+      "description": "Nursing Charges",
+      "quantity": 7,
+      "rate_paise": 86500
+    },
+    {
+      "amount_paise": 1329500,
+      "description": "Dialysis Session",
+      "quantity": 1,
+      "rate_paise": 1329500
+    },
+    {
+      "amount_paise": 487600,
+      "description": "Pharmacy and Consumables",
+      "quantity": 1,
+      "rate_paise": 487600
+    },
+    {
+      "amount_paise": 76300,
+      "description": "Wound Dressing and Care",
+      "quantity": 1,
+      "rate_paise": 76300
+    },
+    {
+      "amount_paise": 1259000,
+      "description": "Anaesthesia Charges",
+      "quantity": 1,
+      "rate_paise": 1259000
+    },
+    {
+      "amount_paise": 13941000,
+      "description": "Surgeon Fee",
+      "quantity": 3,
+      "rate_paise": 4647000
+    },
+    {
+      "amount_paise": 4973600,
+      "description": "Operation Theatre Charges",
+      "quantity": 2,
+      "rate_paise": 2486800
+    }
+  ],
+  "patient_name": "Ananya Iyer",
+  "policy_number": "POL-IND-066019",
+  "synthetic_seed": 2900042,
+  "total_amount_paise": 26302000,
+  "transform": "rasterize-jpeg-q25-d80"
+}

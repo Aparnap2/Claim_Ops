@@ -1,0 +1,25 @@
+bundle_id: null
+case_id: CASE-044
+claim_id: CLM-2026-01044
+difficulty: D6
+document_type: hospital_bill
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+- line_items
+expected_provenance: derived:None:rasterize-png-d200
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: 0199a1e5432be05fcd56f83f80ba227ba422ac3e9b91ef6aec5f7b287c462d9f
+source_type: synthetic
+synthetic_seed: 2900044
+tier: C
+transform: rasterize-png-d200

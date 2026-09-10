@@ -1,0 +1,25 @@
+bundle_id: null
+case_id: CASE-042
+claim_id: CLM-2026-01002
+difficulty: D5
+document_type: hospital_bill
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+- line_items
+expected_provenance: derived:CASE-002:rasterize-jpeg-q25-d80
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: 652f26a5318491eee6feb300ba684f183480eca5c2636f80138c49f03feb06ba
+source_type: synthetic
+synthetic_seed: 2900042
+tier: C
+transform: rasterize-jpeg-q25-d80

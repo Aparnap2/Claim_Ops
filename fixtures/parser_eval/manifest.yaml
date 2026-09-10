@@ -1,0 +1,500 @@
+case_count: 45
+cases:
+- bundle_id: null
+  case_id: CASE-001
+  difficulty: D1
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 9f7b5a749c6bc3bcfe8591cef85e22c64132185b897e3474e436cc5d69a229ad
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-002
+  difficulty: D1
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 7cb30ce6631c2c141213b2d2a0002a32537f8a711ec80ae50a2e7068b292e942
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-003
+  difficulty: D2
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 09860bdbc18f6430c57a6984d883b4d44ab42f954498bba6c08c7f14ad206e29
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-004
+  difficulty: D2
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: f1f40249a9b4923eaa2c78ce0ccb0140989e388839fbdac0926dd6aae2cc6d39
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-01
+  case_id: CASE-005
+  difficulty: D1
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 9d54bf5687b46d1ec92c287d2aade80350167d08aeb689bdbf21ba433b214bd9
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-02
+  case_id: CASE-006
+  difficulty: D1
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 723831925cc5e453c15bda5065ed785db78e8d2039a999bb54184c7b5b79dca7
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-03
+  case_id: CASE-007
+  difficulty: D1
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 140ff1b46b6b4f9a160539e1a4a861d91e9f1e04c8ea8af46f83d77cae2e385a
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-008
+  difficulty: D1
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 372c628325b46765f4295587fde65ba20343a491f6248a279ade1ee03e7c6946
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-009
+  difficulty: D1
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: dbf81ba29be7bc1be5a4a0c8e6a785c08af367ad5a29a63458354b71942580e0
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-010
+  difficulty: D1
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: aa03df06c76e3b8d1bb347b5279d1a711dbfeea39072b2cde4bc4e9d96c8a43b
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-011
+  difficulty: D1
+  document_type: discharge_summary
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: c0f80abaaf4a03767bbe3a8ddb4a2a55e27fcb0a19db2ec2f187c706d14a2fe7
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-012
+  difficulty: D2
+  document_type: discharge_summary
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 76c18a57f6a18fbb32c421f6f9c6b4a93d7a41891be4f65576acbfc690f158f6
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-01
+  case_id: CASE-013
+  difficulty: D1
+  document_type: discharge_summary
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: efd27b38efb5f7a9c61331f8f5b9d52539203fd25456480914f8a8e820f0d87b
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-02
+  case_id: CASE-014
+  difficulty: D1
+  document_type: discharge_summary
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: c8d68c42d220c15896447813d9e928d125af0cbede0600b6b7da34b0a55d1fc9
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-03
+  case_id: CASE-015
+  difficulty: D1
+  document_type: discharge_summary
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 7cd5b089d51c043d87139cc4ba8f6014e16eb89e7679de92b39c80a166aefd92
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-016
+  difficulty: D0
+  document_type: claim_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: b986fcd97e0d18d0af50b5d65ddb98cc69e057684a1bd77748b5b19c18b3fbdd
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-017
+  difficulty: D0
+  document_type: claim_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 3d48970c83d58e89e1d85affc9edf8b8eae8bbff16299fc7bde61366ae916e48
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-01
+  case_id: CASE-018
+  difficulty: D0
+  document_type: claim_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: ae2bd38659201f14332c682c9f6144b730d2f65e0991f3b77083169b943a15a0
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-02
+  case_id: CASE-019
+  difficulty: D0
+  document_type: claim_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: fd2d7ba85a33276a3d5d1d0b99d92b644ddd1e46d7e436ecd57e6b5ba6886c8b
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-03
+  case_id: CASE-020
+  difficulty: D0
+  document_type: claim_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: b580dc844e29c25310c75b994acdf0f404bba6f4390a92ef2667736a4383af16
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-021
+  difficulty: D0
+  document_type: policy_schedule
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: f1a46111152e6a32663d5ab4b1ae7f19e2fbaa389d40217147eaaec300becd24
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-022
+  difficulty: D0
+  document_type: policy_schedule
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: df8fdb641de45ce37e1bc788d8ada3ad612af07fe8d74eaf7ec944986a445e62
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-023
+  difficulty: D0
+  document_type: policy_schedule
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 4f472fb7e8c2a915e4bef430e41a8e6968d06945bd3e64aa0174912cd42b1fec
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-024
+  difficulty: D1
+  document_type: policy_schedule
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: cd4bd46a5e956b7af956b0af4eee0896484eb612f9d19b53e94b1abe52bd108c
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-025
+  difficulty: D0
+  document_type: policy_schedule
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: b0fa48459aa5b225f2bb9cdc752ca97d99e4ce48d7ffea1615a4766a2bd13913
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-026
+  difficulty: D0
+  document_type: preauth_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: a2fa8d4d0eb2ff1638a3c1f99c67a23bd1fad26132c2e8f7c9204c0daebf5d34
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-027
+  difficulty: D0
+  document_type: preauth_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 8ce0792974301dd85a5d16ed282fcd9562703de1a4b60ea13e0a81c7e24e55e3
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-028
+  difficulty: D0
+  document_type: preauth_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 7d495e8a5150968765e7227115d7ab28b5ffa430865861f9f9d0593b52865c3d
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-029
+  difficulty: D0
+  document_type: preauth_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 78f6574f0eab5f432c89ebd286ee4bdf2253774d7c5420a46078d61dbad4b8e6
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-030
+  difficulty: D1
+  document_type: preauth_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 622ba94a342e60798238fabd45cc2ea264867843881871695052aaa0b817c125
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-031
+  difficulty: D1
+  document_type: lab_report
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 090b79f644696727a9a79fa2e484c778cc1676d86611eab207ee39064cebe9b1
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-032
+  difficulty: D1
+  document_type: lab_report
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: c0c2426083209027a3f19886909e6a1a9702e32221c06ba9146a9312407d432c
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-033
+  difficulty: D1
+  document_type: lab_report
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 7de1b7028bca116144d39f978b8deeba42089c6878c8d830395413bdf695419f
+  tier: A
+  transform: null
+- bundle_id: BUNDLE-02
+  case_id: CASE-034
+  difficulty: D1
+  document_type: lab_report
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 836cecff7eb2ad9382e43680ed950ed7721cd2eb1feb795e3304d5cb906be3f8
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-035
+  difficulty: D1
+  document_type: lab_report
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 9bf6dbe96301c1f033ada0188fc666fed854599dedcffb54d19e45df67d18e08
+  tier: A
+  transform: null
+- bundle_id: null
+  case_id: CASE-036
+  difficulty: D3
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 5b86a4f95ec8cbcf854779bc17ba631508b486cf2bcdadc3bb77e70205a7279e
+  tier: C
+  transform: pdf-rotate-8deg
+- bundle_id: null
+  case_id: CASE-037
+  difficulty: D3
+  document_type: discharge_summary
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: e2f449900dedbc6c398021a93a721dada84bae857f00b2f68e3a6e5469802413
+  tier: C
+  transform: pdf-skew-6deg
+- bundle_id: null
+  case_id: CASE-038
+  difficulty: D3
+  document_type: claim_form
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 1609c52821f53240923d265d1e208d725e7c5890daf4b6d81a5282bbaa2bdf96
+  tier: C
+  transform: rerender-grayscale
+- bundle_id: null
+  case_id: CASE-039
+  difficulty: D4
+  document_type: lab_report
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 3b9d17c80902aaa03e5d0357f8b88baf84be1e43340819f29bcf1149300ce310
+  tier: C
+  transform: rasterize-jpeg-q30-d150
+- bundle_id: null
+  case_id: CASE-040
+  difficulty: D4
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: fde8424af7c598055916cf67dfc73a726d8296b40befa6cd87846d17fcde346e
+  tier: C
+  transform: truncate-first-page-only
+- bundle_id: null
+  case_id: CASE-041
+  difficulty: D5
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 6be3cb2f621263112d2264ae2daa60e447995f5d9d58bedc57bb243de56a2543
+  tier: C
+  transform: rerender-table-split
+- bundle_id: null
+  case_id: CASE-042
+  difficulty: D5
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 652f26a5318491eee6feb300ba684f183480eca5c2636f80138c49f03feb06ba
+  tier: C
+  transform: rasterize-jpeg-q25-d80
+- bundle_id: null
+  case_id: CASE-043
+  difficulty: D7
+  document_type: unknown
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 411525563946d37695c119e26ba5e3f5a61c381edf838f897cbd2fdfe0a2c8da
+  tier: C
+  transform: synthetic-blank
+- bundle_id: null
+  case_id: CASE-044
+  difficulty: D6
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: 0199a1e5432be05fcd56f83f80ba227ba422ac3e9b91ef6aec5f7b287c462d9f
+  tier: C
+  transform: rasterize-png-d200
+- bundle_id: null
+  case_id: CASE-045
+  difficulty: D7
+  document_type: hospital_bill
+  files:
+  - document.pdf
+  - expected.json
+  - metadata.yaml
+  sha256: adb9844a00bb9157a6354b94bcd66fd4718511c10c913b104a1cf5bb1250f89c
+  tier: C
+  transform: bytes-corrupted-24flips
+generator_version: 1.0.0
+layout_version: v1
+master_seed: 29

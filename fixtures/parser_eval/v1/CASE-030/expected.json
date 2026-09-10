@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-02-27",
+  "bundle_id": null,
+  "case_id": "CASE-030",
+  "claim_number": "CLM-2026-01030",
+  "discharge_date": "2026-03-03",
+  "document_type": "preauth_form",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Mumbai Seaside Care Centre",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Aarav Sharma",
+  "policy_number": "POL-IND-213426",
+  "synthetic_seed": 2900030,
+  "total_amount_paise": 8840000,
+  "transform": null
+}
