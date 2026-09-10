@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "ClaimOps AI — governed health-insurance reimbursement intake + exception investigation (deterministic core first, zero LLM in Phase 1)"
 requires-python = ">=3.12"
 dependencies = [
+  "liteparse==2.14.4",
   "pillow>=12.3.0",
   "pydantic>=2.7",
   "pydantic-settings>=2.0",
