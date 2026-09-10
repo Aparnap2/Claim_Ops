@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/pprof"
 
 	"claimops-api/internal/adapters/gcsblob"
 	"claimops-api/internal/app"
@@ -24,6 +25,12 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	// Blank import registers the runtime pprof profiles (including the
+	// Go 1.27 "goroutineleak" profile) for Lookup below. Nothing is
+	// served on net/http: the only exposure is the explicit Fiber route
+	// registered for APP_ENV=local in registerLocalDebug.
+	_ "net/http/pprof"
 )
 
 func main() {
@@ -68,6 +75,7 @@ func main() {
 		c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4")
 		return metrics.WritePrometheus(c.Response().BodyWriter())
 	})
+	registerLocalDebug(fiberApp, cfg.AppEnv)
 	fiberApp.Post("/events/document-ingested", app.DocumentPushHandler(handle, app.OIDCVerifier, auth))
 
 	// Cloud Run contract: PORT wins when set; WORKER_PORT is the local default.
@@ -80,4 +88,33 @@ func main() {
 	if err := fiberApp.Listen(addr); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
+}
+
+// registerLocalDebug exposes the Go 1.27 "goroutineleak" pprof profile at
+// GET /debug/pprof/goroutineleak for worker diagnostics. It is registered
+// ONLY when appEnv is "local" (config default; Dockerfiles force
+// APP_ENV=prod): in any other environment the route does not exist and the
+// endpoint answers 404. No new dependencies; output is the standard
+// text profile (debug=1), queryable with e.g.
+// curl localhost:8081/debug/pprof/goroutineleak.
+func registerLocalDebug(fiberApp *fiber.App, appEnv string) {
+	if appEnv != "local" {
+		return
+	}
+	fiberApp.Get("/debug/pprof/goroutineleak", func(c *fiber.Ctx) error {
+		prof := pprof.Lookup("goroutineleak")
+		if prof == nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"ok": false, "code": "PPROF_UNAVAILABLE", "message": "goroutineleak profile not registered",
+			})
+		}
+		c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
+		if err := prof.WriteTo(c.Response().BodyWriter(), 1); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"ok": false, "code": "PPROF_WRITE", "message": "failed to write profile",
+			})
+		}
+		return nil
+	})
+	log.Print("worker: local debug endpoint enabled at /debug/pprof/goroutineleak (APP_ENV=local only)")
 }
