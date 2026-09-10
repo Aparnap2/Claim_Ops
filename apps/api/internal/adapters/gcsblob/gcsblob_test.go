@@ -37,21 +37,23 @@ func TestDocumentObjectKeyShape(t *testing.T) {
 
 // emulatorClient returns a storage client pointed at the emulator, or
 // skips the test when no emulator is reachable. `go test` passes WITHOUT
-// an emulator via this skip: the probe is STORAGE_EMULATOR_HOST, falling
-// back to a localhost:4443 TCP dial.
+// an emulator via this skip: the endpoint (STORAGE_EMULATOR_HOST or the
+// localhost:4443 fallback) is ALWAYS TCP-probed, because the client
+// library retries bucket operations with backoff and would hang instead
+// of failing fast when the emulator is down.
 func emulatorClient(t *testing.T) *storage.Client {
 	t.Helper()
 	host := os.Getenv("STORAGE_EMULATOR_HOST")
 	if host == "" {
 		host = "localhost:4443"
-		conn, err := net.DialTimeout("tcp", host, 500*time.Millisecond)
-		if err != nil {
-			t.Skipf("storage emulator unreachable at %s: %v", host, err)
-		}
-		conn.Close()
 		os.Setenv("STORAGE_EMULATOR_HOST", host)
 		t.Cleanup(func() { os.Unsetenv("STORAGE_EMULATOR_HOST") })
 	}
+	conn, err := net.DialTimeout("tcp", host, 500*time.Millisecond)
+	if err != nil {
+		t.Skipf("storage emulator unreachable at %s: %v", host, err)
+	}
+	conn.Close()
 	ctx := context.Background()
 	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
 	if err != nil {

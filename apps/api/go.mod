@@ -1,6 +1,6 @@
 module claimops-api
 
-go 1.25.6
+go 1.27
 
 require (
 	cloud.google.com/go/pubsub v1.51.1
