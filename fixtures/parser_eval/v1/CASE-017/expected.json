@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-01-22",
+  "bundle_id": null,
+  "case_id": "CASE-017",
+  "claim_number": "CLM-2026-01017",
+  "discharge_date": "2026-01-28",
+  "document_type": "claim_form",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Hyderabad Deccan Care Hospital",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Tanvi Kulkarni",
+  "policy_number": "POL-IND-205309",
+  "synthetic_seed": 2900017,
+  "total_amount_paise": 5947600,
+  "transform": null
+}

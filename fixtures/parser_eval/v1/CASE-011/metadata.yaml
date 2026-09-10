@@ -1,0 +1,24 @@
+bundle_id: null
+case_id: CASE-011
+claim_id: CLM-2026-01011
+difficulty: D1
+document_type: discharge_summary
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+expected_provenance: rendered-facts
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: c0f80abaaf4a03767bbe3a8ddb4a2a55e27fcb0a19db2ec2f187c706d14a2fe7
+source_type: synthetic
+synthetic_seed: 2900011
+tier: A
+transform: null

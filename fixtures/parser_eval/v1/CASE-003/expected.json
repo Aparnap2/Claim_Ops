@@ -1,0 +1,164 @@
+{
+  "admission_date": "2026-05-07",
+  "bundle_id": null,
+  "case_id": "CASE-003",
+  "claim_number": "CLM-2026-01003",
+  "discharge_date": "2026-05-12",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Chennai Marina Health Institute",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 197800,
+      "description": "Physiotherapy Session",
+      "quantity": 2,
+      "rate_paise": 98900
+    },
+    {
+      "amount_paise": 101900,
+      "description": "ECG - 12 Lead",
+      "quantity": 1,
+      "rate_paise": 101900
+    },
+    {
+      "amount_paise": 5142000,
+      "description": "Implants and Prosthesis",
+      "quantity": 1,
+      "rate_paise": 5142000
+    },
+    {
+      "amount_paise": 746200,
+      "description": "Ambulance Charges",
+      "quantity": 2,
+      "rate_paise": 373100
+    },
+    {
+      "amount_paise": 4553000,
+      "description": "ICU Charges",
+      "quantity": 5,
+      "rate_paise": 910600
+    },
+    {
+      "amount_paise": 2989900,
+      "description": "Operation Theatre Charges",
+      "quantity": 1,
+      "rate_paise": 2989900
+    },
+    {
+      "amount_paise": 2401800,
+      "description": "Endoscopy Charges",
+      "quantity": 2,
+      "rate_paise": 1200900
+    },
+    {
+      "amount_paise": 639600,
+      "description": "Radiology - Ultrasound",
+      "quantity": 2,
+      "rate_paise": 319800
+    },
+    {
+      "amount_paise": 799000,
+      "description": "Nursing Charges",
+      "quantity": 5,
+      "rate_paise": 159800
+    },
+    {
+      "amount_paise": 569400,
+      "description": "Pathology Investigations",
+      "quantity": 1,
+      "rate_paise": 569400
+    },
+    {
+      "amount_paise": 2918000,
+      "description": "Room Rent - Semi-Private",
+      "quantity": 5,
+      "rate_paise": 583600
+    },
+    {
+      "amount_paise": 139600,
+      "description": "Radiology - X-Ray",
+      "quantity": 1,
+      "rate_paise": 139600
+    },
+    {
+      "amount_paise": 256500,
+      "description": "Registration and Admission Fee",
+      "quantity": 3,
+      "rate_paise": 85500
+    },
+    {
+      "amount_paise": 1359200,
+      "description": "Anaesthesia Charges",
+      "quantity": 1,
+      "rate_paise": 1359200
+    },
+    {
+      "amount_paise": 492800,
+      "description": "Oxygen and Respiratory Support",
+      "quantity": 1,
+      "rate_paise": 492800
+    },
+    {
+      "amount_paise": 2425800,
+      "description": "Radiology - CT Scan",
+      "quantity": 3,
+      "rate_paise": 808600
+    },
+    {
+      "amount_paise": 1340900,
+      "description": "Dialysis Session",
+      "quantity": 1,
+      "rate_paise": 1340900
+    },
+    {
+      "amount_paise": 118800,
+      "description": "Wound Dressing and Care",
+      "quantity": 2,
+      "rate_paise": 59400
+    },
+    {
+      "amount_paise": 1680000,
+      "description": "Room Rent - General Ward",
+      "quantity": 5,
+      "rate_paise": 336000
+    },
+    {
+      "amount_paise": 877400,
+      "description": "Pharmacy and Consumables",
+      "quantity": 1,
+      "rate_paise": 877400
+    },
+    {
+      "amount_paise": 377000,
+      "description": "Diet Charges",
+      "quantity": 5,
+      "rate_paise": 75400
+    },
+    {
+      "amount_paise": 137000,
+      "description": "Medical Records and Documentation",
+      "quantity": 2,
+      "rate_paise": 68500
+    },
+    {
+      "amount_paise": 244400,
+      "description": "Blood Tests Panel - CBC",
+      "quantity": 2,
+      "rate_paise": 122200
+    },
+    {
+      "amount_paise": 9828300,
+      "description": "Surgeon Fee",
+      "quantity": 3,
+      "rate_paise": 3276100
+    }
+  ],
+  "patient_name": "Karan Tiwari",
+  "policy_number": "POL-IND-965961",
+  "synthetic_seed": 2900003,
+  "total_amount_paise": 40336300,
+  "transform": null
+}

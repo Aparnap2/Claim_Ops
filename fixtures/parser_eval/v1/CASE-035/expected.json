@@ -1,0 +1,62 @@
+{
+  "admission_date": "2026-05-01",
+  "bundle_id": null,
+  "case_id": "CASE-035",
+  "claim_number": "CLM-2026-01035",
+  "discharge_date": "2026-05-07",
+  "document_type": "lab_report",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Bengaluru Garden City Hospital",
+  "lab_results": [
+    {
+      "flag": "H",
+      "reference": "150000 - 410000",
+      "test": "Platelet Count",
+      "unit": "/uL",
+      "value": "428,939"
+    },
+    {
+      "flag": "",
+      "reference": "136 - 145",
+      "test": "Serum Sodium",
+      "unit": "mmol/L",
+      "value": "143.9"
+    },
+    {
+      "flag": "",
+      "reference": "4 - 5.6",
+      "test": "HbA1c",
+      "unit": "%",
+      "value": "4.6"
+    },
+    {
+      "flag": "H",
+      "reference": "7 - 56",
+      "test": "SGPT (ALT)",
+      "unit": "U/L",
+      "value": "58.8"
+    },
+    {
+      "flag": "",
+      "reference": "0 - 20",
+      "test": "ESR",
+      "unit": "mm/hr",
+      "value": "17.4"
+    },
+    {
+      "flag": "H",
+      "reference": "125 - 200",
+      "test": "Total Cholesterol",
+      "unit": "mg/dL",
+      "value": "221.5"
+    }
+  ],
+  "line_items": [],
+  "patient_name": "Vikram Mehta",
+  "policy_number": "POL-IND-827255",
+  "synthetic_seed": 2900035,
+  "total_amount_paise": 28705200,
+  "transform": null
+}

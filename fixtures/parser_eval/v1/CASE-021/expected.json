@@ -1,0 +1,22 @@
+{
+  "admission_date": null,
+  "bundle_id": null,
+  "case_id": "CASE-021",
+  "claim_number": null,
+  "discharge_date": null,
+  "document_type": "policy_schedule",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": null,
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Rohan Gupta",
+  "policy_number": "POL-IND-829112",
+  "policy_period": "2026-01-01 to 2026-12-31",
+  "premium_paise": 1072274,
+  "sum_insured_paise": 50000000,
+  "synthetic_seed": 2900021,
+  "total_amount_paise": null,
+  "transform": null
+}

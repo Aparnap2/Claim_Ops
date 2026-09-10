@@ -1,0 +1,69 @@
+{
+  "admission_date": "2026-06-15",
+  "bundle_id": null,
+  "case_id": "CASE-032",
+  "claim_number": "CLM-2026-01032",
+  "discharge_date": "2026-06-20",
+  "document_type": "lab_report",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Pune Riverside Medical Centre",
+  "lab_results": [
+    {
+      "flag": "L",
+      "reference": "7 - 56",
+      "test": "SGPT (ALT)",
+      "unit": "U/L",
+      "value": "-6.6"
+    },
+    {
+      "flag": "L",
+      "reference": "4 - 5.6",
+      "test": "HbA1c",
+      "unit": "%",
+      "value": "3.8"
+    },
+    {
+      "flag": "",
+      "reference": "136 - 145",
+      "test": "Serum Sodium",
+      "unit": "mmol/L",
+      "value": "144.8"
+    },
+    {
+      "flag": "",
+      "reference": "70 - 100",
+      "test": "Blood Glucose - Fasting",
+      "unit": "mg/dL",
+      "value": "93.4"
+    },
+    {
+      "flag": "",
+      "reference": "0 - 20",
+      "test": "ESR",
+      "unit": "mm/hr",
+      "value": "14.6"
+    },
+    {
+      "flag": "L",
+      "reference": "125 - 200",
+      "test": "Total Cholesterol",
+      "unit": "mg/dL",
+      "value": "96.8"
+    },
+    {
+      "flag": "",
+      "reference": "150000 - 410000",
+      "test": "Platelet Count",
+      "unit": "/uL",
+      "value": "344,337"
+    }
+  ],
+  "line_items": [],
+  "patient_name": "Aditya Rao",
+  "policy_number": "POL-IND-607223",
+  "synthetic_seed": 2900032,
+  "total_amount_paise": 9505800,
+  "transform": null
+}

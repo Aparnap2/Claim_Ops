@@ -1,0 +1,104 @@
+{
+  "admission_date": "2026-01-06",
+  "bundle_id": null,
+  "case_id": "CASE-004",
+  "claim_number": "CLM-2026-01004",
+  "discharge_date": "2026-01-09",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Ahmedabad Sabarmati Hospital",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 372600,
+      "description": "Ambulance Charges",
+      "quantity": 1,
+      "rate_paise": 372600
+    },
+    {
+      "amount_paise": 1742800,
+      "description": "Operation Theatre Charges",
+      "quantity": 1,
+      "rate_paise": 1742800
+    },
+    {
+      "amount_paise": 2383400,
+      "description": "Dialysis Session",
+      "quantity": 2,
+      "rate_paise": 1191700
+    },
+    {
+      "amount_paise": 107100,
+      "description": "Radiology - X-Ray",
+      "quantity": 1,
+      "rate_paise": 107100
+    },
+    {
+      "amount_paise": 203200,
+      "description": "Wound Dressing and Care",
+      "quantity": 2,
+      "rate_paise": 101600
+    },
+    {
+      "amount_paise": 342000,
+      "description": "Diet Charges",
+      "quantity": 3,
+      "rate_paise": 114000
+    },
+    {
+      "amount_paise": 1490000,
+      "description": "Anaesthesia Charges",
+      "quantity": 1,
+      "rate_paise": 1490000
+    },
+    {
+      "amount_paise": 8727300,
+      "description": "Implants and Prosthesis",
+      "quantity": 3,
+      "rate_paise": 2909100
+    },
+    {
+      "amount_paise": 9100,
+      "description": "Inj. Ceftriaxone 1g (vial)",
+      "quantity": 1,
+      "rate_paise": 9100
+    },
+    {
+      "amount_paise": 23100,
+      "description": "Inj. Ondansetron 2ml (ampoule)",
+      "quantity": 3,
+      "rate_paise": 7700
+    },
+    {
+      "amount_paise": 11700,
+      "description": "IV Fluid - Normal Saline 500ml (bottle)",
+      "quantity": 1,
+      "rate_paise": 11700
+    },
+    {
+      "amount_paise": 2000,
+      "description": "Syringe 5ml with Needle (piece)",
+      "quantity": 1,
+      "rate_paise": 2000
+    },
+    {
+      "amount_paise": 10100,
+      "description": "Cap. Omeprazole 20mg (strip of 15)",
+      "quantity": 1,
+      "rate_paise": 10100
+    },
+    {
+      "amount_paise": 21200,
+      "description": "Tab. Azithromycin 500mg (strip of 5)",
+      "quantity": 1,
+      "rate_paise": 21200
+    }
+  ],
+  "patient_name": "Priya Nair",
+  "policy_number": "POL-IND-418368",
+  "synthetic_seed": 2900004,
+  "total_amount_paise": 15445600,
+  "transform": null
+}

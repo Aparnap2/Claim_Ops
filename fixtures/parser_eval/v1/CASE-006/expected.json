@@ -1,0 +1,68 @@
+{
+  "admission_date": "2026-07-02",
+  "bundle_id": "BUNDLE-02",
+  "case_id": "CASE-006",
+  "claim_number": "CLM-2026-02002",
+  "discharge_date": "2026-07-11",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Mumbai Seaside Care Centre",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 1825600,
+      "description": "Dialysis Session",
+      "quantity": 2,
+      "rate_paise": 912800
+    },
+    {
+      "amount_paise": 1899400,
+      "description": "Radiology - CT Scan",
+      "quantity": 2,
+      "rate_paise": 949700
+    },
+    {
+      "amount_paise": 1439100,
+      "description": "Nursing Charges",
+      "quantity": 9,
+      "rate_paise": 159900
+    },
+    {
+      "amount_paise": 234400,
+      "description": "ECG - 12 Lead",
+      "quantity": 2,
+      "rate_paise": 117200
+    },
+    {
+      "amount_paise": 1431000,
+      "description": "Pathology Investigations",
+      "quantity": 3,
+      "rate_paise": 477000
+    },
+    {
+      "amount_paise": 1433700,
+      "description": "Oxygen and Respiratory Support",
+      "quantity": 3,
+      "rate_paise": 477900
+    },
+    {
+      "amount_paise": 3339000,
+      "description": "Room Rent - General Ward",
+      "quantity": 9,
+      "rate_paise": 371000
+    },
+    {
+      "amount_paise": 92800,
+      "description": "Medical Records and Documentation",
+      "quantity": 2,
+      "rate_paise": 46400
+    }
+  ],
+  "patient_name": "Nikhil Verma",
+  "policy_number": "POL-IND-099302",
+  "synthetic_seed": 2900006,
+  "total_amount_paise": 11695000,
+  "transform": null
+}

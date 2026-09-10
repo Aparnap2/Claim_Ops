@@ -1,0 +1,68 @@
+{
+  "admission_date": "2026-03-22",
+  "bundle_id": null,
+  "case_id": "CASE-045",
+  "claim_number": "CLM-2026-01008",
+  "discharge_date": "2026-03-30",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": false,
+  "hospital": "Ahmedabad Sabarmati Hospital",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 485600,
+      "description": "Diet Charges",
+      "quantity": 8,
+      "rate_paise": 60700
+    },
+    {
+      "amount_paise": 104400,
+      "description": "Medical Records and Documentation",
+      "quantity": 2,
+      "rate_paise": 52200
+    },
+    {
+      "amount_paise": 595000,
+      "description": "Oxygen and Respiratory Support",
+      "quantity": 1,
+      "rate_paise": 595000
+    },
+    {
+      "amount_paise": 269400,
+      "description": "Blood Tests Panel - CBC",
+      "quantity": 2,
+      "rate_paise": 134700
+    },
+    {
+      "amount_paise": 442400,
+      "description": "Pharmacy and Consumables",
+      "quantity": 1,
+      "rate_paise": 442400
+    },
+    {
+      "amount_paise": 3100800,
+      "description": "Anaesthesia Charges",
+      "quantity": 3,
+      "rate_paise": 1033600
+    },
+    {
+      "amount_paise": 332400,
+      "description": "ECG - 12 Lead",
+      "quantity": 3,
+      "rate_paise": 110800
+    },
+    {
+      "amount_paise": 4059300,
+      "description": "Endoscopy Charges",
+      "quantity": 3,
+      "rate_paise": 1353100
+    }
+  ],
+  "patient_name": "Arjun Malhotra",
+  "policy_number": "POL-IND-718017",
+  "synthetic_seed": 2900045,
+  "total_amount_paise": 9389300,
+  "transform": "bytes-corrupted-24flips"
+}

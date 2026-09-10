@@ -1,0 +1,22 @@
+bundle_id: null
+case_id: CASE-025
+claim_id: null
+difficulty: D0
+document_type: policy_schedule
+expected_fields:
+- policy_number
+- patient_name
+- sum_insured_paise
+- premium_paise
+- policy_period
+expected_provenance: rendered-facts
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: b0fa48459aa5b225f2bb9cdc752ca97d99e4ce48d7ffea1615a4766a2bd13913
+source_type: synthetic
+synthetic_seed: 2900025
+tier: A
+transform: null

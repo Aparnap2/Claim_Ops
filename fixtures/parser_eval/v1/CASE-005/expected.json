@@ -1,0 +1,68 @@
+{
+  "admission_date": "2026-07-01",
+  "bundle_id": "BUNDLE-01",
+  "case_id": "CASE-005",
+  "claim_number": "CLM-2026-02001",
+  "discharge_date": "2026-07-06",
+  "document_type": "hospital_bill",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Bengaluru Garden City Hospital",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 91400,
+      "description": "Radiology - X-Ray",
+      "quantity": 1,
+      "rate_paise": 91400
+    },
+    {
+      "amount_paise": 435000,
+      "description": "Diet Charges",
+      "quantity": 5,
+      "rate_paise": 87000
+    },
+    {
+      "amount_paise": 157000,
+      "description": "Registration and Admission Fee",
+      "quantity": 2,
+      "rate_paise": 78500
+    },
+    {
+      "amount_paise": 221400,
+      "description": "Blood Tests Panel - CBC",
+      "quantity": 2,
+      "rate_paise": 110700
+    },
+    {
+      "amount_paise": 211200,
+      "description": "Radiology - Ultrasound",
+      "quantity": 1,
+      "rate_paise": 211200
+    },
+    {
+      "amount_paise": 442400,
+      "description": "Pathology Investigations",
+      "quantity": 1,
+      "rate_paise": 442400
+    },
+    {
+      "amount_paise": 6124000,
+      "description": "ICU Charges",
+      "quantity": 5,
+      "rate_paise": 1224800
+    },
+    {
+      "amount_paise": 524000,
+      "description": "Nursing Charges",
+      "quantity": 5,
+      "rate_paise": 104800
+    }
+  ],
+  "patient_name": "Kabir Singh",
+  "policy_number": "POL-IND-808280",
+  "synthetic_seed": 2900005,
+  "total_amount_paise": 8206400,
+  "transform": null
+}

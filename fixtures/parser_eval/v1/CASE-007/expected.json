@@ -1,0 +1,74 @@
+{
+  "admission_date": "2026-02-10",
+  "bundle_id": "BUNDLE-03",
+  "case_id": "CASE-007",
+  "claim_number": "CLM-2026-02003",
+  "conflicting_fields": {
+    "admission_date": {
+      "discharge_summary": "2026-02-12",
+      "hospital_bill": "2026-02-10"
+    }
+  },
+  "discharge_date": "2026-02-16",
+  "document_type": "hospital_bill",
+  "expected_conflict": "DATE_CONFLICT",
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Ahmedabad Sabarmati Hospital",
+  "lab_results": [],
+  "line_items": [
+    {
+      "amount_paise": 690600,
+      "description": "Diet Charges",
+      "quantity": 6,
+      "rate_paise": 115100
+    },
+    {
+      "amount_paise": 4737600,
+      "description": "Dialysis Session",
+      "quantity": 3,
+      "rate_paise": 1579200
+    },
+    {
+      "amount_paise": 2876600,
+      "description": "Operation Theatre Charges",
+      "quantity": 1,
+      "rate_paise": 2876600
+    },
+    {
+      "amount_paise": 1996500,
+      "description": "Radiology - CT Scan",
+      "quantity": 3,
+      "rate_paise": 665500
+    },
+    {
+      "amount_paise": 580200,
+      "description": "Pharmacy and Consumables",
+      "quantity": 3,
+      "rate_paise": 193400
+    },
+    {
+      "amount_paise": 1230300,
+      "description": "Pathology Investigations",
+      "quantity": 3,
+      "rate_paise": 410100
+    },
+    {
+      "amount_paise": 789200,
+      "description": "Endoscopy Charges",
+      "quantity": 1,
+      "rate_paise": 789200
+    },
+    {
+      "amount_paise": 8757600,
+      "description": "ICU Charges",
+      "quantity": 6,
+      "rate_paise": 1459600
+    }
+  ],
+  "patient_name": "Simran Kaur",
+  "policy_number": "POL-IND-588772",
+  "synthetic_seed": 2900007,
+  "total_amount_paise": 21658600,
+  "transform": null
+}

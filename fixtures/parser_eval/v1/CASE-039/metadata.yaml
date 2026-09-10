@@ -1,0 +1,25 @@
+bundle_id: null
+case_id: CASE-039
+claim_id: CLM-2026-01031
+difficulty: D4
+document_type: lab_report
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+- lab_results
+expected_provenance: derived:CASE-031:rasterize-jpeg-q30-d150
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: 3b9d17c80902aaa03e5d0357f8b88baf84be1e43340819f29bcf1149300ce310
+source_type: synthetic
+synthetic_seed: 2900039
+tier: C
+transform: rasterize-jpeg-q30-d150

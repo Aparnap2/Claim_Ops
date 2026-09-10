@@ -1,0 +1,25 @@
+{
+  "admission_date": "2026-02-10",
+  "bundle_id": "BUNDLE-03",
+  "case_id": "CASE-020",
+  "claim_number": "CLM-2026-02003",
+  "conflicting_fields": {
+    "admission_date": {
+      "discharge_summary": "2026-02-12",
+      "hospital_bill": "2026-02-10"
+    }
+  },
+  "discharge_date": "2026-02-16",
+  "document_type": "claim_form",
+  "expected_conflict": "DATE_CONFLICT",
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Ahmedabad Sabarmati Hospital",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Simran Kaur",
+  "policy_number": "POL-IND-588772",
+  "synthetic_seed": 2900020,
+  "total_amount_paise": 21658600,
+  "transform": null
+}

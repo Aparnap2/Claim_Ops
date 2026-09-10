@@ -1,0 +1,22 @@
+{
+  "admission_date": null,
+  "bundle_id": null,
+  "case_id": "CASE-024",
+  "claim_number": null,
+  "discharge_date": null,
+  "document_type": "policy_schedule",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": null,
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Varun Joshi",
+  "policy_number": "POL-IND-266129",
+  "policy_period": "2026-01-01 to 2026-12-31",
+  "premium_paise": 1666716,
+  "sum_insured_paise": 75000000,
+  "synthetic_seed": 2900024,
+  "total_amount_paise": null,
+  "transform": null
+}

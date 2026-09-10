@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-01-23",
+  "bundle_id": null,
+  "case_id": "CASE-038",
+  "claim_number": "CLM-2026-01016",
+  "discharge_date": "2026-01-26",
+  "document_type": "claim_form",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Bengaluru Garden City Hospital",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Varun Joshi",
+  "policy_number": "POL-IND-086475",
+  "synthetic_seed": 2900038,
+  "total_amount_paise": 17192700,
+  "transform": "rerender-grayscale"
+}

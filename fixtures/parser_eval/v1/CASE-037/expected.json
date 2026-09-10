@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-05-13",
+  "bundle_id": null,
+  "case_id": "CASE-037",
+  "claim_number": "CLM-2026-01011",
+  "discharge_date": "2026-05-17",
+  "document_type": "discharge_summary",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Ahmedabad Sabarmati Hospital",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Ananya Iyer",
+  "policy_number": "POL-IND-815600",
+  "synthetic_seed": 2900037,
+  "total_amount_paise": 18432100,
+  "transform": "pdf-skew-6deg"
+}

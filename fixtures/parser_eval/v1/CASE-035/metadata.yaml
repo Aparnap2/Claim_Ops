@@ -1,0 +1,25 @@
+bundle_id: null
+case_id: CASE-035
+claim_id: CLM-2026-01035
+difficulty: D1
+document_type: lab_report
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+- lab_results
+expected_provenance: rendered-facts
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: 9bf6dbe96301c1f033ada0188fc666fed854599dedcffb54d19e45df67d18e08
+source_type: synthetic
+synthetic_seed: 2900035
+tier: A
+transform: null

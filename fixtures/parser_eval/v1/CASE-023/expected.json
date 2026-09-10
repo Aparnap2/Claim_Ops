@@ -1,0 +1,22 @@
+{
+  "admission_date": null,
+  "bundle_id": null,
+  "case_id": "CASE-023",
+  "claim_number": null,
+  "discharge_date": null,
+  "document_type": "policy_schedule",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": null,
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Vikram Mehta",
+  "policy_number": "POL-IND-369395",
+  "policy_period": "2026-01-01 to 2026-12-31",
+  "premium_paise": 1194622,
+  "sum_insured_paise": 50000000,
+  "synthetic_seed": 2900023,
+  "total_amount_paise": null,
+  "transform": null
+}

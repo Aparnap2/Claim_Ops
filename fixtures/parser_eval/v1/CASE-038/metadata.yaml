@@ -1,0 +1,24 @@
+bundle_id: null
+case_id: CASE-038
+claim_id: CLM-2026-01016
+difficulty: D3
+document_type: claim_form
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+expected_provenance: derived:CASE-016:rerender-grayscale
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: 1609c52821f53240923d265d1e208d725e7c5890daf4b6d81a5282bbaa2bdf96
+source_type: synthetic
+synthetic_seed: 2900038
+tier: C
+transform: rerender-grayscale

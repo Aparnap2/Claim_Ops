@@ -1,0 +1,25 @@
+bundle_id: BUNDLE-02
+case_id: CASE-006
+claim_id: CLM-2026-02002
+difficulty: D1
+document_type: hospital_bill
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+- line_items
+expected_provenance: rendered-facts
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: 723831925cc5e453c15bda5065ed785db78e8d2039a999bb54184c7b5b79dca7
+source_type: synthetic
+synthetic_seed: 2900006
+tier: A
+transform: null

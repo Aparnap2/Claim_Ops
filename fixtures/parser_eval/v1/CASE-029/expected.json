@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-04-08",
+  "bundle_id": null,
+  "case_id": "CASE-029",
+  "claim_number": "CLM-2026-01029",
+  "discharge_date": "2026-04-14",
+  "document_type": "preauth_form",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Chennai Marina Health Institute",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Meera Pillai",
+  "policy_number": "POL-IND-841343",
+  "synthetic_seed": 2900029,
+  "total_amount_paise": 7901100,
+  "transform": null
+}

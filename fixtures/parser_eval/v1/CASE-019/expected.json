@@ -1,0 +1,19 @@
+{
+  "admission_date": "2026-07-02",
+  "bundle_id": "BUNDLE-02",
+  "case_id": "CASE-019",
+  "claim_number": "CLM-2026-02002",
+  "discharge_date": "2026-07-11",
+  "document_type": "claim_form",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Mumbai Seaside Care Centre",
+  "lab_results": [],
+  "line_items": [],
+  "patient_name": "Nikhil Verma",
+  "policy_number": "POL-IND-099302",
+  "synthetic_seed": 2900019,
+  "total_amount_paise": 11695000,
+  "transform": null
+}

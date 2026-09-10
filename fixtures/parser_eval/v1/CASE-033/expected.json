@@ -1,0 +1,62 @@
+{
+  "admission_date": "2026-04-29",
+  "bundle_id": null,
+  "case_id": "CASE-033",
+  "claim_number": "CLM-2026-01033",
+  "discharge_date": "2026-05-04",
+  "document_type": "lab_report",
+  "expected_conflict": null,
+  "expected_empty": false,
+  "expected_parseable": true,
+  "hospital": "Bengaluru Garden City Hospital",
+  "lab_results": [
+    {
+      "flag": "",
+      "reference": "0.7 - 1.3",
+      "test": "Serum Creatinine",
+      "unit": "mg/dL",
+      "value": "1.0"
+    },
+    {
+      "flag": "",
+      "reference": "13 - 17",
+      "test": "Haemoglobin",
+      "unit": "g/dL",
+      "value": "14.9"
+    },
+    {
+      "flag": "",
+      "reference": "4 - 5.6",
+      "test": "HbA1c",
+      "unit": "%",
+      "value": "5.3"
+    },
+    {
+      "flag": "",
+      "reference": "4000 - 11000",
+      "test": "Total WBC Count",
+      "unit": "/uL",
+      "value": "9,401"
+    },
+    {
+      "flag": "L",
+      "reference": "70 - 100",
+      "test": "Blood Glucose - Fasting",
+      "unit": "mg/dL",
+      "value": "64.4"
+    },
+    {
+      "flag": "",
+      "reference": "150000 - 410000",
+      "test": "Platelet Count",
+      "unit": "/uL",
+      "value": "378,408"
+    }
+  ],
+  "line_items": [],
+  "patient_name": "Priya Nair",
+  "policy_number": "POL-IND-820621",
+  "synthetic_seed": 2900033,
+  "total_amount_paise": 11316100,
+  "transform": null
+}

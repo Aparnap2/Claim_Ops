@@ -1,0 +1,24 @@
+bundle_id: null
+case_id: CASE-017
+claim_id: CLM-2026-01017
+difficulty: D0
+document_type: claim_form
+expected_fields:
+- claim_number
+- policy_number
+- patient_name
+- hospital
+- admission_date
+- discharge_date
+- total_amount_paise
+expected_provenance: rendered-facts
+expected_tables: true
+generator_version: 1.0.0
+license: repository-owned
+pages: 1
+pii_status: synthetic
+sha256: 3d48970c83d58e89e1d85affc9edf8b8eae8bbff16299fc7bde61366ae916e48
+source_type: synthetic
+synthetic_seed: 2900017
+tier: A
+transform: null
