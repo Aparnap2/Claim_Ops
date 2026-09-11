@@ -1,0 +1,49 @@
+{
+  "document_id": "doc-bill-1",
+  "pages": [
+    {
+      "number": 1,
+      "blocks": [
+        {"id": "b1", "type": "heading", "text": "Hospital Bill", "evidence": {"document_id": "doc-bill-1", "page": 1, "block_id": "b1"}, "confidence": 0.9},
+        {"id": "b2", "type": "text", "text": "Patient Name: Aarav Sharma", "evidence": {"document_id": "doc-bill-1", "page": 1, "block_id": "b2"}, "confidence": 0.9},
+        {"id": "b3", "type": "text", "text": "Hospital Name: CityCare Hospital", "evidence": {"document_id": "doc-bill-1", "page": 1, "block_id": "b3"}, "confidence": 0.9},
+        {"id": "b4", "type": "text", "text": "Admission Date: 2026-01-05", "evidence": {"document_id": "doc-bill-1", "page": 1, "block_id": "b4"}, "confidence": 0.9},
+        {"id": "b5", "type": "text", "text": "Discharge Date: 2026-01-09", "evidence": {"document_id": "doc-bill-1", "page": 1, "block_id": "b5"}, "confidence": 0.9},
+        {"id": "b6", "type": "text", "text": "Total Amount: Rs. 1,45,465.00", "evidence": {"document_id": "doc-bill-1", "page": 1, "block_id": "b6"}, "confidence": 0.9}
+      ],
+      "tables": [
+        {
+          "id": "t1",
+          "page": 1,
+          "rows": [
+            {"cells": [
+              {"text": "S.No", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "Description", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "Amount (Rs.)", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1}
+            ]},
+            {"cells": [
+              {"text": "1", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "Room rent - 4 days", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "40,000.00", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1}
+            ]},
+            {"cells": [
+              {"text": "2", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "Surgery charges", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "80,000.00", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1}
+            ]},
+            {"cells": [
+              {"text": "3", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "Pharmacy", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "25,465.00", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1}
+            ]},
+            {"cells": [
+              {"text": "Total", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1},
+              {"text": "1,45,465.00", "evidence": {"document_id": "doc-bill-1", "page": 1}, "row_span": 1, "col_span": 1}
+            ]}
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {"parser_name": "liteparse", "parser_version": "2.14.4", "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "source_media": "application/pdf", "page_count": 1}
+}

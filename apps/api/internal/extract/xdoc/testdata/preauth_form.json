@@ -1,0 +1,21 @@
+{
+  "document_id": "doc-preauth-1",
+  "pages": [
+    {
+      "number": 1,
+      "blocks": [
+        {"id": "b1", "type": "heading", "text": "Pre-authorization Request", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b1"}, "confidence": 0.9},
+        {"id": "b2", "type": "text", "text": "Claim Number: CLM-2026-0042", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b2"}, "confidence": 0.9},
+        {"id": "b3", "type": "text", "text": "Policy Number: POL-HS-88123", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b3"}, "confidence": 0.9},
+        {"id": "b4", "type": "text", "text": "Patient Name: Aarav Sharma", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b4"}, "confidence": 0.9},
+        {"id": "b5", "type": "text", "text": "Hospital Name: CityCare Hospital", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b5"}, "confidence": 0.9},
+        {"id": "b6", "type": "text", "text": "Admission Date: 2026-01-05", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b6"}, "confidence": 0.9},
+        {"id": "b7", "type": "text", "text": "Diagnosis: Acute appendicitis", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b7"}, "confidence": 0.9},
+        {"id": "b8", "type": "text", "text": "Procedure: Laparoscopic appendectomy", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b8"}, "confidence": 0.9},
+        {"id": "b9", "type": "text", "text": "Estimated Amount: Rs. 1,50,000.00", "evidence": {"document_id": "doc-preauth-1", "page": 1, "block_id": "b9"}, "confidence": 0.9}
+      ],
+      "tables": []
+    }
+  ],
+  "metadata": {"parser_name": "liteparse", "parser_version": "2.14.4", "source_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "source_media": "application/pdf", "page_count": 1}
+}
