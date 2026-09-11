@@ -1,0 +1,84 @@
+# Static security checks only — no services, no network-dependent scanners.
+#
+# - GitGuardian already runs as a repo check (secret detection on push/PR,
+#   including history). It is NOT duplicated here.
+# - gitleaks is deliberately NOT run here: it needs rules/network setup to be
+#   meaningful offline and would duplicate GitGuardian. GitHub-side
+#   GitGuardian remains the secret-history backstop.
+# - This workflow covers: dependency-integrity audit (go mod verify +
+#   uv pip check) and a repo-tree secret-pattern guard that fails on hits.
+# - No CVE database is consulted here (integrity, not vulnerability
+#   scanning). Tracked follow-up: #39 (govulncheck + pip-audit).
+
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: checkout + cache only.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Matches the `go 1.27` directive in apps/api/go.mod.
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Go module verification
+        working-directory: apps/api
+        # Verifies the module cache against go.sum (tamper/integrity check).
+        # This is an integrity audit, not a CVE scan: no vulnerability
+        # database is consulted (offline by design).
+        run: go mod verify
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the requires-python floor (>=3.12) in pyproject.toml.
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync Python env
+        # `--group dev` mirrors `make setup` (dev group holds the tooling).
+        run: uv sync --group dev
+
+      - name: Python dependency consistency
+        # Fails on version conflicts or broken requirements in the synced env.
+        run: uv pip check
+
+      - name: Secret-pattern guard (fails on hits)
+        # Scans the checked-out tree for common committed-secret shapes.
+        # Excludes .git/ (history is GitGuardian's job) and uv.lock
+        # (dependency hashes only). NOTE on self-match: the patterns below
+        # are regexes with bracket suffixes (e.g. 'AKIA[0-9A-Z]{16}'), so the
+        # literal text in this file does NOT match them.
+        run: |
+          if grep -rEn --exclude-dir=.git --exclude-dir=.venv \
+            --exclude-dir=.mypy_cache --exclude-dir=.pytest_cache --exclude-dir=.ruff_cache \
+            --exclude=uv.lock \
+            -e 'AKIA[0-9A-Z]{16}' \
+            -e 'ghp_[A-Za-z0-9]{36,}' \
+            -e 'gho_[A-Za-z0-9]{36,}' \
+            -e '-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----' \
+            .; then
+            echo "::error::secret-like pattern found — remove before merge (no real secrets or PII/PHI in repo, ever)"
+            exit 1
+          fi
+          echo "secret guard: clean"

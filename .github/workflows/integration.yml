@@ -1,0 +1,140 @@
+# Layer B — services-backed integration. Manual + push-gated: runs on pushes
+# to main and on demand (workflow_dispatch), NOT on pull requests.
+#
+# Provenance of each step (proven vs placeholder vs gap):
+# - PROVEN BY REPO DESIGN: `make integration` exits 0 with services absent —
+#   postgres/mockoon-gated Go tests self-skip and the Makefile probes print
+#   SKIP (see Makefile `integration` target).
+# - ANTI-FAKE-GREEN: the assert-services step below fails the job when zero
+#   postgres-backed tests ran, so a green check always proves the services
+#   layer delivered (a 100%-skipped run = infra failure, not success).
+# - PLACEHOLDER (TODO(ci-hardening)): the `db-bootstrap` and `start-mockoon`
+#   steps below are adapted from repo conventions but have NOT been executed
+#   under GitHub Actions or act in this environment. The first green run must
+#   confirm them; file a CI-hardening follow-up issue for any fix needed.
+# - DOCUMENTED GAP (not faked): localgcp is a host CLI (v0.6.0; Pub/Sub
+#   :8085, Storage :4443; see `make local` and docs/gcp-compat-review.md)
+#   with no pinned container image in repo config, so `make localgcp-test`
+#   stays local-only. There is deliberately NO localgcp step here.
+
+name: integration
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: checkout + cache only.
+permissions:
+  contents: read
+
+jobs:
+  services:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        # Pinned; same image as the local claimops-postgres container.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: claimops_app
+          # Throwaway CI-only password (matches the repo's local DSN
+          # password, never a real secret). Production uses Secret Manager.
+          POSTGRES_PASSWORD: claimops_app
+          POSTGRES_DB: claimops
+        ports:
+          # Keeps the Makefile default DSN (localhost:5433) working unchanged.
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U claimops_app -d claimops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Matches the `go 1.27` directive in apps/api/go.mod.
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Bootstrap DB schema (PLACEHOLDER — verify on first run)
+        # TODO(ci-hardening): confirm on first green run. Known subtlety:
+        # production roles are created by infra/terraform/database.tf
+        # (claimops_app is a least-privilege non-superuser; RLS + privilege
+        # revocation in 002/006 are asserted by postgres_test.go). This step
+        # applies migrations as the service superuser, so RLS/privilege-
+        # denial assertions may behave differently than against the
+        # Terraform-provisioned shape. If they fail, the bootstrap must
+        # create non-superuser roles (CREATE ROLE ... + GRANTs) instead of
+        # running everything as superuser — do NOT weaken the tests.
+        # `--network host` assumes a Linux runner (GitHub ubuntu / act on
+        # Linux); revisit if runners change OS.
+        env:
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+        run: |
+          for f in infra/postgres/migrations/*.sql; do
+            echo "applying $f"
+            docker run --rm --network host \
+              -v "${GITHUB_WORKSPACE}/infra/postgres/migrations:/migrations:ro" \
+              postgres:16-alpine \
+              psql "$TEST_POSTGRES_DSN" -v ON_ERROR_STOP=1 -f "/migrations/$(basename "$f")"
+          done
+
+      - name: Start Mockoon (PLACEHOLDER — verify on first run)
+        # TODO(ci-hardening): confirm image/args on first green run, then pin
+        # mockoon/cli to an immutable digest (the export's recorded port is
+        # 3000 per mocks/mockoon/claims-systems.json; --port overrides it and
+        # host :3001 matches the repo gate MOCKOON_URL=http://localhost:3001).
+        run: |
+          docker run -d --name claimops-mockoon -p 3001:3000 \
+            -v "${GITHUB_WORKSPACE}/mocks/mockoon:/data:ro" \
+            mockoon/cli:latest start --data /data/claims-systems.json --port 3000
+
+      - name: Probe Mockoon gate (informational — never fails)
+        # Reports readiness of the exact URL the Go tests gate on
+        # (Makefile `local` target). A missing Mockoon only causes
+        # mockoon-gated tests to self-skip per repo design; it must not fail
+        # this step, otherwise the step would fake-gate what `make
+        # integration` already handles honestly.
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3001/v1/policies/POL-001 >/dev/null 2>&1; then
+              echo "mockoon: ready"
+              break
+            fi
+            if [ "$i" = 30 ]; then
+              echo "mockoon: NOT ready after 60s — mockoon-gated tests will self-skip (repo design)"
+            fi
+            sleep 2
+          done
+
+      - name: make integration (the gate)
+        env:
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          MOCKOON_URL: http://localhost:3001
+        run: make integration
+
+      - name: Assert services actually ran tests (anti-fake-green)
+        # Layer B's sole purpose is providing services. A 100%-skipped run
+        # means infra failed, not "no services by design" — fail loudly so
+        # a green check always proves PG-backed tests executed. Mockoon has
+        # no equivalent gate (probe above is informational by design).
+        env:
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+        working-directory: apps/api
+        run: |
+          passes="$(go test ./internal/repository/postgres/ -v -count=1 2>&1 | grep -c '^--- PASS' || true)"
+          echo "postgres-backed passing tests: $passes"
+          if [ "$passes" -lt 1 ]; then
+            echo "::error::zero postgres-backed tests ran — services layer failed (not a skip)"
+            exit 1
+          fi
+
+      - name: Teardown Mockoon
+        # Postgres service container is torn down automatically by the runner.
+        if: always()
+        run: docker rm -f claimops-mockoon >/dev/null 2>&1 || true
