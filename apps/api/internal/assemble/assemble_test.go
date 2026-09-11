@@ -107,9 +107,9 @@ func TestMultiDocIdenticalNormalizedAgrees(t *testing.T) {
 	if f.Status != assemble.StatusAgreed {
 		t.Fatalf("status = %q, want AGREED (ID fold: upper(trimmed))", f.Status)
 	}
-	// Stored Agreed keeps the first-source Normalized unchanged.
-	if f.Agreed != "POL-1001" || f.AgreedRaw != "POL-1001" {
-		t.Fatalf("agreed = %q raw = %q, want first-source POL-1001/POL-1001", f.Agreed, f.AgreedRaw)
+	// Stored Agreed keeps the sorted-first source's Normalized unchanged.
+	if f.Agreed != "POL-1001" || f.AgreedRaw != "  POL-1001 " {
+		t.Fatalf("agreed = %q raw = %q, want sorted-first POL-1001/\"  POL-1001 \"", f.Agreed, f.AgreedRaw)
 	}
 	if len(f.Sources) != 3 {
 		t.Fatalf("sources = %d, want 3", len(f.Sources))
@@ -240,9 +240,9 @@ func TestNormalizationEquivalentAgreement(t *testing.T) {
 	if f.Agreed != "aparna pradhan" {
 		t.Fatalf("agreed = %q, want aparna pradhan", f.Agreed)
 	}
-	// AgreedRaw is the first-source raw in document order.
+	// AgreedRaw is the sorted-first source's raw.
 	if f.AgreedRaw != "Aparna Pradhan" {
-		t.Fatalf("raw = %q, want first-source raw Aparna Pradhan", f.AgreedRaw)
+		t.Fatalf("raw = %q, want sorted-first raw Aparna Pradhan", f.AgreedRaw)
 	}
 }
 
@@ -357,6 +357,40 @@ func TestInputOrderReversalDeterministic(t *testing.T) {
 	}
 	if first.Conflicts[0].Key != "claim_number" || first.Conflicts[1].Key != "policy_number" {
 		t.Fatalf("conflicts not sorted by key: %+v", first.Conflicts)
+	}
+}
+
+// Multi-vote AGREED reversal: Agreed/AgreedRaw derive from sorted
+// Sources[0], so forward vs reversed input yields identical output
+// INCLUDING Agreed/AgreedRaw (byte-stability for the
+// UnresolvedException envelope).
+func TestMultiVoteAgreedReversalStable(t *testing.T) {
+	forward := []extract.DocumentFacts{
+		facts("doc-a", "CLAIM_FORM",
+			present("policy_number", "pol-1001", "pol-1001", "stub", ev("doc-a", "b1", 1)),
+			present("patient_name", "aparna  pradhan", "aparna pradhan", "stub", ev("doc-a", "b2", 1))),
+		facts("doc-b", "DISCHARGE_SUMMARY",
+			present("policy_number", "POL-1001", "POL-1001", "stub", ev("doc-b", "b1", 1)),
+			present("patient_name", "Aparna Pradhan", "aparna pradhan", "stub", ev("doc-b", "b2", 1))),
+	}
+	reversed := []extract.DocumentFacts{forward[1], forward[0]}
+
+	fwd := mustAssemble(t, forward)
+	rev := mustAssemble(t, reversed)
+	if !reflect.DeepEqual(fwd, rev) {
+		t.Fatalf("multi-vote AGREED reversal differs:\n%+v\nvs\n%+v", fwd, rev)
+	}
+	// ID key: fold is upper(trimmed); representative is sorted-first, so
+	// "POL-1001" (0x50) sorts before "pol-1001" (0x70).
+	if f := fwd.Fields["policy_number"]; f.Status != assemble.StatusAgreed ||
+		f.Agreed != "POL-1001" || f.AgreedRaw != "POL-1001" {
+		t.Fatalf("policy_number = %+v, want AGREED POL-1001/POL-1001 (sorted-first)", f)
+	}
+	// Non-ID key: Normalized ties, so raw sort decides ("Aparna..." <
+	// "aparna...").
+	if f := fwd.Fields["patient_name"]; f.Status != assemble.StatusAgreed ||
+		f.Agreed != "aparna pradhan" || f.AgreedRaw != "Aparna Pradhan" {
+		t.Fatalf("patient_name = %+v, want AGREED aparna pradhan/Aparna Pradhan (sorted-first)", f)
 	}
 }
 

@@ -49,8 +49,10 @@
 // exactly. Identifier keys (isIDKey: policy_number, claim_number, and any
 // key ending in _number or _id) compare upper(trimmed(Normalized)),
 // mirroring verify's R1 normalizePolicy fold; the stored Agreed keeps the
-// first-source Normalized UNCHANGED (extraction preserves case per
-// extract.NormalizeID, and the fold is a comparison rule, not a rewrite).
+// sorted-first source's Normalized UNCHANGED (extraction preserves case
+// per extract.NormalizeID, and the fold is a comparison rule, not a
+// rewrite). Agreed/AgreedRaw reflect deterministic sort order, not input
+// order.
 //
 // Determinism (binding): keys iterate in sorted order
 // (slices.Sorted(maps.Keys)); Conflicts sorted by Key; Distinct sorted;
@@ -58,10 +60,10 @@
 // NeedsReview sorted by (DocumentID, DocType, Status, Value, Page,
 // BlockID); DocTypes and DocIDs sorted. Intra-document candidate order
 // inside one ReviewItem is preserved verbatim (artifact encounter order,
-// never re-sorted). Agreed/AgreedRaw intentionally reflect input document
-// order (first PRESENT source), so input-order reversal is identical only
-// where no Agreed value is emitted (CONFLICT/MISSING/NEEDS_REVIEW with no
-// votes) — the reversal determinism proof covers multi-conflict input.
+// never re-sorted). Agreed/AgreedRaw derive from sorted Sources[0], so
+// the full claim (including every Agreed value) is identical under
+// input-order reversal — the reversal determinism proof covers
+// multi-conflict AND multi-vote AGREED input.
 package assemble
 
 import (
@@ -130,9 +132,9 @@ type ConflictEntry struct {
 }
 
 // AssembledField is one canonical key's merged state across documents.
-// Agreed is the single distinct normalized value (first-source Normalized
-// unchanged for ID keys); AgreedRaw is the first-source raw Value in
-// input document order. Both stay "" under CONFLICT and under MISSING;
+// Agreed is the single distinct normalized value (sorted-first source's
+// Normalized unchanged for ID keys); AgreedRaw is the sorted-first
+// source's raw Value. Both stay "" under CONFLICT and under MISSING;
 // under NEEDS_REVIEW they are set iff votes exist (shadowed agreement)
 // and empty iff no source voted.
 type AssembledField struct {
@@ -292,14 +294,14 @@ func assembleKey(key string, docs []extract.DocumentFacts) (AssembledField, *Con
 		field.Status = StatusNeedsReview
 	case len(foldSeen) == 1 && len(review) == 0:
 		field.Status = StatusAgreed
-		field.Agreed = votes[0].Normalized
-		field.AgreedRaw = votes[0].Value
+		field.Agreed = field.Sources[0].Normalized
+		field.AgreedRaw = field.Sources[0].Value
 	case len(foldSeen) == 1:
 		// Agreed votes shadowed by review items: agreement stands but
 		// the field must never feed clean typed input (#47 gate).
 		field.Status = StatusNeedsReview
-		field.Agreed = votes[0].Normalized
-		field.AgreedRaw = votes[0].Value
+		field.Agreed = field.Sources[0].Normalized
+		field.AgreedRaw = field.Sources[0].Value
 	default:
 		field.Status = StatusConflict
 		conflict := &ConflictEntry{
