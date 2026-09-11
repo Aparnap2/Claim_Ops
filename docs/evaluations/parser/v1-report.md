@@ -196,5 +196,3 @@ No production routing decision is made here; benchmark evidence only. Routing ca
 ---
 
 report_version: v1 | corpus=1 cases=45 parser=liteparse 2.14.4 adapter=liteparse | deterministic (sorted by case id; no timestamps) | LiteParse-only evidence: no Docling comparison | keys/counts/codes only, no field values.
-
-## Input to #33 (questions, not decisions)
