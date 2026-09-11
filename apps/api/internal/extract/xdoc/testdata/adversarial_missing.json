@@ -1,0 +1,14 @@
+{
+  "document_id": "doc-adv-missing-1",
+  "pages": [
+    {
+      "number": 1,
+      "blocks": [
+        {"id": "b1", "type": "heading", "text": "Claim Form - HealthSecure TPA", "evidence": {"document_id": "doc-adv-missing-1", "page": 1, "block_id": "b1"}, "confidence": 0.9},
+        {"id": "b2", "type": "text", "text": "Please fill all fields in BLOCK letters.", "evidence": {"document_id": "doc-adv-missing-1", "page": 1, "block_id": "b2"}, "confidence": 0.9}
+      ],
+      "tables": []
+    }
+  ],
+  "metadata": {"parser_name": "liteparse", "parser_version": "2.14.4", "source_sha256": "1111111111111111111111111111111111111111111111111111111111111111", "source_media": "application/pdf", "page_count": 1}
+}

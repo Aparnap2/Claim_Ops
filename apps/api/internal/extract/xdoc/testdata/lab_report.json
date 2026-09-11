@@ -1,0 +1,16 @@
+{
+  "document_id": "doc-lab-1",
+  "pages": [
+    {
+      "number": 1,
+      "blocks": [
+        {"id": "b1", "type": "heading", "text": "Laboratory Report", "evidence": {"document_id": "doc-lab-1", "page": 1, "block_id": "b1"}, "confidence": 0.9},
+        {"id": "b2", "type": "text", "text": "Patient Name: Aarav Sharma", "evidence": {"document_id": "doc-lab-1", "page": 1, "block_id": "b2"}, "confidence": 0.9},
+        {"id": "b3", "type": "text", "text": "Hospital Name: CityCare Diagnostics", "evidence": {"document_id": "doc-lab-1", "page": 1, "block_id": "b3"}, "confidence": 0.9},
+        {"id": "b4", "type": "text", "text": "Impression: Findings suggestive of acute appendicitis", "evidence": {"document_id": "doc-lab-1", "page": 1, "block_id": "b4"}, "confidence": 0.9}
+      ],
+      "tables": []
+    }
+  ],
+  "metadata": {"parser_name": "liteparse", "parser_version": "2.14.4", "source_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "source_media": "application/pdf", "page_count": 1}
+}

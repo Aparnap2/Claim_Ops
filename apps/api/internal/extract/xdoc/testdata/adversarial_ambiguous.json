@@ -1,0 +1,15 @@
+{
+  "document_id": "doc-adv-ambig-1",
+  "pages": [
+    {
+      "number": 1,
+      "blocks": [
+        {"id": "b1", "type": "text", "text": "Patient Name: Aarav Sharma", "evidence": {"document_id": "doc-adv-ambig-1", "page": 1, "block_id": "b1"}, "confidence": 0.9},
+        {"id": "b2", "type": "text", "text": "Admission Date: 05/01/2026", "evidence": {"document_id": "doc-adv-ambig-1", "page": 1, "block_id": "b2"}, "confidence": 0.9},
+        {"id": "b3", "type": "text", "text": "Total Amount: not disclosed", "evidence": {"document_id": "doc-adv-ambig-1", "page": 1, "block_id": "b3"}, "confidence": 0.9}
+      ],
+      "tables": []
+    }
+  ],
+  "metadata": {"parser_name": "liteparse", "parser_version": "2.14.4", "source_sha256": "3333333333333333333333333333333333333333333333333333333333333333", "source_media": "application/pdf", "page_count": 1}
+}
