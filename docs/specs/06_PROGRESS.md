@@ -33,12 +33,14 @@ Last updated: 2026-09-11
 - [x] #30 LiteParse-only parser adapter
 - [x] #31 deterministic parser benchmark harness
 - [x] #32 benchmark report generator + LiteParse v1 evidence
+- [x] #33 parser policy ADR-007 (LiteParse default, sufficiency gate, OCR optional)
 - [x] Go 1.27 toolchain migration
 - [x] act-compatible CI (fast/integration/security, Layer A green under act)
 
 ## Current
 
-- [ ] #33 parser/OCR/routing decision ADR
+- [ ] Sufficiency-gate rules per document class (follow-up of ADR-007)
+- [ ] Exception path for insufficient parses in claim workflow
 
 ## Next
 
