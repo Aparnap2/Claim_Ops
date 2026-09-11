@@ -53,9 +53,9 @@ Known local services include Pub/Sub, GCS/storage, Firestore, Cloud Tasks, Loggi
 - Do not fabricate confidence or provenance.
 - Do not add production routing logic inside the adapter.
 
-## Python / ADK
-- Python is the bounded cognitive service, not the system of record.
-- LLMs operate on constrained evidence and tools.
+## Python / ADK (future — no agent implementation exists yet; see ADR-008 draft)
+- Python is reserved as the bounded cognitive service, not the system of record.
+- When built, LLMs operate only on constrained evidence and tools.
 - Never allow an agent to directly approve/deny/pay/change policy/mutate authoritative state.
 - Prefer structured outputs and explicit tool capabilities.
 - Keep deterministic preconditions outside the LLM.

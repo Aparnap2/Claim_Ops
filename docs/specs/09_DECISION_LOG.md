@@ -79,16 +79,19 @@ Go 1.27 was adopted.
 
 This does not prohibit future use in non-byte-sensitive contexts after explicit review.
 
-## Upcoming decision
-#33 will select the parser/OCR/routing policy using measured evidence from #31/#32.
+### Deterministic claim chain #44–#47 (complete)
+Extraction observation (#44/#45, no confidence floats) -> canonical assembly (#46, agreement/ConflictEntry/NeedsReview) -> verification R1–R10 + Unresolved channel via verifywrap (#47). Investigation input (UnresolvedException) is specified only; no agent implementation exists.
 
-Possible outcomes include:
+## Decided: #33 parser/OCR/routing policy (ADR-007, accepted 2026-09-11)
+#33 selected the parser/OCR/routing policy using measured evidence from #31/#32: LiteParse 2.14.4 default (OCR off), deterministic sufficiency gate, managed OCR optional on measured evidence. Detail: docs/adr/007-parser-policy.md. The pre-decision options considered were:
+
+Options considered (historical):
 - LiteParse sufficient as-is
 - LiteParse + managed OCR escalation
 - additional parser/capability required
 - corpus expansion required before production decision
 
-The decision must be evidence-driven.
+The decision was evidence-driven.
 
 ### #32 evidence (LiteParse 2.14.4, 45 cases, deterministic)
 - 45/45 parse_ok. Fields 280 exact / 27 normalized / 150 missing. Tables 27 pass / 13 partial / 3 missed.

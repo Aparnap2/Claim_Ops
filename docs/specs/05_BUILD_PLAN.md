@@ -85,18 +85,21 @@ Status: COMPLETE
 - #28 canonical parser contract — COMPLETE
 - #29 corpus + goldens — COMPLETE
 - #30 LiteParse adapter — COMPLETE
-- #31 deterministic benchmark harness — NEXT
-- #32 benchmark comparison report — PENDING
-- #33 parser/OCR/routing ADR — PENDING
+- #31 deterministic benchmark harness — COMPLETE
+- #32 benchmark comparison report — COMPLETE (docs/evaluations/parser/v1-report.md)
+- #33 parser/OCR/routing ADR — COMPLETE (ADR-007: LiteParse default, sufficiency gate, OCR optional)
+
+Status: COMPLETE
 
 ### Phase 8 — Deterministic claim processing
-After parser decision:
+After parser decision (ADR-007):
 - document classification
-- extraction
+- extraction (#44/#45 — COMPLETE)
 - evidence persistence
-- cross-document consistency
-- deterministic reconciliation
-- exception generation
+- cross-document consistency / canonical assembly (#46 — COMPLETE)
+- deterministic reconciliation / verification R1–R10 + Unresolved channel (#47 — COMPLETE)
+- exception generation (verify exceptions live; insufficient-parse exception path — PENDING)
+- sufficiency-gate rules per document class (ADR-007 follow-up) — PENDING
 
 ### Phase 9 — Cognitive investigation
 Introduce bounded Claim Investigation Agent only after deterministic exception generation is stable.
