@@ -11,3 +11,6 @@ __pycache__/
 dist/
 build/
 **/.terraform/
+# Local agent tooling (third-party skills, not project artifacts).
+.agents/
+skills-lock.json
