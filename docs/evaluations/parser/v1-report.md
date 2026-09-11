@@ -192,15 +192,9 @@ No production routing decision is made here; benchmark evidence only. Routing ca
 - 5 content-absent cases (EMPTY_ARTIFACT/UNSUPPORTED_MEDIA): should #33 route those tiers to managed OCR escalation?
 - PROVENANCE_MISSING triages as contract-design for cells; should #33 require block ids on blocks (adapter-mapping) or accept cell gaps as unavailable-by-design?
 - READING_ORDER_MISMATCH observed under a Y0-monotonicity check only; should #33 invest in true order ground truth before treating order as a routing signal?
-
+- Vendor-silent confidence 1.0 on every block (uncalibrated): is calibration required before any routing use?
 ---
+
 report_version: v1 | corpus=1 cases=45 parser=liteparse 2.14.4 adapter=liteparse | deterministic (sorted by case id; no timestamps) | LiteParse-only evidence: no Docling comparison | keys/counts/codes only, no field values.
 
 ## Input to #33 (questions, not decisions)
-
-- D6/D7 collapse with EMPTY_ARTIFACT: is managed OCR escalation justified for these tiers?
-- TABLE_MISSING on 3 bill cases (flattened to paragraphs): acceptable anywhere, or table-capable route needed?
-- Vendor-silent confidence 1.0 everywhere: calibration required before routing use?
-- FIELD_MISSING on clean D0 cases (026-029): what loses fields where content is present?
-- Cell provenance gaps (contract-design): accept as unavailable-by-design?
-- 7 READING_ORDER_MISMATCH under monotonicity check: invest in true order ground truth before using as signal?
