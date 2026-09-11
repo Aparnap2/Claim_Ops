@@ -1,0 +1,91 @@
+# Layer A — fast deterministic CI. No services by construction: there is no
+# `services:` block and no Postgres / Mockoon / localgcp steps in this file.
+#
+# Service-freedom holds because the suites self-skip by repo design:
+# - Go integration-gated tests t.Skip when TEST_POSTGRES_DSN / Mockoon /
+#   emulators are unreachable (see requirePool in
+#   apps/api/internal/repository/postgres/postgres_test.go and the Makefile
+#   header: "integration-gated tests skip gracefully ... exit 0").
+# - The LiteParse live smoke below skips when the `liteparse` Python package
+#   is absent (see liveShim in
+#   apps/api/internal/parser/liteparse/live_test.go).
+#
+# Full parser benchmark (#31: Python + liteparse + 45 PDFs, ~1-2 min) is
+# intentionally NOT run here. The benchmark-smoke step runs only the gated
+# live smoke; full benchmark runs belong to a future eval workflow
+# (#33 follow-up).
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: checkout + cache only.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Matches the `go 1.27` directive in apps/api/go.mod (host: 1.27.1).
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: gofmt check
+        working-directory: apps/api
+        # Mirrors `make lint`'s gofmt gate (empty output = clean).
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then echo "gofmt: unformatted files:"; echo "$files"; exit 1; fi
+          echo "gofmt: clean"
+
+      - name: go vet
+        working-directory: apps/api
+        run: go vet ./...
+
+      - name: go test (includes internal/parser/... contract tests)
+        working-directory: apps/api
+        # Parser contract tests live under internal/parser/... and run as part
+        # of `go test ./...` — no special step needed, just don't scope the
+        # package list down to something that excludes them.
+        run: go test ./...
+
+      - name: benchmark smoke (live shim only, skips without liteparse)
+        working-directory: apps/api
+        # Gated smoke from #31: real shim + mapping + Validate path against
+        # CASE-001, or a clean SKIP when liteparse is not installed. This is
+        # the smoke gate, not the fidelity benchmark.
+        run: go test ./internal/parser/liteparse/ -run TestLiveShimSmoke -count=1 -v
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the requires-python floor (>=3.12) in pyproject.toml.
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync Python env
+        # `--group dev` mirrors `make setup`: pytest/ruff/mypy live in the
+        # `dev` dependency-group in pyproject.toml.
+        run: uv sync --group dev
+
+      - name: Python unit tests
+        run: uv run pytest tests/unit -q
+
+      - name: Ruff lint
+        run: uv run ruff check .

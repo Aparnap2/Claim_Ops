@@ -1,0 +1,14 @@
+# .actrc — local GitHub Actions runner config for `act`
+# (https://github.com/nektos/act). Checked in so every clone behaves the same.
+#
+# Each flag and why it exists:
+# -P ubuntu-latest=catthehacker/ubuntu:act-latest
+#   Maps the `ubuntu-latest` runner label used by all workflows in
+#   .github/workflows/ to act's full Ubuntu image (git, curl, node, docker
+#   CLI preinstalled). Without this, act falls back to a micro image that
+#   cannot run actions/setup-go / setup-python / setup-uv.
+#
+# NOTE: `--container-architecture linux/amd64` is intentionally NOT set.
+# Add it only if `act` fails on an ARM64 host with an exec-format / image
+# platform error; on linux/amd64 hosts it is unnecessary.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
