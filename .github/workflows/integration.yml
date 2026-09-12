@@ -8,10 +8,11 @@
 # - ANTI-FAKE-GREEN: the assert-services step below fails the job when zero
 #   postgres-backed tests ran, so a green check always proves the services
 #   layer delivered (a 100%-skipped run = infra failure, not success).
-# - PLACEHOLDER (TODO(ci-hardening)): the `db-bootstrap` and `start-mockoon`
-#   steps below are adapted from repo conventions but have NOT been executed
-#   under GitHub Actions or act in this environment. The first green run must
-#   confirm them; file a CI-hardening follow-up issue for any fix needed.
+# - PLACEHOLDER (TODO(ci-hardening)): the role-bootstrap, `db-bootstrap`,
+#   and `start-mockoon` steps below are adapted from repo conventions but have
+#   NOT been executed under GitHub Actions or act in this environment. The
+#   first green run must confirm them; file a CI-hardening follow-up issue
+#   for any fix needed.
 # - DOCUMENTED GAP (not faked): localgcp is a host CLI (v0.6.0; Pub/Sub
 #   :8085, Storage :4443; see `make local` and docs/gcp-compat-review.md)
 #   with no pinned container image in repo config, so `make localgcp-test`
@@ -60,6 +61,55 @@ jobs:
           # Matches the `go 1.27` directive in apps/api/go.mod.
           go-version: '1.27'
           cache-dependency-path: apps/api/go.sum
+
+      - name: Bootstrap service roles (pre-migration — mirrors local claimops-postgres)
+        # Root cause of the 002 failure (`ERROR: role "claimops" does not
+        # exist`, exit 3): 002 ends with `ALTER DEFAULT PRIVILEGES FOR ROLE
+        # claimops ...`, which requires the `claimops` role to exist. Locally
+        # it exists because claimops-postgres is created with
+        # POSTGRES_USER=claimops (superuser/owner; verified via
+        # `docker inspect claimops-postgres`), while claimops_app and
+        # claimops_worker are least-privilege LOGIN roles whose passwords
+        # match the test DSNs. The CI service instead bootstraps
+        # POSTGRES_USER=claimops_app, so `claimops` must be provisioned here
+        # and claimops_worker needs its password set (006 creates the role
+        # but sets no password, so WORKER_DATABASE_URL auth would fail).
+        # Idempotent DO blocks (plain CREATE ROLE has no IF NOT EXISTS);
+        # versioned migrations are never edited for environment shape.
+        # `claimops` is intentionally plain LOGIN (least privilege): it exists
+        # only as 002's FOR ROLE target — CI's superuser is claimops_app —
+        # so it gets no SUPERUSER/CREATEDB even though the local bootstrap
+        # superuser carries them.
+        # Passwords are throwaway CI-only values matching the repo's local
+        # DSNs (same convention as the postgres service above); production
+        # uses Secret Manager / TF_VAR(db_password_*). They travel as env
+        # references expanded by the runner shell (never echoed — logs show
+        # the `$VAR` names only), the same exposure class as the existing
+        # TEST_POSTGRES_DSN usage below. Values must stay single-quote-free.
+        # NOTE: \$\$ is an escaped DO-block delimiter (an unescaped $$ would
+        # expand to the shell PID inside the double-quoted SQL below).
+        # NOTE: passwords are shell-expanded, not psql -v vars — psql
+        # performs no variable substitution inside -c SQL strings.
+        env:
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          CLAIMOPS_PASSWORD: claimops
+          CLAIMOPS_WORKER_PASSWORD: claimops_worker
+        run: |
+          BOOTSTRAP_SQL="DO \$\$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops') THEN
+              CREATE ROLE claimops WITH LOGIN PASSWORD '${CLAIMOPS_PASSWORD}';
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_worker') THEN
+              CREATE ROLE claimops_worker WITH LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';
+            END IF;
+          END
+          \$\$;
+          ALTER ROLE claimops WITH LOGIN PASSWORD '${CLAIMOPS_PASSWORD}';
+          ALTER ROLE claimops_worker WITH LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';"
+          docker run --rm --network host \
+            postgres:16-alpine \
+            psql "$TEST_POSTGRES_DSN" -v ON_ERROR_STOP=1 -c "$BOOTSTRAP_SQL"
 
       - name: Bootstrap DB schema (PLACEHOLDER — verify on first run)
         # TODO(ci-hardening): confirm on first green run. Known subtlety:
