@@ -137,12 +137,19 @@ jobs:
       - name: Start Mockoon (PLACEHOLDER — verify on first run)
         # TODO(ci-hardening): confirm image/args on first green run, then pin
         # mockoon/cli to an immutable digest (the export's recorded port is
-        # 3000 per mocks/mockoon/claims-systems.json; --port overrides it and
+        # 3000 per mocks/mockoon/claims-systems.json; -p overrides it and
         # host :3001 matches the repo gate MOCKOON_URL=http://localhost:3001).
+        # Proven 2026-09-12 against mockoon/cli:latest: the image entrypoint
+        # already includes `start`, so the command is flags-only (`-d/-p`).
+        # Passing `start` fails with "Unexpected argument: start".
+        # Hardening: pre-remove any stale same-named container (local reruns
+        # leave stopped containers holding the name) and run with --rm so a
+        # failed job never leaves the named container behind.
         run: |
-          docker run -d --name claimops-mockoon -p 3001:3000 \
+          docker rm -f claimops-mockoon >/dev/null 2>&1 || true
+          docker run -d --rm --name claimops-mockoon -p 3001:3000 \
             -v "${GITHUB_WORKSPACE}/mocks/mockoon:/data:ro" \
-            mockoon/cli:latest start --data /data/claims-systems.json --port 3000
+            mockoon/cli:latest -d /data/claims-systems.json -p 3000
 
       - name: Probe Mockoon gate (informational — never fails)
         # Reports readiness of the exact URL the Go tests gate on
