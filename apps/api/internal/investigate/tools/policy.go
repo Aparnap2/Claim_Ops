@@ -32,15 +32,14 @@ import (
 
 	"claimops-api/internal/claims"
 	"claimops-api/internal/invest"
+	"claimops-api/internal/investigate"
 	"claimops-api/internal/ports"
 )
 
-// Pinner pins one canonical upstream payload as an evidence row and
-// returns its stable row ID. The pg implementation lands later; tools
-// only depend on this seam.
-type Pinner interface {
-	Pin(ctx context.Context, tenant, claim, sourceType, sourceID string, canonicalBytes []byte) (evidenceID string, err error)
-}
+// Pinner is the evidence-pinner seam (canonical type lives in
+// investigate; this alias keeps tools compilable without a second
+// definition).
+type Pinner = investigate.Pinner
 
 // ---------------------------------------------------------------------------
 // T2: get_policy_context
