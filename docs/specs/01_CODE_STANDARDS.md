@@ -8,7 +8,7 @@ Deterministic systems own truth, state, authorization, validation, retries, pers
 
 ## Architecture
 - Go/Fiber is the authoritative backend and system-of-record boundary.
-- Python/ADK is a bounded cognitive service, not the system of record.
+- Go application-owned cognitive orchestration (`internal/investigate` + provider-neutral ModelClient) is the bounded cognitive seam; Python is spec artifacts + bounded future service per ADR-001.
 - PostgreSQL is authoritative for transactional state.
 - GCS stores document blobs; PostgreSQL stores document metadata/evidence.
 - Pub/Sub is asynchronous transport.

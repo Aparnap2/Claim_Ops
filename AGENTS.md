@@ -19,7 +19,7 @@ Hierarchy on conflict: GitHub issue → ADRs/contracts → docs/specs → tests/
 If sources conflict, STOP and report. Never silently choose.
 
 ## Architecture (do not drift)
-- Go/Fiber authoritative backend (`apps/api`), Python bounded cognitive service
+- Go/Fiber authoritative backend (`apps/api`); Go application-owned cognitive orchestration (`internal/investigate` + provider-neutral ModelClient); Python is spec artifacts + bounded future service per ADR-001
 - Postgres authoritative; GCS blobs; Pub/Sub transport; Mockoon externals; localgcp local parity
 - Deterministic where truth is knowable; cognitive where interpretation is necessary; human authority where consequences require judgment
 - Parser vendor types never cross `internal/parser`. Corpus changes require requalification.
@@ -29,5 +29,5 @@ If sources conflict, STOP and report. Never silently choose.
 `gofmt` clean · `go vet` clean · `go test ./...` green (live infra: PG :5433, localgcp :8085/:4443, Mockoon :3001) · `uv run pytest tests/unit` green · `ruff` clean on touched Python.
 
 ## Current chain
-#28 contract ✓ → #29 corpus ✓ → #30 LiteParse adapter ✓ → #31 benchmark ✓ → #32 report → #33 ADR.
+#28 contract ✓ → #29 corpus ✓ → #30 LiteParse adapter ✓ → #31 benchmark ✓ → #32 report ✓ → #33 ADR ✓ → #44-#47 deterministic chain ✓ → #50 ordering ✓ → #53 contracts ✓ → #54 tools ✓ → #66 orchestration ✓ → eval v1 ✓.
 Go 1.27 pinned. `encoding/json/v2` rejected for byte-sensitive paths (see 09_DECISION_LOG.md).
