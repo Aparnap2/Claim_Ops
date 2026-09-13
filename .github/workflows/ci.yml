@@ -89,3 +89,19 @@ jobs:
 
       - name: Ruff lint
         run: uv run ruff check .
+
+  terraform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: terraform fmt -check
+        working-directory: infra/terraform
+        run: terraform fmt -check -recursive
+
+      - name: terraform validate
+        working-directory: infra/terraform
+        run: terraform init -backend=false && terraform validate

@@ -3,7 +3,7 @@
 # ca-certificates for TLS (GCS/Pub/Sub/Cloud SQL). Static binary, no shell
 # tools in the final layer.
 # Cloud Run sets PORT; the binary listens on :$PORT.
-FROM golang:1.25-alpine AS build
+FROM golang:1.27-alpine AS build
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
