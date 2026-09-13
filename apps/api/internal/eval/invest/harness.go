@@ -209,6 +209,7 @@ type EvalResult struct {
 	KnownUniverse       []string
 	DeclaredTools       []invest.ToolName
 	Report              *ReportObs
+	ReportRaw           *orchestrate.Report
 	Attempts            []string
 	RepeatObserved      bool
 	CrossTenantExecuted bool
@@ -389,6 +390,8 @@ func (Harness) Run(ctx context.Context, c EvalCase) (EvalResult, error) {
 	}
 	if out.Report != nil {
 		res.Report = observeReport(c, *out.Report)
+		raw := *out.Report
+		res.ReportRaw = &raw
 	}
 	return res, nil
 }
