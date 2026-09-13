@@ -6,14 +6,16 @@ Deterministic systems first; LLM only where semantic reasoning is required.
 ## Scope lock
 - Product: ClaimOps AI (not ClaimLens, not OpsCore, no rename churn)
 - Workflow: reimbursement intake → deterministic verification → AI investigation → HITL → governed action → audit
-- **Go is the authoritative backend** (edge, lifecycle, validation, tenancy, audit).
-  Python is the bounded cognitive service + specification artifacts (ADR-001).
-- Agent count: 1 Investigation Agent (Phase 6). No APPROVE/DENY/PAY by AI, ever.
-- LLM provider: Groq (`openai/gpt-oss-20b`, Qwen for specialist calls), key via
-  environment only, stub-until-key discipline (ADR-002).
+ - **Go is the authoritative backend** (edge, lifecycle, validation, tenancy, audit);
+   Go application-owned cognitive orchestration (`internal/investigate` +
+   provider-neutral ModelClient). Python is spec artifacts + bounded future
+   service per ADR-001.
+ - Agent count: 1 Investigation Agent (bounded, provider-neutral). No APPROVE/DENY/PAY by AI, ever.
+ - LLM provider: Groq (`openai/gpt-oss-20b`) contracted per ADR-002, wiring
+   deferred behind ModelClient (stub/FakeModelClient until key); no Ollama.
 
 ## Prerequisites
-- Go 1.25+, Python 3.12 + `uv`, Docker (Postgres, Mockoon)
+- Go 1.27+, Python 3.12 + `uv`, Docker (Postgres, Mockoon)
 
 ## Setup
 ```bash
@@ -37,7 +39,7 @@ go test ./internal/adapters/http/ -count=1
 
 ## Layout
 ```text
-apps/api/               Go Fiber edge + deterministic core (authoritative)
+apps/api/               Go Fiber edge + deterministic core + investigate (authoritative)
   cmd/api/              main (wiring lives in internal/app for testability)
   internal/
     claims/             Claim aggregate + state machine (stdlib-only)
@@ -57,13 +59,11 @@ tests/unit/             Python golden suite (no network, untouched by Go work)
 docs/adr/               001 go-first, 002 groq provider, 004 external boundary
 ```
 
-## Phase progression (one reviewable PR each)
-- ✅ PR #1 — repo foundation · ✅ PR #2 — Go system edge
-- ✅ PR #3 — deterministic domain core · ✅ PR #4 — LLM provider decision
-- ✅ PR #6 — Postgres + RLS tenant isolation
-- ⏳ PR #7 — external contracts + Mockoon (this branch)
-- Next: document ingestion → deterministic extraction → exception corpus →
-  cognitive investigation agent → HITL → evals
+## Phase progression
+- ✅ Deterministic domain + Postgres RLS + external contracts/Mockoon
+- ✅ Parser contract → corpus → LiteParse → benchmark → report → ADR
+- ✅ Deterministic chain #44-#47 + ordering #50 + contracts #53 + tools #54 + orchestration #66 → eval v1 ✓
+- Next: real-model evaluation → infrastructure hardening
 
 ## Standing rules
 - Deterministic > structured > rules > retrieval > LLM. No LLM for
