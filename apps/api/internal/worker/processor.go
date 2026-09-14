@@ -30,6 +30,8 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,13 +39,20 @@ import (
 	"sync"
 	"time"
 
+	"claimops-api/internal/assemble"
 	"claimops-api/internal/claims"
 	"claimops-api/internal/documents"
 	"claimops-api/internal/evidence"
+	"claimops-api/internal/extract"
+	"claimops-api/internal/extract/xdoc"
+	"claimops-api/internal/invest"
+	"claimops-api/internal/investigate"
 	"claimops-api/internal/metrics"
 	"claimops-api/internal/observability"
+	"claimops-api/internal/parser"
 	"claimops-api/internal/ports"
 	"claimops-api/internal/verify"
+	"claimops-api/internal/verifywrap"
 )
 
 // MaxAttempts bounds transient retries (fetch, persist, and read-model
@@ -126,11 +135,35 @@ type PolicyChecker interface {
 // Processor runs the document pipeline. The zero value is not usable;
 // build via NewProcessor. The processed-set (done) is mutex-guarded and
 // keyed by document ID.
+//
+// Parser is optional: nil selects the Tier-1 regex path (default,
+// byte-identical behavior). A non-nil Parser routes process() through
+// runNewPipeline (Issue #78 wiring only).
+//
+// Extractors, ScopeAllowTools, ScopeMaxCalls, and ScopeDeadlineMs are the
+// #78 full-chain seams consumed ONLY by runNewPipeline: the extractor
+// registry (validated at construction by the app layer) and the resolved
+// investigation scope budgets. Nil/zero selects the wiring-stage
+// defaults (six-extractor xdoc registry; 5-call / 60s / 5-tool read-only
+// scope). Tier-1 never reads them.
 type Processor struct {
 	Fetcher ContentFetcher
 	Store   DocumentStore
 	Claims  ClaimLoader
 	Policy  PolicyChecker
+	Parser  parser.Parser
+	// Extractors maps normalized document-type string to its
+	// deterministic extractor. Nil selects the default xdoc registry.
+	Extractors map[string]extract.Extractor
+	// ScopeAllowTools is the resolved least-privilege tool subset for
+	// the invest envelope scope. Nil selects the read-only default.
+	ScopeAllowTools []invest.ToolName
+	// ScopeMaxCalls bounds one investigation's logical tool calls.
+	// <= 0 selects the default budget.
+	ScopeMaxCalls int
+	// ScopeDeadlineMs bounds one investigation's wall clock. <= 0
+	// selects the default deadline.
+	ScopeDeadlineMs int64
 
 	mu   sync.Mutex
 	done map[string]Outcome
@@ -168,14 +201,15 @@ const (
 // on every construction site (see the Kind assignment table in Handle
 // and process).
 type Outcome struct {
-	DocumentID     string
-	Status         string
-	Extraction     documents.ExtractionOutcome
-	ExceptionCodes []string
-	Attempts       int
-	Duplicate      bool
-	Kind           OutcomeKind
-	Err            error
+	DocumentID        string
+	Status            string
+	Extraction        documents.ExtractionOutcome
+	ExceptionCodes    []string
+	Attempts          int
+	Duplicate         bool
+	Kind              OutcomeKind
+	Err               error
+	ExceptionEnvelope []byte
 }
 
 // documentIngestedEvent mirrors ingest.BuildUploadPayload, the JSON
@@ -276,6 +310,9 @@ func (p *Processor) remember(docID string, out Outcome) {
 // process runs the retry loop. It returns the terminal Outcome and the
 // classified doc-type string ("" when fetch never succeeded, for logging).
 func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outcome, string) {
+	if p.Parser != nil {
+		return p.runNewPipeline(ctx, ev.Tenant, ev.Claim, ev.SHA256, ev.DocumentID, "")
+	}
 	var lastErr error
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		fileName, mime, content, err := p.Fetcher.Fetch(ctx, ev.Tenant, ev.Claim, ev.DocumentID)
@@ -459,6 +496,356 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 		Attempts:   MaxAttempts,
 		Err:        lastErr,
 	}, ""
+}
+
+// runNewPipeline runs the deterministic successor pipeline (Issue #78
+// wiring only): fetch via Fetcher -> construct TrustedDocument ->
+// Parser.Parse -> extract by doc type via the xdoc extractors ->
+// assemble.Assemble -> verifywrap.Map -> verify.Verify -> best-effort
+// invest.Build + Marshal when exceptions or unresolved fields exist.
+//
+// Wiring notes (no contract edits):
+//   - Single attempt (Attempts 1); no Store document/evidence writes on
+//     success. Evidence persistence lands with the Phase 8 remainder.
+//     Terminal deterministic failures best-effort a FAILED doc row for
+//     audit parity via persistFailedDoc.
+//   - blobKey carries the ingestion-recorded SHA256 (ev.SHA256) for the
+//     TrustedDocument constructor. Empty content/SHA fails closed.
+//   - docType is a hint; when blank the Tier-1 filename classifier
+//     supplies it. extractorForDocType routes the trimmed upper-cased
+//     doc type through p.Extractors with defaultExtractorRegistry
+//     fallback (six-extractor xdoc registry); unknown, blank, and
+//     unregistered types fail closed as terminal — aliases are never
+//     invented here.
+//   - verifywrap externals come from the ClaimLoader/PolicyChecker read
+//     models with ExternalPolicyOK=true on a successful check, mirroring
+//     the Tier-1 buildVerifyInput semantics. Load/check failures are
+//     transient (Attempts 1).
+//   - Success reports documents.StProcessed with Kind SUCCESS and
+//     exceptions as data (ExceptionCodes plus best-effort
+//     ExceptionEnvelope), matching the Tier-1 no-document-EXCEPTION
+//     rule; no new OutcomeKind. Extraction reports PARTIAL as a wiring
+//     placeholder; extraction quality classification stays Tier-1 until
+//     the sufficiency gate.
+//   - The invest envelope is best-effort via buildExceptionEnvelope over
+//     the resolved scope (ScopeAllowTools/ScopeMaxCalls/ScopeDeadlineMs
+//     with read-only 5-tool / 5-call / 60s defaults): scopeForInvestigation
+//     maps the scope explicitly then Validate, and any scope/Build/Marshal
+//     failure returns the verify outcome without an envelope. Build
+//     resolves provenance against the passed evidence set, which is empty
+//     in this wiring stage (no evidence-row plumbing yet), so envelopes
+//     requiring provenance resolution fail closed inside Build. Envelope
+//     bytes never flow to logs.
+func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey, docID, docType string) (Outcome, string) {
+	ev := documentIngestedEvent{Tenant: tenant, Claim: claimID, DocumentID: docID, SHA256: blobKey}
+
+	fileName, mime, content, err := p.Fetcher.Fetch(ctx, tenant, claimID, docID)
+	if err != nil {
+		fetchErr := fmt.Errorf("worker: fetch document: %w", err)
+		if isPermanent(err) {
+			p.persistFailedDoc(ctx, ev, "", "", "", "")
+			return Outcome{
+				DocumentID: docID,
+				Status:     documents.StFailed,
+				Kind:       OutcomeTerminal,
+				Extraction: documents.ExtractionNotAttempted,
+				Attempts:   1,
+				Err:        fetchErr,
+			}, ""
+		}
+		return Outcome{
+			DocumentID: docID,
+			Status:     documents.StFailed,
+			Kind:       OutcomeTransient,
+			Extraction: documents.ExtractionNotAttempted,
+			Attempts:   1,
+			Err:        fetchErr,
+		}, ""
+	}
+
+	classified, _ := documents.Classify(fileName, mime)
+	effective := strings.TrimSpace(docType)
+	if effective == "" {
+		effective = string(classified)
+	}
+	failTerminal := func(docT documents.DocType, wrapErr error) (Outcome, string) {
+		p.persistFailedDoc(ctx, ev, docT, fileName, mime, content)
+		return Outcome{
+			DocumentID: docID,
+			Status:     documents.StFailed,
+			Extraction: documents.ExtractionNotAttempted,
+			Kind:       OutcomeTerminal,
+			Attempts:   1,
+			Err:        wrapErr,
+		}, effective
+	}
+
+	trusted, err := parser.NewTrustedDocument(
+		docID,
+		claims.TenantID(tenant),
+		claims.ClaimID(claimID),
+		fileName,
+		mime,
+		blobKey,
+		int64(len(content)),
+		[]byte(content),
+	)
+	if err != nil {
+		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: trusted document: %w", err))
+	}
+
+	parsed, err := p.Parser.Parse(ctx, trusted)
+	if err != nil {
+		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: parse document: %w", err))
+	}
+	if err := parsed.Validate(); err != nil {
+		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: parse artifact invalid: %w", err))
+	}
+
+	ext, err := p.extractorForDocType(effective)
+	if err != nil {
+		return failTerminal(documents.DocType(effective), err)
+	}
+	facts, err := ext.Extract(ctx, parsed)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Outcome{
+				DocumentID: docID,
+				Status:     documents.StFailed,
+				Extraction: documents.ExtractionNotAttempted,
+				Kind:       OutcomeTransient,
+				Attempts:   1,
+				Err:        fmt.Errorf("worker: extract document: %w", err),
+			}, effective
+		}
+		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: extract document: %w", err))
+	}
+
+	claim, err := assemble.Assemble([]extract.DocumentFacts{facts})
+	if err != nil {
+		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: assemble claim: %w", err))
+	}
+
+	view, err := p.Claims.LoadClaim(ctx, tenant, claimID)
+	if err != nil {
+		return Outcome{
+			DocumentID: docID,
+			Status:     documents.StFailed,
+			Extraction: documents.ExtractionNotAttempted,
+			Kind:       OutcomeTransient,
+			Attempts:   1,
+			Err:        fmt.Errorf("worker: load claim: %w", err),
+		}, effective
+	}
+	policy, err := p.Policy.CheckPolicy(ctx, tenant, view.PolicyNumber)
+	if err != nil {
+		return Outcome{
+			DocumentID: docID,
+			Status:     documents.StFailed,
+			Extraction: documents.ExtractionNotAttempted,
+			Kind:       OutcomeTransient,
+			Attempts:   1,
+			Err:        fmt.Errorf("worker: check policy: %w", err),
+		}, effective
+	}
+
+	in, unresolved, err := verifywrap.Map(claim, verifywrap.Externals{
+		PolicyNumber:     policy.Number,
+		PolicyPatient:    policy.Patient,
+		PolicyActive:     policy.Active,
+		ExternalPolicyOK: true,
+	})
+	if err != nil {
+		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: map verify input: %w", err))
+	}
+	res := verify.Verify(in)
+	codes := make([]string, 0, len(res.Exceptions))
+	for _, ex := range res.Exceptions {
+		codes = append(codes, ex.Code)
+	}
+
+	var envelope []byte
+	if len(res.Exceptions) > 0 || len(unresolved) > 0 {
+		if env, ok := p.buildExceptionEnvelope(ctx, tenant, claimID, claim, unresolved, res); ok {
+			envelope = env
+		}
+	}
+
+	return Outcome{
+		DocumentID:        docID,
+		Status:            documents.StProcessed,
+		Extraction:        documents.ExtractionPartial,
+		Kind:              OutcomeSuccess,
+		ExceptionCodes:    codes,
+		Attempts:          1,
+		ExceptionEnvelope: envelope,
+	}, effective
+}
+
+// defaultScopeMaxCalls bounds one investigation's logical tool calls.
+// It mirrors the evaluated baselines (eval harness + corpus envelope
+// default) so wiring and eval cannot silently fork.
+const defaultScopeMaxCalls = 5
+
+// defaultScopeDeadlineMs bounds one investigation's wall clock (60s).
+const defaultScopeDeadlineMs = int64(60000)
+
+// defaultScopeTools is the least-privilege read-only tool subset: the
+// writer (create_investigation_report) is deliberately excluded because
+// the orchestrate loop never calls it. It mirrors
+// workeradapter.DefaultScopeTools so direct Processor construction (no
+// app-layer injection) resolves identically.
+func defaultScopeTools() []invest.ToolName {
+	return []invest.ToolName{
+		invest.ToolGetClaim,
+		invest.ToolGetDocuments,
+		invest.ToolGetEvidence,
+		invest.ToolGetPolicyContext,
+		invest.ToolGetVerificationFindings,
+	}
+}
+
+// defaultExtractorRegistry maps every xdoc document type to its
+// deterministic extractor. Keys are the extractor-emitted DocType
+// strings (xdoc.Doc*). It mirrors
+// workeradapter.DefaultExtractorRegistry so direct Processor
+// construction resolves identically; app wiring injects the validated
+// registry instead.
+func defaultExtractorRegistry() map[string]extract.Extractor {
+	return map[string]extract.Extractor{
+		xdoc.DocClaimForm:        xdoc.ClaimForm{},
+		xdoc.DocDischargeSummary: xdoc.DischargeSummary{},
+		xdoc.DocHospitalBill:     xdoc.HospitalBill{},
+		xdoc.DocPolicySchedule:   xdoc.PolicySchedule{},
+		xdoc.DocPreauthForm:      xdoc.PreauthForm{},
+		xdoc.DocLabReport:        xdoc.LabReport{},
+	}
+}
+
+// extractorForDocType routes a doc-type string through the single
+// authoritative extractor registry (injected Extractors, else the
+// default xdoc registry). Lookup is case-insensitive on the trimmed
+// input; unknown, blank, identity, and any alias not present as a
+// registry key (e.g. POLICY_DOCUMENT, PREAUTH) fail closed because no
+// extractor is registered for them — aliases are never invented here.
+func (p *Processor) extractorForDocType(docType string) (extract.Extractor, error) {
+	reg := p.Extractors
+	if reg == nil {
+		reg = defaultExtractorRegistry()
+	}
+	key := strings.ToUpper(strings.TrimSpace(docType))
+	if key == "" {
+		return nil, fmt.Errorf("worker: no extractor for doc type %q", docType)
+	}
+	ext, ok := reg[key]
+	if !ok || ext == nil {
+		return nil, fmt.Errorf("worker: no extractor for doc type %q", docType)
+	}
+	return ext, nil
+}
+
+// scopeForInvestigation maps invest.ScopeConstraints onto the
+// executor-side investigate.Scope field by field: TenantID, ClaimID,
+// and RequestID verbatim; AllowTools copied verbatim; MaxToolCalls ->
+// MaxCalls; DeadlineMs -> DeadlineMs. The destination contract is then
+// validated (>= 100ms deadline, allowlisted duplicate-free tools,
+// MaxCalls >= 1, non-blank identity). Invalid values are returned as an
+// error — never silently coerced — so callers fail closed.
+func scopeForInvestigation(sc invest.ScopeConstraints) (investigate.Scope, error) {
+	out := investigate.Scope{
+		TenantID:   sc.TenantID,
+		ClaimID:    sc.ClaimID,
+		AllowTools: append([]invest.ToolName(nil), sc.AllowTools...),
+		MaxCalls:   sc.MaxToolCalls,
+		DeadlineMs: sc.DeadlineMs,
+		RequestID:  sc.RequestID,
+	}
+	if err := out.Validate(); err != nil {
+		return investigate.Scope{}, err
+	}
+	return out, nil
+}
+
+// buildExceptionEnvelope mints deterministic-side IDs, applies the
+// resolved scope budgets carried on the Processor (injected by
+// BuildFullProcessor via ResolveScopeDefaults; nil/zero selects the
+// read-only 5-tool / 5-call / 60s defaults), validates the mapped
+// investigate.Scope contract, and best-effort builds +
+// marshals the invest envelope. ok=false means no envelope (ID entropy,
+// scope validation, Build provenance, or Marshal failed); the caller returns the verify
+// outcome without an envelope rather than failing the pipeline.
+func (p *Processor) buildExceptionEnvelope(ctx context.Context, tenant, claimID string, claim assemble.CanonicalClaim, unresolved []verifywrap.Unresolved, res verify.Result) ([]byte, bool) {
+	exID, err := invest.NewExceptionID()
+	if err != nil {
+		return nil, false
+	}
+	invID, err := invest.NewInvestigationID()
+	if err != nil {
+		return nil, false
+	}
+	tools := p.ScopeAllowTools
+	if tools == nil {
+		tools = defaultScopeTools()
+	}
+	maxCalls := p.ScopeMaxCalls
+	if maxCalls <= 0 {
+		maxCalls = defaultScopeMaxCalls
+	}
+	deadlineMs := p.ScopeDeadlineMs
+	if deadlineMs <= 0 {
+		deadlineMs = defaultScopeDeadlineMs
+	}
+	scope := invest.ScopeConstraints{
+		TenantID:     tenant,
+		ClaimID:      claimID,
+		AllowTools:   tools,
+		MaxToolCalls: maxCalls,
+		DeadlineMs:   deadlineMs,
+		RequestID:    requestIDForScope(ctx),
+	}
+	// Explicit executor-side contract check: invalid scope values fail
+	// closed here (no envelope) instead of being silently coerced.
+	if _, err := scopeForInvestigation(scope); err != nil {
+		return nil, false
+	}
+	env, err := invest.Build(invest.BuildParams{
+		TenantID:        tenant,
+		ClaimID:         claimID,
+		ExceptionID:     exID,
+		InvestigationID: invID,
+		Result:          res,
+		Claim:           claim,
+		Unresolved:      unresolved,
+		Evidence:        nil,
+		Scope:           scope,
+	})
+	if err != nil {
+		return nil, false
+	}
+	raw, err := invest.Marshal(env)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// requestIDForScope propagates the request ID for the invest scope:
+// observability ctx first, the plain "request_id" ctx value second
+// (http adapter propagation), else a fresh req- prefixed random ID.
+func requestIDForScope(ctx context.Context) string {
+	if id, ok := observability.RequestIDFrom(ctx); ok && strings.TrimSpace(id) != "" {
+		return id
+	}
+	if ctx != nil {
+		if v, ok := ctx.Value("request_id").(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "req-fallback"
+	}
+	return "req-" + hex.EncodeToString(b[:])
 }
 
 // persistFailedDoc best-effort stores a FAILED doc row when evidence
