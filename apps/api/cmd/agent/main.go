@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"time"
 
 	"claimops-api/internal/config"
@@ -30,6 +31,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "net/http/pprof"
 )
+
+var failFirstSeen sync.Map // key -> bool, for Agent 5xx retry test injection
 
 func main() {
 	cfg, err := config.Load()
@@ -151,6 +154,21 @@ func investigationHandler(pool *pgxpool.Pool, defaultModel orchestrate.ModelClie
 		}
 		if pool == nil {
 			return c.Status(503).JSON(fiber.Map{"ok": false, "code": "NO_DB", "message": "database not configured"})
+		}
+		// Test injection (local only): Agent 5xx retry harness. If APP_ENV=local
+		// and claim_id contains "failfirst" or header X-Test-Fail-First=1,
+		// fail the first request for this investigation_id with 500, then
+		// succeed on retry. This proves GCW retry vs no-retry without
+		// touching orchestrator/model logic. Never active in prod.
+		if os.Getenv("APP_ENV") == "local" {
+			shouldFailFirst := strings.Contains(req.ClaimID, "failfirst") || strings.Contains(req.InvestigationID, "failfirst") || c.Get("X-Test-Fail-First") == "1" || c.Get("x-test-fail-first") == "1"
+			if shouldFailFirst {
+				key := req.InvestigationID + ":" + req.ClaimID
+				if _, loaded := failFirstSeen.LoadOrStore(key, true); !loaded {
+					log.Printf("agent: injected 500 for failfirst key=%s", key)
+					return c.Status(500).JSON(fiber.Map{"ok": false, "code": "INJECTED_500", "message": "injected 500 for retry test (first call)"})
+				}
+			}
 		}
 		// Resolve envelope: production loads from store, local-test may use inline.
 		var exception invest.UnresolvedException
