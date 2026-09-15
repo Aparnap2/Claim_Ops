@@ -6,10 +6,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	"claimops-api/internal/config"
@@ -102,9 +105,18 @@ func initPool(cfg config.Config) *pgxpool.Pool {
 	return pool
 }
 
-// InvestigationRequest is the agent service input. For local E2E we accept
-// the envelope inline to avoid an extra DB fetch. Production would load
-// from DB by investigation_id.
+// InvestigationRequest is the agent service input.
+//
+// Envelope handling has two modes:
+//
+//   - Local-test adapter (ALLOW_INLINE_ENVELOPE=true or APP_ENV=local):
+//     the caller may supply the full exception inline. This is explicitly
+//     a test convenience and is never the production contract.
+//
+//   - Production-shaped path (default):
+//     the Agent loads the envelope from the authoritative investigations
+//     table via EnvelopeStore by tenant + investigation_id. Caller-supplied
+//     exception state is ignored; the store is the source of truth.
 type InvestigationRequest struct {
 	TenantID        string                      `json:"tenant_id"`
 	ClaimID         string                      `json:"claim_id"`
@@ -112,6 +124,13 @@ type InvestigationRequest struct {
 	RequestID       string                      `json:"request_id"`
 	Exception       *invest.UnresolvedException `json:"exception,omitempty"`
 	MockScript      []orchestrate.ModelResponse `json:"mock_script,omitempty"`
+}
+
+func allowInlineEnvelope() bool {
+	if v := os.Getenv("ALLOW_INLINE_ENVELOPE"); v != "" {
+		return v == "true" || v == "1"
+	}
+	return os.Getenv("APP_ENV") == "local"
 }
 
 func investigationHandler(pool *pgxpool.Pool, defaultModel orchestrate.ModelClient) fiber.Handler {
@@ -127,22 +146,53 @@ func investigationHandler(pool *pgxpool.Pool, defaultModel orchestrate.ModelClie
 		if tenantID == "" {
 			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": "tenant_id required"})
 		}
-		if req.Exception == nil {
-			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": "exception required"})
-		}
-		if err := invest.Validate(*req.Exception); err != nil {
-			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": err.Error()})
-		}
-		if tenantID != req.Exception.TenantID {
-			return c.Status(403).JSON(fiber.Map{"ok": false, "code": "TENANT_MISMATCH", "message": "tenant mismatch"})
+		if req.InvestigationID == "" {
+			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": "investigation_id required"})
 		}
 		if pool == nil {
 			return c.Status(503).JSON(fiber.Map{"ok": false, "code": "NO_DB", "message": "database not configured"})
 		}
+		// Resolve envelope: production loads from store, local-test may use inline.
+		var exception invest.UnresolvedException
+		if req.Exception != nil && allowInlineEnvelope() {
+			// Local-test adapter path — still validate shape and tenant binding.
+			if err := invest.Validate(*req.Exception); err != nil {
+				return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": err.Error()})
+			}
+			if tenantID != req.Exception.TenantID {
+				return c.Status(403).JSON(fiber.Map{"ok": false, "code": "TENANT_MISMATCH", "message": "tenant mismatch"})
+			}
+			if req.InvestigationID != req.Exception.InvestigationID {
+				return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": "investigation_id mismatch between body and envelope"})
+			}
+			exception = *req.Exception
+		} else if req.Exception != nil && !allowInlineEnvelope() {
+			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "INLINE_NOT_ALLOWED", "message": "inline exception not allowed in production; envelope must be loaded from store by investigation_id"})
+		} else {
+			// Production-shaped path: load from authoritative store.
+			store := investigate.NewPGEnvelopeStore(pool)
+			env, err := store.LoadEnvelope(c.UserContext(), tenantID, req.InvestigationID)
+			if err != nil {
+				if isNotFound(err) {
+					return c.Status(404).JSON(fiber.Map{"ok": false, "code": "NOT_FOUND", "message": err.Error()})
+				}
+				if isTenantMismatch(err) {
+					return c.Status(403).JSON(fiber.Map{"ok": false, "code": "TENANT_MISMATCH", "message": err.Error()})
+				}
+				return c.Status(500).JSON(fiber.Map{"ok": false, "code": "STORE_ERROR", "message": err.Error()})
+			}
+			exception = env
+		}
 		// Choose model client: per-request mock script overrides default.
+		// For HITL E2E without explicit script, synthesize a minimal valid
+		// REPORT_READY script grounded on the loaded envelope (dynamic mock).
 		modelClient := defaultModel
 		if len(req.MockScript) > 0 {
 			modelClient = orchestrate.NewMockModelClient(req.MockScript)
+		} else if isEmptyMock(defaultModel) {
+			if dyn, err := buildDynamicReportReadyScript(exception); err == nil {
+				modelClient = dyn
+			}
 		}
 		// Build real tools via PGReaders.
 		readers := investigate.NewPGReaders(pool)
@@ -153,22 +203,22 @@ func investigationHandler(pool *pgxpool.Pool, defaultModel orchestrate.ModelClie
 			invest.ToolSearchEvidence:          tools.NewSearchEvidenceTool(readers),
 			invest.ToolGetVerificationFindings: tools.NewVerifyTool(nil),
 		}
-		// Deadline from envelope scope.
-		deadline := time.Now().Add(time.Duration(req.Exception.Scope.DeadlineMs) * time.Millisecond)
+		// Deadline from envelope scope (authoritative exception, not caller-supplied).
+		deadline := time.Now().Add(time.Duration(exception.Scope.DeadlineMs) * time.Millisecond)
 		exec := investigate.NewExecutor(registry, deadline)
 		scope := investigate.Scope{
-			TenantID:   req.Exception.TenantID,
-			ClaimID:    req.Exception.ClaimID,
-			AllowTools: req.Exception.Scope.AllowTools,
-			MaxCalls:   req.Exception.Scope.MaxToolCalls,
-			DeadlineMs: req.Exception.Scope.DeadlineMs,
-			RequestID:  req.Exception.Scope.RequestID,
+			TenantID:   exception.TenantID,
+			ClaimID:    exception.ClaimID,
+			AllowTools: exception.Scope.AllowTools,
+			MaxCalls:   exception.Scope.MaxToolCalls,
+			DeadlineMs: exception.Scope.DeadlineMs,
+			RequestID:  exception.Scope.RequestID,
 		}
 		if err := scope.Validate(); err != nil {
 			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": err.Error()})
 		}
 		budgets := orchestrate.DefaultBudgets(scope)
-		loop, err := orchestrate.NewLoop(modelClient, exec, budgets, scope, *req.Exception, nil)
+		loop, err := orchestrate.NewLoop(modelClient, exec, budgets, scope, exception, nil)
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": err.Error()})
 		}
@@ -209,6 +259,82 @@ func mockScriptHandler(pool *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"ok": true})
 	}
+}
+
+func isEmptyMock(m orchestrate.ModelClient) bool {
+	if mm, ok := m.(*orchestrate.MockModelClient); ok {
+		return mm.Remaining() == 0 && mm.Calls() == 0
+	}
+	return false
+}
+
+func buildDynamicReportReadyScript(env invest.UnresolvedException) (orchestrate.ModelClient, error) {
+	// Build a minimal REPORT_READY script grounded on the envelope.
+	// First turn: CALL_TOOL get_claim, second: SUBMIT_REPORT with hypothesis over first evidence.
+	if len(env.EvidenceRefs) == 0 {
+		return nil, fmt.Errorf("no evidence for dynamic mock")
+	}
+	evID := env.EvidenceRefs[0].EvidenceID
+	// Scope for request building
+	scope := investigate.Scope{
+		TenantID:   env.TenantID,
+		ClaimID:    env.ClaimID,
+		AllowTools: env.Scope.AllowTools,
+		MaxCalls:   env.Scope.MaxToolCalls,
+		DeadlineMs: env.Scope.DeadlineMs,
+		RequestID:  env.Scope.RequestID,
+	}
+	// Prefer get_claim if allowlisted, else first allowed tool.
+	tool := invest.ToolGetClaim
+	if len(scope.AllowTools) > 0 {
+		found := false
+		for _, t := range scope.AllowTools {
+			if t == invest.ToolGetClaim {
+				found = true
+				break
+			}
+		}
+		if !found {
+			tool = scope.AllowTools[0]
+		}
+	}
+	req, err := investigate.NewRequest(tool, env.TenantID, env.ClaimID, env.InvestigationID, env.Scope.RequestID, 1)
+	if err != nil {
+		return nil, err
+	}
+	callBytes, _ := json.Marshal(orchestrate.ModelAction{Action: orchestrate.ActionCallTool, Tool: tool, Request: &req})
+	// Build minimal report grounded on evID. Use agreed snapshot if available for FactRef.
+	factRefs := []invest.FactRef{}
+	if len(env.AgreedSnapshot) > 0 {
+		ag := env.AgreedSnapshot[0]
+		factRefs = append(factRefs, invest.FactRef{Key: ag.Key, Agreed: ag.Agreed, EvidenceID: ag.EvidenceIDs[0]})
+	} else {
+		factRefs = append(factRefs, invest.FactRef{Key: "hospital_name", Agreed: "City Hospital", EvidenceID: evID})
+	}
+	// Ensure we cite at least the evidence from tool (will be evID plus a synthetic new ID that tool will return)
+	// Tool get_claim will return row with ID evID or new ID; we need to cite an ID that will be known after first tool.
+	// For dynamic mock, we assume tool returns one new ID "ev-new-01" that we can cite after it is grown.
+	// To keep grounding valid, cite only IDs already known (evID) plus the tool's future ID is not yet known,
+	// so we cite only evID and let report be grounded on existing evidence only.
+	report := orchestrate.Report{
+		Hypotheses: []invest.Hypothesis{{
+			ID: "h-01", Statement: "conflict stems from transcription variance", Falsifier: "pinned policy record",
+			Status: invest.HypothesisOpen, FactRefs: factRefs, EvidenceIDs: []string{evID},
+		}},
+		Findings:        []invest.Finding{{ID: "f-01", HypothesisID: "h-01", Summary: "cited evidence shows conflict", EvidenceIDs: []string{evID}}},
+		Recommendation:  invest.Recommendation{Action: invest.RecommendReferHuman, Rationale: "needs human review", FindingIDs: []string{"f-01"}},
+		MissingAdditive: append([]invest.MissingItem(nil), env.MissingEvidence...),
+	}
+	submitBytes, _ := json.Marshal(orchestrate.ModelAction{Action: orchestrate.ActionSubmitReport, Report: &report})
+	script := []orchestrate.ModelResponse{{Payload: callBytes, ModelID: "dynamic-mock"}, {Payload: submitBytes, ModelID: "dynamic-mock"}}
+	return orchestrate.NewMockModelClient(script), nil
+}
+
+func isNotFound(err error) bool {
+	return errors.Is(err, investigate.ErrNotFound) || strings.Contains(err.Error(), "not found")
+}
+func isTenantMismatch(err error) bool {
+	return errors.Is(err, investigate.ErrTenantMismatch) || strings.Contains(err.Error(), "tenant mismatch")
 }
 
 func registerLocalDebug(app *fiber.App, appEnv string) {

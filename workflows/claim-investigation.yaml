@@ -29,7 +29,7 @@ main:
     - wait_human:
         call: events.await_callback
         args:
-          callback: ${cb.callback}
+          callback: ${cb}
           timeout: 3600
         result: decision
     - apply:
@@ -38,7 +38,7 @@ main:
           url: ${sys.get_env("API_URL") + "/v1/claims/" + claim_id + "/decision"}
           headers:
             X-Tenant-ID: ${tenant_id}
-          body: ${decision}
+          body: ${decision.http_request.body}
         result: applied
     - done:
         return: ${applied.body}
@@ -50,7 +50,7 @@ main:
     - wait_human_escalated:
         call: events.await_callback
         args:
-          callback: ${cbEsc.callback}
+          callback: ${cbEsc}
           timeout: 3600
         result: decisionEsc
     - apply_escalated:
@@ -59,7 +59,7 @@ main:
           url: ${sys.get_env("API_URL") + "/v1/claims/" + claim_id + "/decision"}
           headers:
             X-Tenant-ID: ${tenant_id}
-          body: ${decisionEsc}
+          body: ${decisionEsc.http_request.body}
         result: appliedEsc
     - done_escalated:
         return: ${appliedEsc.body}
