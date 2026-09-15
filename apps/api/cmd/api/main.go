@@ -111,13 +111,18 @@ func startTransportPlane(ctx context.Context, cfg config.Config, svc *ingest.Ser
 	)
 	go runDispatcher(ctx, disp, cfg.OutboxPollMS)
 
-	proc := app.BuildProcessor(app.ProcessorDeps{
+	full, err := app.BuildFullProcessor(app.ProcessorDeps{
 		Blobs:         svc.Blobs,
 		Pool:          svc.Pool,
 		PolicyBaseURL: cfg.PolicyBaseURL,
 	})
+	if err != nil {
+		wpool.Close()
+		_ = pclient.Close()
+		log.Fatalf("transport: full processor: %v", err)
+	}
 	sub := pubsubadapter.NewSubscriber(pclient, cfg.PubSubSubDocuments)
-	handle := app.DocumentEventHandler(proc)
+	handle := app.DocumentEventHandler(full.Processor)
 	go func() {
 		err := sub.ReceiveEvent(ctx, func(mctx context.Context, payload []byte, attrs map[string]string) error {
 			if t, ok := attrs["tenant_id"]; ok && t != "" {

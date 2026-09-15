@@ -2,7 +2,7 @@
 // push delivery: POST /events/document-ingested. 2xx acknowledges the
 // message; anything else redelivers (DLQ after max_delivery_attempts).
 //
-// The pipeline is identical to cmd/api's pull loop (app.BuildProcessor) —
+// The pipeline is identical to cmd/api's pull loop (app.BuildFullProcessor) —
 // only transport differs, per ADR-006. Without a database DSN the process
 // fails fast: a worker that cannot read state or blobs serves nothing.
 package main
@@ -53,12 +53,15 @@ func main() {
 	}
 	defer sclient.Close()
 
-	proc := app.BuildProcessor(app.ProcessorDeps{
+	full, err := app.BuildFullProcessor(app.ProcessorDeps{
 		Blobs:         gcsblob.New(cfg.GCSBucketDocuments, sclient),
 		Pool:          pool,
 		PolicyBaseURL: cfg.PolicyBaseURL,
 	})
-	handle := app.DocumentOutcomeHandler(proc)
+	if err != nil {
+		log.Fatalf("worker: full processor: %v", err)
+	}
+	handle := app.DocumentOutcomeHandler(full.Processor)
 	auth := app.PushAuth{
 		Mode:           cfg.PushAuthMode,
 		Audience:       cfg.PushAudience,
