@@ -1,0 +1,65 @@
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - claim_id: ${args.claim_id}
+          - tenant_id: ${args.tenant_id}
+          - investigation_id: ${args.investigation_id}
+    - investigate:
+        call: http.post
+        args:
+          url: ${sys.get_env("AGENT_URL") + "/v1/investigations"}
+          body:
+            investigation_id: ${investigation_id}
+            tenant_id: ${tenant_id}
+            claim_id: ${claim_id}
+        result: invResult
+    - check:
+        switch:
+          - condition: ${invResult.body.outcome == "REPORT_READY"}
+            next: await_human
+          - condition: true
+            next: await_human_escalated
+    - await_human:
+        call: events.create_callback_endpoint
+        args:
+          callback_type: "hitl-decision"
+        result: cb
+    - wait_human:
+        call: events.await_callback
+        args:
+          callback: ${cb.callback}
+          timeout: 3600
+        result: decision
+    - apply:
+        call: http.post
+        args:
+          url: ${sys.get_env("API_URL") + "/v1/claims/" + claim_id + "/decision"}
+          headers:
+            X-Tenant-ID: ${tenant_id}
+          body: ${decision}
+        result: applied
+    - done:
+        return: ${applied.body}
+    - await_human_escalated:
+        call: events.create_callback_endpoint
+        args:
+          callback_type: "hitl-decision-escalated"
+        result: cbEsc
+    - wait_human_escalated:
+        call: events.await_callback
+        args:
+          callback: ${cbEsc.callback}
+          timeout: 3600
+        result: decisionEsc
+    - apply_escalated:
+        call: http.post
+        args:
+          url: ${sys.get_env("API_URL") + "/v1/claims/" + claim_id + "/decision"}
+          headers:
+            X-Tenant-ID: ${tenant_id}
+          body: ${decisionEsc}
+        result: appliedEsc
+    - done_escalated:
+        return: ${appliedEsc.body}
