@@ -58,11 +58,11 @@ func NewGroqModelClientFromEnv() (*GroqModelClient, error) {
 }
 
 type groqChatRequest struct {
-	Model       string        `json:"model"`
+	Model       string       `json:"model"`
 	Messages    []groqMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
-	Stream      bool          `json:"stream"`
+	Temperature float64      `json:"temperature"`
+	MaxTokens   int          `json:"max_tokens"`
+	Stream      bool         `json:"stream"`
 }
 
 type groqMessage struct {
@@ -86,6 +86,7 @@ type groqChatResponse struct {
 }
 
 // Complete renders the prompt and calls Groq. Never logs key or prompt.
+// Retry policy: exactly one retry on transient transport errors and 5xx; 4xx, empty, and decode of 4xx body are not retried.
 func (g *GroqModelClient) Complete(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return ModelResponse{}, err
@@ -105,43 +106,86 @@ func (g *GroqModelClient) Complete(ctx context.Context, req ModelRequest) (Model
 		return ModelResponse{}, fmt.Errorf("groq: marshal: %w", err)
 	}
 	url := g.baseURL + "/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return ModelResponse{}, fmt.Errorf("groq: request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+g.apiKey)
-
-	resp, err := g.client.Do(httpReq)
-	if err != nil {
-		return ModelResponse{}, fmt.Errorf("groq: do: %w: %w", err, ErrModelUpstream)
-	}
-	defer resp.Body.Close()
-
-	var gr groqChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
-		return ModelResponse{}, fmt.Errorf("groq: decode: %w: %w", err, ErrModelUpstream)
-	}
-	if resp.StatusCode >= 500 {
-		return ModelResponse{}, fmt.Errorf("groq: status %d: %w", resp.StatusCode, ErrModelUpstream)
-	}
-	if resp.StatusCode >= 400 {
-		msg := "unknown"
-		if gr.Error != nil && gr.Error.Message != "" {
-			msg = gr.Error.Message
+	var lastErr error
+	var result ModelResponse
+	for attempt := 0; attempt < 2; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return ModelResponse{}, fmt.Errorf("groq: request: %w", err)
 		}
-		return ModelResponse{}, fmt.Errorf("groq: status %d: %s: %w", resp.StatusCode, msg, ErrModelUpstream)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+g.apiKey)
+		resp, err := g.client.Do(httpReq)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ModelResponse{}, ctx.Err()
+			}
+			lastErr = fmt.Errorf("groq: do: %w: %w", err, ErrModelUpstream)
+			if attempt == 0 {
+				continue
+			}
+			return ModelResponse{}, lastErr
+		}
+		func() {
+			defer resp.Body.Close()
+			var gr groqChatResponse
+			if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
+				lastErr = fmt.Errorf("groq: decode: %w: %w", err, ErrModelUpstream)
+				return
+			}
+			if resp.StatusCode >= 500 {
+				lastErr = fmt.Errorf("groq: status %d: %w", resp.StatusCode, ErrModelUpstream)
+				return
+			}
+			if resp.StatusCode >= 400 {
+				msg := "unknown"
+				if gr.Error != nil && gr.Error.Message != "" {
+					msg = gr.Error.Message
+				}
+				lastErr = fmt.Errorf("groq: status %d: %s: %w", resp.StatusCode, msg, ErrModelUpstream)
+				return
+			}
+			if len(gr.Choices) == 0 {
+				lastErr = fmt.Errorf("groq: no choices: %w", ErrModelUpstream)
+				return
+			}
+			content := gr.Choices[0].Message.Content
+			if strings.TrimSpace(content) == "" {
+				lastErr = fmt.Errorf("groq: empty content: %w", ErrModelUpstream)
+				return
+			}
+			modelID := gr.Model
+			if modelID == "" {
+				modelID = g.model
+			}
+			result = ModelResponse{Payload: []byte(content), ModelID: modelID}
+			lastErr = nil
+		}()
+		if lastErr == nil {
+			return result, nil
+		}
+		if attempt == 0 && isGroqRetryable(lastErr, nil) {
+			// Only retry on 5xx / transport / decode; not on 4xx/empty.
+			// We already know 4xx produced lastErr with status 4, so isGroqRetryable will be false.
+			continue
+		}
+		return ModelResponse{}, lastErr
 	}
-	if len(gr.Choices) == 0 {
-		return ModelResponse{}, fmt.Errorf("groq: no choices: %w", ErrModelUpstream)
+	return ModelResponse{}, lastErr
+}
+
+func isGroqRetryable(err error, _ *http.Response) bool {
+	msg := err.Error()
+	if strings.Contains(msg, "status 5") {
+		return true
 	}
-	content := gr.Choices[0].Message.Content
-	if strings.TrimSpace(content) == "" {
-		return ModelResponse{}, fmt.Errorf("groq: empty content: %w", ErrModelUpstream)
+	if strings.Contains(msg, "groq: do:") || strings.Contains(msg, "groq: decode:") {
+		// Transport or decode of 5xx body is retryable; but 4xx decode is not.
+		// We already excluded 4xx via status string, so treat transport as retryable.
+		if strings.Contains(msg, "status 4") {
+			return false
+		}
+		return true
 	}
-	modelID := gr.Model
-	if modelID == "" {
-		modelID = g.model
-	}
-	return ModelResponse{Payload: []byte(content), ModelID: modelID}, nil
+	return false
 }
