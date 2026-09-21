@@ -10,6 +10,8 @@ main:
         call: http.post
         args:
           url: ${sys.get_env("AGENT_URL") + "/v1/investigations"}
+          headers:
+            X-Tenant-ID: ${tenant_id}
           body:
             investigation_id: ${investigation_id}
             tenant_id: ${tenant_id}

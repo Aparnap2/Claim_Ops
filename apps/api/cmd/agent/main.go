@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"claimops-api/internal/claims"
 	"claimops-api/internal/config"
 	"claimops-api/internal/handlers"
 	"claimops-api/internal/invest"
@@ -80,7 +81,9 @@ func main() {
 
 	handler := investigationHandler(pool, modelClient)
 	app.Post("/v1/investigations", handler)
-	app.Post("/v1/investigations/mock-script", mockScriptHandler(pool))
+	if cfg.AppEnv == "local" {
+		app.Post("/v1/investigations/mock-script", mockScriptHandler(pool))
+	}
 
 	port := os.Getenv("AGENT_PORT")
 	if port == "" {
@@ -142,12 +145,15 @@ func investigationHandler(pool *pgxpool.Pool, defaultModel orchestrate.ModelClie
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": err.Error()})
 		}
-		tenantID := c.Get("X-Tenant-ID")
+		tenantID := strings.TrimSpace(c.Get("X-Tenant-ID"))
 		if tenantID == "" {
-			tenantID = req.TenantID
+			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": "tenant_id required via X-Tenant-ID"})
 		}
-		if tenantID == "" {
-			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": "tenant_id required"})
+		if err := claims.TenantID(tenantID).Validate(); err != nil {
+			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": err.Error()})
+		}
+		if req.TenantID != "" && req.TenantID != tenantID {
+			return c.Status(403).JSON(fiber.Map{"ok": false, "code": "TENANT_MISMATCH", "message": "body tenant_id does not match trusted header"})
 		}
 		if req.InvestigationID == "" {
 			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": "investigation_id required"})
