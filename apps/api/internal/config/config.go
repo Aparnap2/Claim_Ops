@@ -29,24 +29,36 @@ type Config struct {
 	PushAuthMode       string
 	PushAudience       string
 	PushServiceAccount string
+
+	// GCW workflow emulator and downstream service URLs.
+	WorkflowsEmulatorHost string
+	WorkflowsProject      string
+	WorkflowsLocation     string
+	AgentURL              string
+	APIURL                string
 }
 
 // Load reads configuration from the environment with safe defaults.
 func Load() (Config, error) {
 	cfg := Config{
-		Port:                 envOr("PORT", "8000"),
-		AppEnv:               envOr("APP_ENV", "local"),
-		GCPProject:           envOr("GCP_PROJECT", "local-dev"),
-		PubSubTopicDocuments: envOr("PUBSUB_TOPIC_DOCUMENTS", "document.ingested"),
-		PubSubSubDocuments:   envOr("PUBSUB_SUBSCRIPTION_DOCUMENTS", "document.ingested-worker"),
-		GCSBucketDocuments:   envOr("GCS_BUCKET_DOCUMENTS", "claimops-documents-local"),
-		WorkerDatabaseURL:    envOr("WORKER_DATABASE_URL", "postgres://claimops_worker:claimops_worker@localhost:5433/claimops"),
-		DatabaseURL:          envOr("DATABASE_URL", os.Getenv("TEST_POSTGRES_DSN")),
-		PolicyBaseURL:        envOr("POLICY_BASE_URL", "http://localhost:3001"),
-		WorkerPort:           envOr("WORKER_PORT", "8081"),
-		PushAuthMode:         envOr("PUSH_AUTH_MODE", "none"),
-		PushAudience:         os.Getenv("PUSH_AUDIENCE"),
-		PushServiceAccount:   os.Getenv("PUSH_SERVICE_ACCOUNT"),
+		Port:                  envOr("PORT", "8000"),
+		AppEnv:                envOr("APP_ENV", "local"),
+		GCPProject:            envOr("GCP_PROJECT", "local-dev"),
+		PubSubTopicDocuments:  envOr("PUBSUB_TOPIC_DOCUMENTS", "document.ingested"),
+		PubSubSubDocuments:    envOr("PUBSUB_SUBSCRIPTION_DOCUMENTS", "document.ingested-worker"),
+		GCSBucketDocuments:    envOr("GCS_BUCKET_DOCUMENTS", "claimops-documents-local"),
+		WorkerDatabaseURL:     envOr("WORKER_DATABASE_URL", "postgres://claimops_worker:claimops_worker@localhost:5433/claimops"),
+		DatabaseURL:           envOr("DATABASE_URL", os.Getenv("TEST_POSTGRES_DSN")),
+		PolicyBaseURL:         envOr("POLICY_BASE_URL", "http://localhost:3001"),
+		WorkerPort:            envOr("WORKER_PORT", "8081"),
+		PushAuthMode:          envOr("PUSH_AUTH_MODE", "none"),
+		PushAudience:          os.Getenv("PUSH_AUDIENCE"),
+		PushServiceAccount:    os.Getenv("PUSH_SERVICE_ACCOUNT"),
+		WorkflowsEmulatorHost: envOr("WORKFLOWS_EMULATOR_HOST", ""),
+		WorkflowsProject:      envOr("WORKFLOWS_PROJECT", "my-project"),
+		WorkflowsLocation:     envOr("WORKFLOWS_LOCATION", "us-central1"),
+		AgentURL:              envOr("AGENT_URL", "http://localhost:8081"),
+		APIURL:                envOr("API_URL", "http://localhost:8000"),
 	}
 	pollRaw := envOr("OUTBOX_POLL_MS", "1000")
 	poll, err := strconv.Atoi(pollRaw)

@@ -52,9 +52,24 @@ func main() {
 		log.Print("ingest: no DATABASE_URL; document uploads will fail closed")
 	}
 
+	// HITL decision pool (authoritative Claims.Transition) — shares DATABASE_URL.
+	var decisionPool *pgxpool.Pool
+	if cfg.DatabaseURL != "" {
+		if p, err := pgxpool.New(ctx, cfg.DatabaseURL); err == nil {
+			decisionPool = p
+			defer p.Close()
+		} else {
+			log.Printf("decision: pool unavailable (%v); HITL decision will fail closed", err)
+		}
+	}
+	fiberApp := app.NewWithDeps(uploader)
+	if decisionPool != nil {
+		fiberApp.Post("/v1/claims/:id/decision", handlers.DecisionHandler(decisionPool))
+		log.Print("api: HITL decision endpoint enabled at POST /v1/claims/:id/decision")
+	}
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	log.Printf("claimops-api listening on %s (env=%s)", addr, cfg.AppEnv)
-	if err := app.NewWithDeps(uploader).Listen(addr); err != nil {
+	if err := fiberApp.Listen(addr); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 }
