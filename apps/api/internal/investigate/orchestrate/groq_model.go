@@ -58,11 +58,11 @@ func NewGroqModelClientFromEnv() (*GroqModelClient, error) {
 }
 
 type groqChatRequest struct {
-	Model       string       `json:"model"`
+	Model       string        `json:"model"`
 	Messages    []groqMessage `json:"messages"`
-	Temperature float64      `json:"temperature"`
-	MaxTokens   int          `json:"max_tokens"`
-	Stream      bool         `json:"stream"`
+	Temperature float64       `json:"temperature"`
+	MaxTokens   int           `json:"max_tokens"`
+	Stream      bool          `json:"stream"`
 }
 
 type groqMessage struct {

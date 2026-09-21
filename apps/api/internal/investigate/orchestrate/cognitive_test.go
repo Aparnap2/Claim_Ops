@@ -227,7 +227,9 @@ func TestGate2_EvidenceInterpretation(t *testing.T) {
 		}}
 		exec := gate2FakeExecutor(scope)
 		lp, err := NewLoop(cap, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		if _, err := lp.Run(context.Background()); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -286,7 +288,9 @@ func TestGate2_EvidenceInterpretation(t *testing.T) {
 		})
 		exec := gate2FakeExecutor(scope)
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -308,7 +312,9 @@ func TestGate2_EvidenceInterpretation(t *testing.T) {
 		})
 		exec, _ := gate2Executor(t, scope)
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err == nil || !errors.Is(err, ErrGrounding) {
 			t.Fatalf("Run err = %v, want ErrGrounding", err)
@@ -339,9 +345,9 @@ func TestGate2_HypothesisGeneration(t *testing.T) {
 	t.Run("grounded hypothesis passes", func(t *testing.T) {
 		h := invest.Hypothesis{
 			ID: "h-g1", Statement: "Transcription variance between policy schedule and claim form.",
-			Falsifier: "Pinned policy record showing the claimed number active.",
-			Status:    invest.HypothesisOpen,
-			FactRefs:  []invest.FactRef{{Key: "hospital_name", Agreed: "City Hospital", EvidenceID: "ev-doc-02"}},
+			Falsifier:   "Pinned policy record showing the claimed number active.",
+			Status:      invest.HypothesisOpen,
+			FactRefs:    []invest.FactRef{{Key: "hospital_name", Agreed: "City Hospital", EvidenceID: "ev-doc-02"}},
 			EvidenceIDs: []string{"ev-doc-01"},
 		}
 		if err := invest.ValidateHypothesis(h); err != nil {
@@ -359,7 +365,9 @@ func TestGate2_HypothesisGeneration(t *testing.T) {
 		mock := NewMockModelClient([]ModelResponse{{Payload: gate2SubmitBytes(t, rep)}})
 		exec, _ := gate2Executor(t, scope)
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -381,7 +389,9 @@ func TestGate2_HypothesisGeneration(t *testing.T) {
 		mock := NewMockModelClient([]ModelResponse{{Payload: gate2SubmitBytes(t, rep)}})
 		exec, _ := gate2Executor(t, scope)
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err == nil || !errors.Is(err, ErrGrounding) {
 			t.Fatalf("want ErrGrounding, got %v", err)
@@ -457,7 +467,9 @@ func TestGate2_EvidenceSelection(t *testing.T) {
 			{Payload: gate2SubmitBytes(t, gate2Report(env, "ev-new-01"))},
 		})
 		lp, err := NewLoop(mock, tracked, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -481,7 +493,9 @@ func TestGate2_EvidenceSelection(t *testing.T) {
 			{Payload: gate2SubmitBytes(t, gate2Report(env, "ev-new-02"))},
 		})
 		lp, err := NewLoop(mock, tracked, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -508,12 +522,20 @@ func TestGate2_EvidenceSelection(t *testing.T) {
 		// Force fake that returns ev-new-03 for get_documents so the report's
 		// ev-new-02 stays unknown — this is the "wrong tool" penalty.
 		exec := investigate.NewExecutor(map[invest.ToolName]investigate.ToolFunc{
-			invest.ToolGetClaim:     func(_ context.Context, req investigate.Request) (investigate.Response, error) { return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-01"}}, nil },
-			invest.ToolGetEvidence:  func(_ context.Context, req investigate.Request) (investigate.Response, error) { return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-02"}}, nil },
-			invest.ToolGetDocuments: func(_ context.Context, req investigate.Request) (investigate.Response, error) { return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-03"}}, nil },
+			invest.ToolGetClaim: func(_ context.Context, req investigate.Request) (investigate.Response, error) {
+				return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-01"}}, nil
+			},
+			invest.ToolGetEvidence: func(_ context.Context, req investigate.Request) (investigate.Response, error) {
+				return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-02"}}, nil
+			},
+			invest.ToolGetDocuments: func(_ context.Context, req investigate.Request) (investigate.Response, error) {
+				return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-03"}}, nil
+			},
 		}, time.Time{})
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err == nil || !errors.Is(err, ErrGrounding) {
 			t.Fatalf("wrong-tool report should ground-fail, got err=%v out=%v", err, out)
@@ -543,11 +565,17 @@ func TestGate2_Disconfirmation(t *testing.T) {
 			{Payload: gate2SubmitBytes(t, revReport)},
 		})
 		exec := investigate.NewExecutor(map[invest.ToolName]investigate.ToolFunc{
-			invest.ToolGetClaim:    func(_ context.Context, req investigate.Request) (investigate.Response, error) { return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-01"}}, nil },
-			invest.ToolGetEvidence: func(_ context.Context, req investigate.Request) (investigate.Response, error) { return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-02"}}, nil },
+			invest.ToolGetClaim: func(_ context.Context, req investigate.Request) (investigate.Response, error) {
+				return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-01"}}, nil
+			},
+			invest.ToolGetEvidence: func(_ context.Context, req investigate.Request) (investigate.Response, error) {
+				return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-02"}}, nil
+			},
 		}, time.Time{})
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -576,11 +604,17 @@ func TestGate2_Disconfirmation(t *testing.T) {
 			{Payload: gate2SubmitBytes(t, stale)},
 		})
 		exec := investigate.NewExecutor(map[invest.ToolName]investigate.ToolFunc{
-			invest.ToolGetClaim:    func(_ context.Context, req investigate.Request) (investigate.Response, error) { return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-01"}}, nil },
-			invest.ToolGetEvidence: func(_ context.Context, req investigate.Request) (investigate.Response, error) { return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-02"}}, nil },
+			invest.ToolGetClaim: func(_ context.Context, req investigate.Request) (investigate.Response, error) {
+				return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-01"}}, nil
+			},
+			invest.ToolGetEvidence: func(_ context.Context, req investigate.Request) (investigate.Response, error) {
+				return investigate.Response{Tool: req.Tool, RowCount: 1, IDs: []string{"ev-new-02"}}, nil
+			},
 		}, time.Time{})
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v (grounding should pass — staleness is not a contract fail)", err)
@@ -636,7 +670,9 @@ func TestGate2_AccuracyDimensions(t *testing.T) {
 		mock := NewMockModelClient([]ModelResponse{{Payload: gate2SubmitBytes(t, rep)}})
 		exec, _ := gate2Executor(t, scope)
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err == nil || !errors.Is(err, ErrGrounding) {
 			t.Fatalf("invented citation should be ErrGrounding, got %v", err)
@@ -678,7 +714,9 @@ func TestGate2_AccuracyDimensions(t *testing.T) {
 		mock := NewMockModelClient([]ModelResponse{{Payload: gate2SubmitBytes(t, rep)}})
 		exec, _ := gate2Executor(t, scope)
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -707,7 +745,9 @@ func TestGate2_AccuracyDimensions(t *testing.T) {
 		mock := NewMockModelClient([]ModelResponse{{Payload: gate2SubmitBytes(t, rep2)}})
 		exec, _ := gate2Executor(t, scope)
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err == nil || !errors.Is(err, ErrGrounding) {
 			t.Fatalf("want ErrGrounding, got %v out=%v", err, out)
@@ -715,7 +755,9 @@ func TestGate2_AccuracyDimensions(t *testing.T) {
 		// Good report passes and carries REFER_HUMAN or other closed action.
 		mock2 := NewMockModelClient([]ModelResponse{{Payload: gate2SubmitBytes(t, gate2Report(env))}})
 		lp2, err2 := NewLoop(mock2, gate2FakeExecutor(scope), DefaultBudgets(scope), scope, env, nil)
-		if err2 != nil { t.Fatalf("NewLoop: %v", err2) }
+		if err2 != nil {
+			t.Fatalf("NewLoop: %v", err2)
+		}
 		out2, err2 := lp2.Run(context.Background())
 		if err2 != nil {
 			t.Fatalf("Run good decision: %v", err2)
@@ -788,7 +830,9 @@ func TestGate2_Abstention(t *testing.T) {
 			{Payload: gate2SubmitBytes(t, abstain)},
 		})
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -820,7 +864,9 @@ func TestGate2_Abstention(t *testing.T) {
 		mock := NewMockModelClient([]ModelResponse{{Payload: gate2SubmitBytes(t, rep)}})
 		exec := gate2FakeExecutor(scope)
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err == nil || !errors.Is(err, ErrGrounding) {
 			t.Fatalf("invented citation should escalate, got err=%v out=%v", err, out)
@@ -840,7 +886,9 @@ func TestGate2_Abstention(t *testing.T) {
 		})
 		// Sanity: abstention-shaped report via normal flow must still validate.
 		lp, err := NewLoop(mock, exec, DefaultBudgets(scope), scope, env, nil)
-		if err != nil { t.Fatalf("NewLoop: %v", err) }
+		if err != nil {
+			t.Fatalf("NewLoop: %v", err)
+		}
 		out, err := lp.Run(context.Background())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
