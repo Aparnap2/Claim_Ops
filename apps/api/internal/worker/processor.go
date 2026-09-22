@@ -601,6 +601,9 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 	if err := parsed.Validate(); err != nil {
 		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: parse artifact invalid: %w", err))
 	}
+	// APA-12: OCR confidence gate (deterministic, fail closed to HITL).
+	// Unavailable/invalid or value <= 0.85 -> low-quality evidence.
+	lowOCREscalate := shouldEscalateForOCR(aggregateOCRConfidence(parsed))
 
 	ext, err := p.extractorForDocType(effective)
 	if err != nil {
@@ -663,11 +666,36 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 	for _, ex := range res.Exceptions {
 		codes = append(codes, ex.Code)
 	}
+	// APA-12: low OCR confidence is low-quality evidence that must reach
+	// HITL/exception handling, not silent SUCCESS. Gate is deterministic and
+	// fail-closed (unavailable/invalid or value <= 0.85).
+	if lowOCREscalate {
+		codes = append(codes, "LOW_OCR_CONFIDENCE")
+	}
 
 	var envelope []byte
-	if len(res.Exceptions) > 0 || len(unresolved) > 0 {
-		if env, ok := p.buildExceptionEnvelope(ctx, tenant, claimID, claim, unresolved, res); ok {
+	if len(res.Exceptions) > 0 || len(unresolved) > 0 || lowOCREscalate {
+		// Low OCR without other exceptions still needs a HITL envelope.
+		// Synthesize a minimal exception result for the low-OCR signal so
+		// invest.Build succeeds (LOW_OCR_CONFIDENCE is not a verify R-code).
+		lowRes := res
+		if lowOCREscalate && len(res.Exceptions) == 0 && len(unresolved) == 0 {
+			// Inject a deterministic missing-required-document signal so the
+			// envelope carries a valid known rule code and the pipeline's
+			// exception taxonomy stays closed. R8 is chosen because it is
+			// already an evidence-sufficiency signal and its affected fields
+			// are empty (no field re-judgment).
+			lowRes.Exceptions = append(append([]verify.Exception(nil), res.Exceptions...), verify.Exception{
+				Code: verify.CodeMissingRequiredDocument, Severity: verify.SeverityMedium,
+				Message: "low OCR confidence: evidence below trust threshold",
+			})
+		}
+		if env, ok := p.buildExceptionEnvelope(ctx, tenant, claimID, claim, unresolved, lowRes); ok {
 			envelope = env
+		} else if lowOCREscalate {
+			// Envelope build is best-effort; low-OCR code still surfaces in
+			// ExceptionCodes even if envelope mint fails.
+			envelope = nil
 		}
 	}
 
