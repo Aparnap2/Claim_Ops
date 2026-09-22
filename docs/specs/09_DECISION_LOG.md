@@ -93,6 +93,21 @@ Options considered (historical):
 
 The decision was evidence-driven.
 
+### APA-11 agent authoritative mutation boundary (ADR-008, accepted 2026-09-22)
+Agents are read-only over authoritative state. Deterministic code owns
+claim/document/HITL mutations via version-checked, tenant-scoped commands
+(`Repository.SaveClaim`, `AppendEvent`, `InsertDocument`, `handlers/decision`
+`UPDATE claims WHERE version`). The cognitive loop never mutates
+authoritative state: `cmd/agent` registry wires only read tools
+(`get_claim`, `get_documents`, `get_evidence`, `search_evidence`,
+`get_verification_findings`); `orchestrate.Loop` denies
+`create_investigation_report` (T11) as `INVALID_OUTPUT`/`ErrToolDenied`
+before any `Executor.Execute`. Report persistence (`PGReportStore.Insert`)
+is write-once, hash-verified, envelope-bound, and reachable only via
+deterministic service outside the loop. Detail: `docs/adr/008-agent-mutation-boundary.md`.
+Regression: `orchestrate/mutation_boundary_test.go` (registry read-only,
+loop T11 denial, report cannot carry `claim_status` transition).
+
 ### #32 evidence (LiteParse 2.14.4, 45 cases, deterministic)
 - 45/45 parse_ok. Fields 280 exact / 27 normalized / 150 missing. Tables 27 pass / 13 partial / 3 missed.
 - D0 strong; D6/D7 collapse with EMPTY_ARTIFACT (OCR off by design).
