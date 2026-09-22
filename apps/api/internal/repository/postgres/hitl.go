@@ -36,14 +36,20 @@ var hitlPendingStatuses = []claims.ClaimStatus{
 
 // ListPendingHITL returns all claims in the pending HITL states for the
 // transaction's tenant. It is the canonical persistence/query contract for
-// APA-10: the query uses the domain constants, not a literal "pending".
+// APA-10: the query consumes the single canonical pending-state definition
+// (hitlPendingStatuses), never a hard-coded "pending" literal.
 func (r *Repository) ListPendingHITL(ctx context.Context, tx pgx.Tx) ([]claims.Claim, error) {
+	pending := make([]string, 0, len(hitlPendingStatuses))
+	for _, s := range hitlPendingStatuses {
+		pending = append(pending, string(s))
+	}
 	rows, err := tx.Query(ctx, `
 SELECT id, tenant_id, policy_id, reference, amount_paise, status, version,
        incident_date, admission_date, discharge_date
   FROM claims
- WHERE status IN ('`+string(claims.ClaimStatusHITL)+`', '`+string(claims.ClaimStatusActionPending)+`')
+ WHERE status = ANY($1)
  ORDER BY id`,
+		pending,
 	)
 	if err != nil {
 		return nil, err
