@@ -218,15 +218,11 @@ func investigationHandler(pool *pgxpool.Pool, defaultModel orchestrate.ModelClie
 				modelClient = dyn
 			}
 		}
-		// Build real tools via PGReaders.
+		// Build real tools via PGReaders (seam: buildAgentRegistry is the
+		// production registry — tests pin its exact keys to prevent drift
+		// between the test allowlist and the live wiring).
 		readers := investigate.NewPGReaders(pool)
-		registry := map[invest.ToolName]investigate.ToolFunc{
-			invest.ToolGetClaim:                tools.NewClaimTool(readers),
-			invest.ToolGetDocuments:            tools.NewDocumentsTool(readers),
-			invest.ToolGetEvidence:             tools.NewEvidenceTool(readers),
-			invest.ToolSearchEvidence:          tools.NewSearchEvidenceTool(readers),
-			invest.ToolGetVerificationFindings: tools.NewVerifyTool(nil),
-		}
+		registry := buildAgentRegistry(readers)
 		// Deadline from envelope scope (authoritative exception, not caller-supplied).
 		deadline := time.Now().Add(time.Duration(exception.Scope.DeadlineMs) * time.Millisecond)
 		exec := investigate.NewExecutor(registry, deadline)
@@ -352,6 +348,24 @@ func buildDynamicReportReadyScript(env invest.UnresolvedException) (orchestrate.
 	submitBytes, _ := json.Marshal(orchestrate.ModelAction{Action: orchestrate.ActionSubmitReport, Report: &report})
 	script := []orchestrate.ModelResponse{{Payload: callBytes, ModelID: "dynamic-mock"}, {Payload: submitBytes, ModelID: "dynamic-mock"}}
 	return orchestrate.NewMockModelClient(script), nil
+}
+
+// buildAgentRegistry is the production agent tool registry — read-only
+// over authoritative state. The orchestrator's only success output is
+// REPORT_READY/ESCALATED with a validated Report; direct claim/document
+// mutation (including create_investigation_report / T11) is never wired
+// here (Loop denies T11 even if scope allows it — tested in
+// orchestrate/mutation_boundary_test.go). This seam exists so the
+// registry regression test in cmd/agent can pin the actual live wiring
+// rather than a duplicated test-only allowlist.
+func buildAgentRegistry(readers *investigate.PGReaders) map[invest.ToolName]investigate.ToolFunc {
+	return map[invest.ToolName]investigate.ToolFunc{
+		invest.ToolGetClaim:                tools.NewClaimTool(readers),
+		invest.ToolGetDocuments:            tools.NewDocumentsTool(readers),
+		invest.ToolGetEvidence:             tools.NewEvidenceTool(readers),
+		invest.ToolSearchEvidence:          tools.NewSearchEvidenceTool(readers),
+		invest.ToolGetVerificationFindings: tools.NewVerifyTool(nil),
+	}
 }
 
 func isNotFound(err error) bool {

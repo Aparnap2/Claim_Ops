@@ -26,42 +26,12 @@ import (
 	"claimops-api/internal/investigate"
 )
 
-func authoritativeTools() []invest.ToolName {
-	return []invest.ToolName{invest.ToolCreateInvestigationReport}
-}
-
-func agentReadOnlyTools() []invest.ToolName {
-	return []invest.ToolName{
-		invest.ToolGetClaim,
-		invest.ToolGetDocuments,
-		invest.ToolGetEvidence,
-		invest.ToolSearchEvidence,
-		invest.ToolGetVerificationFindings,
-	}
-}
-
-// The agent registry at cmd/agent/main.go:223 wires exactly the read-only
-// tools above. This test pins that seam: no authoritative writer may appear
-// in the agent set, and every agent tool is allowlisted.
-func TestMutationBoundary_AgentRegistryIsReadOnly(t *testing.T) {
-	agentSet := map[invest.ToolName]struct{}{}
-	for _, nt := range agentReadOnlyTools() {
-		agentSet[nt] = struct{}{}
-	}
-	for _, w := range authoritativeTools() {
-		if _, ok := agentSet[w]; ok {
-			t.Fatalf("agent registry must not contain authoritative writer %q", string(w))
-		}
-	}
-	for tool := range agentSet {
-		if !invest.IsAllowlisted(tool) {
-			t.Fatalf("agent tool %q is not allowlisted", string(tool))
-		}
-	}
-	if len(agentSet) != 5 {
-		t.Fatalf("agent registry size = %d, want 5 read-only tools", len(agentSet))
-	}
-}
+// The production agent registry pin lives in cmd/agent/registry_test.go
+// (TestAgentRegistry_IsReadOnly) which inspects the live
+// buildAgentRegistry wiring. This file keeps the loop-boundary proofs
+// (T11 denied, report cannot carry claim_status) where the loop lives.
+// Keeping the registry assertion coupled to the real wiring prevents the
+// false-green where a duplicated test allowlist diverges from main.go.
 
 // Loop must deny T11 even when the scope explicitly allows it (the scope
 // cannot broaden envelope authority for this tool). The gate is in loop.go,
