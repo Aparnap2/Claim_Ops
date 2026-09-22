@@ -138,12 +138,22 @@ type EvidenceLocation struct {
 }
 
 // ContentBlock is one canonical unit of page content.
+//
+// ConfidenceAvailable distinguishes a trusted provider measurement from a
+// placeholder. When false, Confidence is a placeholder (LiteParse vendorSilent
+// 1.0, classification 0.85, or missing) and must not become an available
+// OCRConfidence — the HITL gate treats unavailable as low. When true,
+// Confidence is a provider-measured value in [0,1] that the worker gate
+// evaluates via documents.OCRConfidence. Invalid values (NaN, outside [0,1])
+// with ConfidenceAvailable=true are parser-integrity failures that the worker
+// routes to HITL rather than silent success (APA-12 B).
 type ContentBlock struct {
-	ID         string           `json:"id"`
-	Type       BlockType        `json:"type"`
-	Text       string           `json:"text"`
-	Evidence   EvidenceLocation `json:"evidence"`
-	Confidence float64          `json:"confidence"`
+	ID                  string           `json:"id"`
+	Type                BlockType        `json:"type"`
+	Text                string           `json:"text"`
+	Evidence            EvidenceLocation `json:"evidence"`
+	Confidence          float64          `json:"confidence"`
+	ConfidenceAvailable bool             `json:"confidence_available"`
 }
 
 // TableCell is one canonical table cell. RowSpan/ColSpan are >= 1;
@@ -219,8 +229,10 @@ func (d ParsedDocument) Validate() error {
 				return errors.New("parser: duplicate block id on page")
 			}
 			seenBlocks[b.ID] = true
-			if err := checkConfidence(b.Confidence); err != nil {
-				return err
+			if b.ConfidenceAvailable {
+				if err := checkConfidence(b.Confidence); err != nil {
+					return err
+				}
 			}
 			if err := d.checkEvidence(b.Evidence, p.Number); err != nil {
 				return err

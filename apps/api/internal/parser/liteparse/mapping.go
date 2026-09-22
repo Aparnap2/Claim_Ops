@@ -136,11 +136,12 @@ func convertPage(docID string, vp vendorPage) (parser.ParsedPage, error) {
 				continue
 			}
 			page.Blocks = append(page.Blocks, parser.ContentBlock{
-				ID:         nextBlockID(),
-				Type:       blockType(vb),
-				Text:       vb.Text,
-				Evidence:   parser.EvidenceLocation{DocumentID: docID, Page: vp.PageNum, BlockID: fmt.Sprintf("b%d", blockSeq), Box: normalizeBox(vp, vb.BBox)},
-				Confidence: vendorSilentConfidence,
+				ID:                  nextBlockID(),
+				Type:                blockType(vb),
+				Text:                vb.Text,
+				Evidence:            parser.EvidenceLocation{DocumentID: docID, Page: vp.PageNum, BlockID: fmt.Sprintf("b%d", blockSeq), Box: normalizeBox(vp, vb.BBox)},
+				Confidence:          vendorSilentConfidence,
+				ConfidenceAvailable: false,
 			})
 		}
 		return page, nil
@@ -148,11 +149,12 @@ func convertPage(docID string, vp vendorPage) (parser.ParsedPage, error) {
 	// Fallback: vendor emitted no blocks; group text items into lines.
 	for _, line := range groupLines(vp.TextItems) {
 		page.Blocks = append(page.Blocks, parser.ContentBlock{
-			ID:         nextBlockID(),
-			Type:       parser.BlockText,
-			Text:       line.text,
-			Evidence:   parser.EvidenceLocation{DocumentID: docID, Page: vp.PageNum, BlockID: fmt.Sprintf("b%d", blockSeq), Box: normalizeBox(vp, line.box)},
-			Confidence: vendorSilentConfidence,
+			ID:                  nextBlockID(),
+			Type:                parser.BlockText,
+			Text:                line.text,
+			Evidence:            parser.EvidenceLocation{DocumentID: docID, Page: vp.PageNum, BlockID: fmt.Sprintf("b%d", blockSeq), Box: normalizeBox(vp, line.box)},
+			Confidence:          vendorSilentConfidence,
+			ConfidenceAvailable: false,
 		})
 	}
 	return page, nil

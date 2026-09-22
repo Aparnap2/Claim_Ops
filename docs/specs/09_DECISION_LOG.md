@@ -108,6 +108,19 @@ deterministic service outside the loop. Detail: `docs/adr/008-agent-mutation-bou
 Regression: `orchestrate/mutation_boundary_test.go` (registry read-only,
 loop T11 denial, report cannot carry `claim_status` transition).
 
+### APA-12 OCR confidence semantics and low-evidence HITL gate (ADR-009, accepted 2026-09-22)
+Typed `documents.OCRConfidence` (available vs unavailable, validated [0,1])
+owns the trust policy; `IsLow(0.85)` is the HITL predicate
+(unavailable/invalid or value <=0.85 -> HITL YES, value >0.85 -> HITL NO).
+`Classify` 0.85 is deterministic classification, not provider OCR confidence
+and never becomes available. LiteParse vendorSilent 1.0 is placeholder
+(uncalibrated, scorer never rewards) and is not treated as provider signal
+beyond available 1.0 high. Worker `runNewPipeline` gate after `Parse` uses
+`aggregateOCRConfidence` -> `shouldEscalateForOCR` to route low-quality
+documents to exception/HITL (`LOW_OCR_CONFIDENCE` + R8 envelope). Detail:
+`docs/adr/009-ocr-confidence-hitl.md`. Regression: `documents/ocr_confidence_test.go`
+(7 boundary cases) + `worker/processor_ocr_test.go` (8 unit + full-chain HITL integration).
+
 ### #32 evidence (LiteParse 2.14.4, 45 cases, deterministic)
 - 45/45 parse_ok. Fields 280 exact / 27 normalized / 150 missing. Tables 27 pass / 13 partial / 3 missed.
 - D0 strong; D6/D7 collapse with EMPTY_ARTIFACT (OCR off by design).

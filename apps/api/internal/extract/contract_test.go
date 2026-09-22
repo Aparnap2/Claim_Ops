@@ -44,11 +44,12 @@ func conformanceFixture() parser.ParsedDocument {
 	const docID = "doc-conform-1"
 	blk := func(id, text string) parser.ContentBlock {
 		return parser.ContentBlock{
-			ID:         id,
-			Type:       parser.BlockText,
-			Text:       text,
-			Evidence:   parser.EvidenceLocation{DocumentID: docID, Page: 1, BlockID: id},
-			Confidence: 0.9,
+			ID:                  id,
+			Type:                parser.BlockText,
+			Text:                text,
+			Evidence:            parser.EvidenceLocation{DocumentID: docID, Page: 1, BlockID: id},
+			Confidence:          0.9,
+			ConfidenceAvailable: true,
 		}
 	}
 	return parser.ParsedDocument{
