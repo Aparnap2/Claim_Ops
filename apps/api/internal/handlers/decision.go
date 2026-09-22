@@ -41,9 +41,18 @@ func DecisionHandler(pool *pgxpool.Pool, secret string) fiber.Handler {
 		if strings.TrimSpace(secret) == "" {
 			return WriteError(c, fiber.StatusInternalServerError, "WEBHOOK_MISCONFIGURED", "webhook secret not configured")
 		}
-		tenantID := c.Get("X-Tenant-ID")
-		if strings.TrimSpace(tenantID) == "" {
+		// Canonicalize the tenant once at the ingress boundary: the exact
+		// identity authenticated by the MAC must be the identity used for
+		// RLS, lookup, mutation, and audit. Tenant IDs are security
+		// identifiers, so surrounding whitespace is rejected rather than
+		// silently normalized.
+		rawTenant := c.Get("X-Tenant-ID")
+		tenantID := strings.TrimSpace(rawTenant)
+		if tenantID == "" {
 			return WriteError(c, fiber.StatusBadRequest, "BAD_REQUEST", "X-Tenant-ID required")
+		}
+		if rawTenant != tenantID {
+			return WriteError(c, fiber.StatusBadRequest, "BAD_REQUEST", "X-Tenant-ID must not contain leading or trailing whitespace")
 		}
 		claimID := c.Params("id")
 		if strings.TrimSpace(claimID) == "" {

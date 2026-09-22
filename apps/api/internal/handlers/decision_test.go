@@ -192,6 +192,39 @@ func TestDecision_TrustedTenantStillRequired(t *testing.T) {
 	}
 }
 
+// The signer binds the tenant byte-for-byte: a padded tenant never shares
+// a MAC with its trimmed form, so no layer can silently normalize one
+// identity into the other.
+func TestDecision_SignerBindsExactTenantBytes(t *testing.T) {
+	body := []byte(apa9Body())
+	a := handlers.SignWebhookRequest(apa9Secret, http.MethodPost, apa9Path("clm-apa9-01"), "tnt-apa9", body)
+	b := handlers.SignWebhookRequest(apa9Secret, http.MethodPost, apa9Path("clm-apa9-01"), " tnt-apa9 ", body)
+	if a == b {
+		t.Fatal("padded tenant shares MAC with trimmed tenant (silent normalization)")
+	}
+}
+
+// The HTTP stack strips header OWS before the handler runs, so a padded
+// header arrives canonicalized: it authenticates only under the trimmed
+// identity, and that same identity flows to RLS. MAC identity == RLS
+// identity by construction (single tenantID variable, exact-byte MAC).
+func TestDecision_PaddedHeaderUsesCanonicalIdentity(t *testing.T) {
+	app := apa9App(apa9Secret)
+	body := apa9Body()
+	trimmedSig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9", body)
+	paddedSig := apa9Sign(apa9Secret, "clm-apa9-01", " tnt-apa9 ", body)
+	// Padded-tenant MAC must not verify against the canonical identity.
+	status, _ := apa9Do(t, app, "clm-apa9-01", "tnt-apa9", body, paddedSig)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("padded-tenant MAC vs canonical identity status = %d, want 401", status)
+	}
+	// Trimmed-tenant MAC verifies (nil pool then proves auth passed).
+	status, respBody := apa9Do(t, app, "clm-apa9-01", " tnt-apa9 ", body, trimmedSig)
+	if status != http.StatusServiceUnavailable || !strings.Contains(respBody, "NO_DB") {
+		t.Fatalf("canonical identity status = %d (%s), want 503 NO_DB", status, respBody)
+	}
+}
+
 // Body-carried tenant_id must never become authority: extra JSON field is
 // ignored, header remains the source (missing header still 400 even when
 // body names a tenant).

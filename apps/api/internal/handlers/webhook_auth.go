@@ -32,15 +32,19 @@ import (
 const signatureHeader = "X-Signature"
 
 // signedMaterial renders the exact bytes covered by the webhook MAC:
-// upper-cased method, request path, trimmed tenant, then the raw body,
-// each of the first three followed by "\n".
+// upper-cased method, request path, tenant, then the raw body, each of
+// the first three followed by "\n". The tenant is bound byte-for-byte:
+// no trimming happens here, so a padded tenant never silently matches
+// its trimmed form. Canonicalization (trim + reject padded) happens once
+// at the HTTP boundary in DecisionHandler, which passes the single
+// canonical value to both verification and RLS.
 func signedMaterial(method, path, tenantID string, body []byte) []byte {
 	var b []byte
 	b = append(b, []byte(strings.ToUpper(strings.TrimSpace(method)))...)
 	b = append(b, '\n')
 	b = append(b, []byte(path)...)
 	b = append(b, '\n')
-	b = append(b, []byte(strings.TrimSpace(tenantID))...)
+	b = append(b, []byte(tenantID)...)
 	b = append(b, '\n')
 	b = append(b, body...)
 	return b
@@ -54,7 +58,7 @@ func verifyWebhookRequest(secret, method, path, tenantID string, body []byte, si
 	if secret == "" {
 		return false
 	}
-	if strings.TrimSpace(tenantID) == "" {
+	if tenantID == "" {
 		return false
 	}
 	sig := strings.TrimSpace(sigHex)
