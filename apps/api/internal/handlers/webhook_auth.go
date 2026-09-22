@@ -1,16 +1,23 @@
 // Package handlers — HITL webhook authentication (APA-9).
 //
 // The HITL decision endpoint is an authenticated webhook ingress: every
-// request must carry an HMAC-SHA256 signature over the exact raw body
-// bytes in the X-Signature header (lowercase hex). Verification is
-// mandatory and fail-closed in every environment — there is no
-// APP_ENV bypass, no "none" mode, and no provider that always succeeds.
+// request must carry an HMAC-SHA256 signature in the X-Signature header
+// (lowercase hex) covering the full logical request:
+//
+//	method + "\n" + path + "\n" + tenantID + "\n" + rawBody
+//
+// Authenticated: HTTP method, request path (including the claim ID),
+// X-Tenant-ID, and the exact raw body bytes. Anything outside that
+// material (e.g. other headers) is not bound. Verification is mandatory
+// and fail-closed in every environment — no APP_ENV bypass, no "none"
+// mode, no always-succeed provider.
 //
 // Tenant identity is derived from the X-Tenant-ID header only, never
-// from a hardcoded "default" and never from the body. Cross-tenant
-// access is rejected by the RLS-scoped lookup plus the tid check in
-// DecisionHandler. No secret or raw payload is ever logged: failures
-// return stable codes only.
+// from a hardcoded "default" and never from the body — and because the
+// tenant is part of the signed material, a caller cannot take a valid
+// signature for tenant A and replay it as tenant B. Cross-tenant access
+// is additionally rejected by the RLS-scoped lookup plus the tid check
+// in DecisionHandler. No secret or raw payload is ever logged.
 package handlers
 
 import (
@@ -24,11 +31,30 @@ import (
 // signatureHeader is the only carrier for the webhook signature.
 const signatureHeader = "X-Signature"
 
-// verifyWebhookSignature reports whether sigHex is the lowercase-hex
-// HMAC-SHA256 of body under secret. Empty secret, empty signature, or
-// malformed hex all fail closed (false). Comparison is constant-time.
-func verifyWebhookSignature(secret string, body []byte, sigHex string) bool {
+// signedMaterial renders the exact bytes covered by the webhook MAC:
+// upper-cased method, request path, trimmed tenant, then the raw body,
+// each of the first three followed by "\n".
+func signedMaterial(method, path, tenantID string, body []byte) []byte {
+	var b []byte
+	b = append(b, []byte(strings.ToUpper(strings.TrimSpace(method)))...)
+	b = append(b, '\n')
+	b = append(b, []byte(path)...)
+	b = append(b, '\n')
+	b = append(b, []byte(strings.TrimSpace(tenantID))...)
+	b = append(b, '\n')
+	b = append(b, body...)
+	return b
+}
+
+// verifyWebhookRequest reports whether sigHex is the lowercase-hex
+// HMAC-SHA256 of the signed material under secret. Empty secret, empty
+// tenant, empty signature, or malformed hex all fail closed (false).
+// Comparison is constant-time.
+func verifyWebhookRequest(secret, method, path, tenantID string, body []byte, sigHex string) bool {
 	if secret == "" {
+		return false
+	}
+	if strings.TrimSpace(tenantID) == "" {
 		return false
 	}
 	sig := strings.TrimSpace(sigHex)
@@ -40,7 +66,7 @@ func verifyWebhookSignature(secret string, body []byte, sigHex string) bool {
 		return false
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
+	mac.Write(signedMaterial(method, path, tenantID, body))
 	want := mac.Sum(nil)
 	if len(got) != len(want) {
 		return false
@@ -48,10 +74,11 @@ func verifyWebhookSignature(secret string, body []byte, sigHex string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-// signWebhookBody renders the lowercase-hex HMAC-SHA256 of body under
-// secret. Test and workflow-signer helper only — production never signs.
-func signWebhookBody(secret string, body []byte) string {
+// SignWebhookRequest renders the lowercase-hex HMAC-SHA256 of the signed
+// material under secret. Test and workflow-signer helper only —
+// production never signs.
+func SignWebhookRequest(secret, method, path, tenantID string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
+	mac.Write(signedMaterial(method, path, tenantID, body))
 	return hex.EncodeToString(mac.Sum(nil))
 }

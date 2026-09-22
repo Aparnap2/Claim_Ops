@@ -1,9 +1,6 @@
 package handlers_test
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,10 +14,14 @@ import (
 
 const apa9Secret = "test-hit-webhook-secret-apa9-01"
 
-func apa9Sign(secret, body string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(body))
-	return hex.EncodeToString(mac.Sum(nil))
+func apa9Path(claimID string) string {
+	return "/v1/claims/" + claimID + "/decision"
+}
+
+// apa9Sign signs the full logical request: method + path (claim binding) +
+// tenant (tenant binding) + raw body.
+func apa9Sign(secret, claimID, tenant, body string) string {
+	return handlers.SignWebhookRequest(secret, http.MethodPost, apa9Path(claimID), tenant, []byte(body))
 }
 
 func apa9App(secret string) *fiber.App {
@@ -31,7 +32,7 @@ func apa9App(secret string) *fiber.App {
 
 func apa9Do(t *testing.T, app *fiber.App, claimID, tenant, body, sig string) (int, string) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/v1/claims/"+claimID+"/decision", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, apa9Path(claimID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	if tenant != "" {
 		req.Header.Set("X-Tenant-ID", tenant)
@@ -80,7 +81,7 @@ func TestDecision_InvalidSignatureRejected(t *testing.T) {
 func TestDecision_TamperedBodyRejected(t *testing.T) {
 	app := apa9App(apa9Secret)
 	sent := `{"action":"APPROVE","reason":"tampered","actor":"human","request_id":"req-apa9-01"}`
-	sig := apa9Sign(apa9Secret, apa9Body()) // signature for a different body
+	sig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9", apa9Body()) // signature for a different body
 	status, body := apa9Do(t, app, "clm-apa9-01", "tnt-apa9", sent, sig)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("tampered body status = %d, want 401", status)
@@ -93,7 +94,7 @@ func TestDecision_TamperedBodyRejected(t *testing.T) {
 // Wrong secret must fail.
 func TestDecision_WrongSecretRejected(t *testing.T) {
 	app := apa9App(apa9Secret)
-	sig := apa9Sign("wrong-secret", apa9Body())
+	sig := apa9Sign("wrong-secret", "clm-apa9-01", "tnt-apa9", apa9Body())
 	status, body := apa9Do(t, app, "clm-apa9-01", "tnt-apa9", apa9Body(), sig)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("wrong secret status = %d, want 401", status)
@@ -108,7 +109,7 @@ func TestDecision_WrongSecretRejected(t *testing.T) {
 func TestDecision_ValidSignatureSucceeds(t *testing.T) {
 	app := apa9App(apa9Secret)
 	body := apa9Body()
-	sig := apa9Sign(apa9Secret, body)
+	sig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9", body)
 	status, respBody := apa9Do(t, app, "clm-apa9-01", "tnt-apa9", body, sig)
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("valid signature status = %d, want 503 NO_DB (auth passed, no DB)", status)
@@ -118,12 +119,70 @@ func TestDecision_ValidSignatureSucceeds(t *testing.T) {
 	}
 }
 
+// Altered X-Tenant-ID with an otherwise valid signature must fail: the
+// tenant is part of the signed material.
+func TestDecision_AlteredTenantRejected(t *testing.T) {
+	app := apa9App(apa9Secret)
+	body := apa9Body()
+	sig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9", body)
+	status, respBody := apa9Do(t, app, "clm-apa9-01", "tnt-apa9-evil", body, sig)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("altered tenant status = %d, want 401", status)
+	}
+	if !strings.Contains(respBody, "WEBHOOK_UNAUTHORIZED") {
+		t.Fatalf("altered tenant body = %s, want WEBHOOK_UNAUTHORIZED", respBody)
+	}
+}
+
+// Signature generated for tenant A sent with header tenant B must fail.
+func TestDecision_CrossTenantSignatureRejected(t *testing.T) {
+	app := apa9App(apa9Secret)
+	body := apa9Body()
+	sigA := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9-a", body)
+	status, respBody := apa9Do(t, app, "clm-apa9-01", "tnt-apa9-b", body, sigA)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("cross-tenant signature status = %d, want 401", status)
+	}
+	if !strings.Contains(respBody, "WEBHOOK_UNAUTHORIZED") {
+		t.Fatalf("cross-tenant signature body = %s, want WEBHOOK_UNAUTHORIZED", respBody)
+	}
+}
+
+// Altered claim URL with an otherwise valid signature must fail: the
+// path (claim binding) is part of the signed material.
+func TestDecision_AlteredClaimURLRejected(t *testing.T) {
+	app := apa9App(apa9Secret)
+	body := apa9Body()
+	sig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9", body)
+	status, respBody := apa9Do(t, app, "clm-apa9-02", "tnt-apa9", body, sig)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("altered claim URL status = %d, want 401", status)
+	}
+	if !strings.Contains(respBody, "WEBHOOK_UNAUTHORIZED") {
+		t.Fatalf("altered claim URL body = %s, want WEBHOOK_UNAUTHORIZED", respBody)
+	}
+}
+
+// Same signed body replayed to another claim must fail.
+func TestDecision_ReplayToAnotherClaimRejected(t *testing.T) {
+	app := apa9App(apa9Secret)
+	body := apa9Body()
+	sig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9", body)
+	status, respBody := apa9Do(t, app, "clm-apa9-other", "tnt-apa9", body, sig)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("replay-to-another-claim status = %d, want 401", status)
+	}
+	if !strings.Contains(respBody, "WEBHOOK_UNAUTHORIZED") {
+		t.Fatalf("replay-to-another-claim body = %s, want WEBHOOK_UNAUTHORIZED", respBody)
+	}
+}
+
 // Tenant still comes from the header only: valid signature but missing
 // tenant must reject with tenant error, not proceed.
 func TestDecision_TrustedTenantStillRequired(t *testing.T) {
 	app := apa9App(apa9Secret)
 	body := apa9Body()
-	sig := apa9Sign(apa9Secret, body)
+	sig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9", body)
 	status, respBody := apa9Do(t, app, "clm-apa9-01", "", body, sig)
 	if status != http.StatusBadRequest {
 		t.Fatalf("missing tenant status = %d, want 400", status)
@@ -139,7 +198,7 @@ func TestDecision_TrustedTenantStillRequired(t *testing.T) {
 func TestDecision_BodyTenantNeverAuthority(t *testing.T) {
 	app := apa9App(apa9Secret)
 	body := `{"action":"APPROVE","reason":"ok","actor":"human","request_id":"req-apa9-01","tenant_id":"tnt-body-evil"}`
-	sig := apa9Sign(apa9Secret, body)
+	sig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-body-evil", body)
 	status, respBody := apa9Do(t, app, "clm-apa9-01", "", body, sig)
 	if status != http.StatusBadRequest {
 		t.Fatalf("body-tenant-only status = %d, want 400 (header required)", status)
@@ -153,7 +212,7 @@ func TestDecision_BodyTenantNeverAuthority(t *testing.T) {
 func TestDecision_EmptySecretMisconfigured(t *testing.T) {
 	app := apa9App("")
 	body := apa9Body()
-	sig := apa9Sign(apa9Secret, body)
+	sig := apa9Sign(apa9Secret, "clm-apa9-01", "tnt-apa9", body)
 	status, respBody := apa9Do(t, app, "clm-apa9-01", "tnt-apa9", body, sig)
 	if status != http.StatusInternalServerError {
 		t.Fatalf("empty secret status = %d, want 500", status)

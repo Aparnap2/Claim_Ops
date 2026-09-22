@@ -29,22 +29,17 @@ type DecisionRequest struct {
 
 // DecisionHandler returns the HITL decision handler bound to pool and the
 // webhook secret. Signature verification is mandatory and fail-closed in
-// every environment: missing secret, missing signature, malformed hex, or
-// HMAC mismatch all reject before any tenant lookup or state read. Tenant
-// identity comes from the X-Tenant-ID header only — never a hardcoded
-// "default", never the body. No secret or payload bytes are logged.
+// every environment: the HMAC covers method + path (claim binding) +
+// tenant (tenant binding) + raw body, so a valid signature for one
+// tenant/claim cannot be replayed as another. Missing secret, missing
+// tenant, missing signature, malformed hex, or HMAC mismatch all reject
+// before any state read. Tenant identity comes from the X-Tenant-ID
+// header only — never a hardcoded "default", never the body. No secret
+// or payload bytes are logged.
 func DecisionHandler(pool *pgxpool.Pool, secret string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if strings.TrimSpace(secret) == "" {
 			return WriteError(c, fiber.StatusInternalServerError, "WEBHOOK_MISCONFIGURED", "webhook secret not configured")
-		}
-		raw := c.Body()
-		sig := c.Get(signatureHeader)
-		if strings.TrimSpace(sig) == "" {
-			return WriteError(c, fiber.StatusUnauthorized, "WEBHOOK_UNAUTHORIZED", "signature required")
-		}
-		if !verifyWebhookSignature(secret, raw, sig) {
-			return WriteError(c, fiber.StatusUnauthorized, "WEBHOOK_UNAUTHORIZED", "invalid signature")
 		}
 		tenantID := c.Get("X-Tenant-ID")
 		if strings.TrimSpace(tenantID) == "" {
@@ -53,6 +48,14 @@ func DecisionHandler(pool *pgxpool.Pool, secret string) fiber.Handler {
 		claimID := c.Params("id")
 		if strings.TrimSpace(claimID) == "" {
 			return WriteError(c, fiber.StatusBadRequest, "BAD_REQUEST", "claim id required")
+		}
+		raw := c.Body()
+		sig := c.Get(signatureHeader)
+		if strings.TrimSpace(sig) == "" {
+			return WriteError(c, fiber.StatusUnauthorized, "WEBHOOK_UNAUTHORIZED", "signature required")
+		}
+		if !verifyWebhookRequest(secret, c.Method(), c.Path(), tenantID, raw, sig) {
+			return WriteError(c, fiber.StatusUnauthorized, "WEBHOOK_UNAUTHORIZED", "invalid signature")
 		}
 		var req DecisionRequest
 		if err := c.BodyParser(&req); err != nil {
@@ -135,11 +138,35 @@ func DecisionHandler(pool *pgxpool.Pool, secret string) fiber.Handler {
 			_ = tx.Rollback(tctx)
 			return c.JSON(fiber.Map{"ok": true, "claim_id": claimID, "status": string(next.Status), "version": next.Version, "replay": true})
 		}
-		// Persist next claim version.
-		_, err = tx.Exec(tctx, `UPDATE claims SET status = $1, version = $2 WHERE id = $3 AND tenant_id = $4`, string(next.Status), next.Version, claimID, tenantID)
+		// Persist next claim version with optimistic concurrency: the
+		// row must still be at the version we read. Concurrent duplicate
+		// webhooks therefore serialize here — exactly one wins.
+		tag, err := tx.Exec(tctx, `UPDATE claims SET status = $1, version = $2 WHERE id = $3 AND tenant_id = $4 AND version = $5`, string(next.Status), next.Version, claimID, tenantID, cl.Version)
 		if err != nil {
 			_ = tx.Rollback(tctx)
 			return WriteError(c, fiber.StatusInternalServerError, "STORE_ERROR", err.Error())
+		}
+		if tag.RowsAffected() == 0 {
+			// Lost the race: re-read under the same tx to distinguish
+			// idempotent replay (event now present, or state already at
+			// target) from a genuine version conflict.
+			var curStatus string
+			var curVersion int
+			if rerr := tx.QueryRow(tctx, `SELECT status, version FROM claims WHERE id = $1`, claimID).Scan(&curStatus, &curVersion); rerr != nil {
+				_ = tx.Rollback(tctx)
+				return WriteError(c, fiber.StatusConflict, "VERSION_CONFLICT", "concurrent modification")
+			}
+			var evCount int
+			if rerr := tx.QueryRow(tctx, `SELECT COUNT(*) FROM claim_events WHERE tenant_id = $1 AND claim_id = $2 AND event_id = $3`, tenantID, claimID, eventID).Scan(&evCount); rerr == nil && evCount > 0 {
+				_ = tx.Rollback(tctx)
+				return c.JSON(fiber.Map{"ok": true, "claim_id": claimID, "status": curStatus, "version": curVersion, "replay": true})
+			}
+			// Event absent but version moved: another event already
+			// transitioned the claim (possibly to the same target).
+			// The loser's event was never recorded, so this is an
+			// explicit conflict — never a silent replay.
+			_ = tx.Rollback(tctx)
+			return WriteError(c, fiber.StatusConflict, "VERSION_CONFLICT", "concurrent modification")
 		}
 		_, err = tx.Exec(tctx, `INSERT INTO claim_events (tenant_id, claim_id, seq, type, from_status, to_status, event_id) VALUES ($1,$2,1,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
 			tenantID, claimID, "claim.transitioned", string(cl.Status), string(next.Status), eventID)
