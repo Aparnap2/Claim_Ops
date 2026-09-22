@@ -50,9 +50,12 @@ func validArtifact(docID string) ParsedDocument {
 		DocumentID: docID,
 		Pages: []ParsedPage{{Number: 1,
 			Blocks: []ContentBlock{{
-				ID: "b1", Type: BlockText, Text: "hello",
-				Evidence:   EvidenceLocation{DocumentID: docID, Page: 1, BlockID: "b1"},
-				Confidence: 0.9,
+				ID:                  "b1",
+				Type:                BlockText,
+				Text:                "hello",
+				Evidence:            EvidenceLocation{DocumentID: docID, Page: 1, BlockID: "b1"},
+				Confidence:          0.9,
+				ConfidenceAvailable: true,
 			}},
 			Tables: []Table{{ID: "t1", Page: 1, Rows: []TableRow{{Cells: []TableCell{
 				{Text: "a", Evidence: EvidenceLocation{DocumentID: docID, Page: 1}, RowSpan: 1, ColSpan: 2},
@@ -75,7 +78,10 @@ func TestArtifactValidate(t *testing.T) {
 		{"dup block", func(d *ParsedDocument) {
 			d.Pages[0].Blocks = append(d.Pages[0].Blocks, d.Pages[0].Blocks[0])
 		}},
-		{"bad confidence", func(d *ParsedDocument) { d.Pages[0].Blocks[0].Confidence = 2 }},
+		{"bad confidence", func(d *ParsedDocument) {
+			d.Pages[0].Blocks[0].Confidence = 2
+			d.Pages[0].Blocks[0].ConfidenceAvailable = true
+		}},
 		{"evidence doc mismatch", func(d *ParsedDocument) { d.Pages[0].Blocks[0].Evidence.DocumentID = "other" }},
 		{"evidence page mismatch", func(d *ParsedDocument) { d.Pages[0].Blocks[0].Evidence.Page = 9 }},
 		{"zero span", func(d *ParsedDocument) { d.Pages[0].Tables[0].Rows[0].Cells[0].RowSpan = 0 }},

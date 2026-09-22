@@ -20,16 +20,12 @@ func scoreBox(y0 float64) *parser.BoundingBox {
 
 func scoreBlock(docID string, page int, id, text string, box *parser.BoundingBox) parser.ContentBlock {
 	return parser.ContentBlock{
-		ID:   id,
-		Type: parser.BlockText,
-		Text: text,
-		Evidence: parser.EvidenceLocation{
-			DocumentID: docID,
-			Page:       page,
-			BlockID:    id,
-			Box:        box,
-		},
-		Confidence: 0.9,
+		ID:                  id,
+		Type:                parser.BlockText,
+		Text:                text,
+		Evidence:            parser.EvidenceLocation{DocumentID: docID, Page: page, BlockID: id, Box: box},
+		Confidence:          0.9,
+		ConfidenceAvailable: true,
 	}
 }
 

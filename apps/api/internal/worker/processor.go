@@ -598,12 +598,14 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 	if err != nil {
 		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: parse document: %w", err))
 	}
-	if err := parsed.Validate(); err != nil {
-		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: parse artifact invalid: %w", err))
+	validateErr := parsed.Validate()
+	if validateErr != nil && !isConfidenceValidationError(validateErr) {
+		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: parse artifact invalid: %w", validateErr))
 	}
 	// APA-12: OCR confidence gate (deterministic, fail closed to HITL).
 	// Unavailable/invalid or value <= 0.85 -> low-quality evidence.
-	lowOCREscalate := shouldEscalateForOCR(aggregateOCRConfidence(parsed))
+	// Invalid confidence is evidence-quality (HITL), not parser integrity.
+	lowOCREscalate := shouldEscalateForOCR(aggregateOCRConfidence(parsed)) || isConfidenceValidationError(validateErr)
 
 	ext, err := p.extractorForDocType(effective)
 	if err != nil {
