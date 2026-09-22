@@ -64,8 +64,16 @@ func main() {
 	}
 	fiberApp := app.NewWithDeps(uploader)
 	if decisionPool != nil {
-		fiberApp.Post("/v1/claims/:id/decision", handlers.DecisionHandler(decisionPool))
-		log.Print("api: HITL decision endpoint enabled at POST /v1/claims/:id/decision")
+		// APA-9: HMAC secret is mandatory fail-closed at request time.
+		// An empty secret keeps boot alive but every decision request
+		// rejects with WEBHOOK_MISCONFIGURED; the secret value itself is
+		// never logged.
+		secret := cfg.HITLWebhookSecret
+		if secret == "" {
+			log.Print("decision: HITL_WEBHOOK_SECRET empty; decision endpoint will fail closed")
+		}
+		fiberApp.Post("/v1/claims/:id/decision", handlers.DecisionHandler(decisionPool, secret))
+		log.Print("api: HITL decision endpoint enabled at POST /v1/claims/:id/decision (HMAC enforced)")
 	}
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	log.Printf("claimops-api listening on %s (env=%s)", addr, cfg.AppEnv)

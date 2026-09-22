@@ -27,9 +27,25 @@ type DecisionRequest struct {
 	EventID   string `json:"event_id"`
 }
 
-// DecisionHandler returns the HITL decision handler bound to pool.
-func DecisionHandler(pool *pgxpool.Pool) fiber.Handler {
+// DecisionHandler returns the HITL decision handler bound to pool and the
+// webhook secret. Signature verification is mandatory and fail-closed in
+// every environment: missing secret, missing signature, malformed hex, or
+// HMAC mismatch all reject before any tenant lookup or state read. Tenant
+// identity comes from the X-Tenant-ID header only — never a hardcoded
+// "default", never the body. No secret or payload bytes are logged.
+func DecisionHandler(pool *pgxpool.Pool, secret string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if strings.TrimSpace(secret) == "" {
+			return WriteError(c, fiber.StatusInternalServerError, "WEBHOOK_MISCONFIGURED", "webhook secret not configured")
+		}
+		raw := c.Body()
+		sig := c.Get(signatureHeader)
+		if strings.TrimSpace(sig) == "" {
+			return WriteError(c, fiber.StatusUnauthorized, "WEBHOOK_UNAUTHORIZED", "signature required")
+		}
+		if !verifyWebhookSignature(secret, raw, sig) {
+			return WriteError(c, fiber.StatusUnauthorized, "WEBHOOK_UNAUTHORIZED", "invalid signature")
+		}
 		tenantID := c.Get("X-Tenant-ID")
 		if strings.TrimSpace(tenantID) == "" {
 			return WriteError(c, fiber.StatusBadRequest, "BAD_REQUEST", "X-Tenant-ID required")

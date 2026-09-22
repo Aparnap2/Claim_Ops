@@ -36,6 +36,10 @@ type Config struct {
 	WorkflowsLocation     string
 	AgentURL              string
 	APIURL                string
+
+	// HITL webhook authentication (APA-9). Empty fails closed at request
+	// time (WEBHOOK_MISCONFIGURED) — never bypassed by APP_ENV.
+	HITLWebhookSecret string
 }
 
 // Load reads configuration from the environment with safe defaults.
@@ -59,6 +63,7 @@ func Load() (Config, error) {
 		WorkflowsLocation:     envOr("WORKFLOWS_LOCATION", "us-central1"),
 		AgentURL:              envOr("AGENT_URL", "http://localhost:8081"),
 		APIURL:                envOr("API_URL", "http://localhost:8000"),
+		HITLWebhookSecret:     os.Getenv("HITL_WEBHOOK_SECRET"),
 	}
 	pollRaw := envOr("OUTBOX_POLL_MS", "1000")
 	poll, err := strconv.Atoi(pollRaw)
