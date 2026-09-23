@@ -8,11 +8,13 @@
 # - ANTI-FAKE-GREEN: the assert-services step below fails the job when zero
 #   postgres-backed tests ran, so a green check always proves the services
 #   layer delivered (a 100%-skipped run = infra failure, not success).
-# - PLACEHOLDER (TODO(ci-hardening)): the role-bootstrap, `db-bootstrap`,
-#   and `start-mockoon` steps below are adapted from repo conventions but have
-#   NOT been executed under GitHub Actions or act in this environment. The
-#   first green run must confirm them; file a CI-hardening follow-up issue
-#   for any fix needed.
+# - PLACEHOLDER (TODO(ci-hardening)): the `start-mockoon` step below is
+#   adapted from repo conventions but has NOT been executed under GitHub
+#   Actions or act in this environment. The role-bootstrap + `db-bootstrap`
+#   steps implement the production-shaped topology (owner claimops,
+#   NOSUPERUSER app/worker — S1/APA-24) but likewise await the first green
+#   run for confirmation; file a CI-hardening follow-up issue for any fix
+#   needed.
 # - DOCUMENTED GAP (not faked): localgcp is a host CLI (v0.6.0; Pub/Sub
 #   :8085, Storage :4443; see `make local` and docs/gcp-compat-review.md)
 #   with no pinned container image in repo config, so `make localgcp-test`
@@ -38,16 +40,23 @@ jobs:
         # Pinned; same image as the local claimops-postgres container.
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: claimops_app
+          # Service owner/superuser is `claimops`, mirroring the local
+          # claimops-postgres container (POSTGRES_USER=claimops). Runtime
+          # roles (claimops_app/claimops_worker) are provisioned below as
+          # NOSUPERUSER so RLS (incl. FORCE) is actually enforced for tests.
+          # Bootstrapping the service as claimops_app made it a superuser,
+          # which bypasses RLS and red-then-green-inverted every
+          # cross-tenant test (S1/APA-24). Never run tests as superuser.
+          POSTGRES_USER: claimops
           # Throwaway CI-only password (matches the repo's local DSN
           # password, never a real secret). Production uses Secret Manager.
-          POSTGRES_PASSWORD: claimops_app
+          POSTGRES_PASSWORD: claimops
           POSTGRES_DB: claimops
         ports:
           # Keeps the Makefile default DSN (localhost:5433) working unchanged.
           - 5433:5432
         options: >-
-          --health-cmd "pg_isready -U claimops_app -d claimops"
+          --health-cmd "pg_isready -U claimops -d claimops"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -63,23 +72,18 @@ jobs:
           cache-dependency-path: apps/api/go.sum
 
       - name: Bootstrap service roles (pre-migration — mirrors local claimops-postgres)
-        # Root cause of the 002 failure (`ERROR: role "claimops" does not
-        # exist`, exit 3): 002 ends with `ALTER DEFAULT PRIVILEGES FOR ROLE
-        # claimops ...`, which requires the `claimops` role to exist. Locally
-        # it exists because claimops-postgres is created with
-        # POSTGRES_USER=claimops (superuser/owner; verified via
-        # `docker inspect claimops-postgres`), while claimops_app and
-        # claimops_worker are least-privilege LOGIN roles whose passwords
-        # match the test DSNs. The CI service instead bootstraps
-        # POSTGRES_USER=claimops_app, so `claimops` must be provisioned here
-        # and claimops_worker needs its password set (006 creates the role
-        # but sets no password, so WORKER_DATABASE_URL auth would fail).
-        # Idempotent DO blocks (plain CREATE ROLE has no IF NOT EXISTS);
-        # versioned migrations are never edited for environment shape.
-        # `claimops` is intentionally plain LOGIN (least privilege): it exists
-        # only as 002's FOR ROLE target — CI's superuser is claimops_app —
-        # so it gets no SUPERUSER/CREATEDB even though the local bootstrap
-        # superuser carries them.
+        # Production-shaped role topology (S1/APA-24):
+        # - `claimops` is the service bootstrap superuser AND migration
+        #   owner (mirrors local claimops-postgres, POSTGRES_USER=claimops).
+        #   002's `ALTER DEFAULT PRIVILEGES FOR ROLE claimops` requires this.
+        # - `claimops_app` / `claimops_worker` are NOSUPERUSER LOGIN roles so
+        #   RLS (incl. FORCE) is enforced for tests. A superuser app role
+        #   bypasses RLS and inverts every cross-tenant test (red in CI,
+        #   green locally) — that was the 10/10 Layer B failure mode.
+        # Idempotent DO blocks (plain CREATE ROLE has no IF NOT EXISTS) plus
+        # unconditional ALTER ROLE ... NOSUPERUSER (downgrades a pre-existing
+        # superuser, e.g. reruns against a kept volume); versioned
+        # migrations are never edited for environment shape.
         # Passwords are throwaway CI-only values matching the repo's local
         # DSNs (same convention as the postgres service above); production
         # uses Secret Manager / TF_VAR(db_password_*). They travel as env
@@ -91,47 +95,45 @@ jobs:
         # NOTE: passwords are shell-expanded, not psql -v vars — psql
         # performs no variable substitution inside -c SQL strings.
         env:
-          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
-          CLAIMOPS_PASSWORD: claimops
+          OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
+          CLAIMOPS_APP_PASSWORD: claimops_app
           CLAIMOPS_WORKER_PASSWORD: claimops_worker
         run: |
           BOOTSTRAP_SQL="DO \$\$
           BEGIN
-            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops') THEN
-              CREATE ROLE claimops WITH LOGIN PASSWORD '${CLAIMOPS_PASSWORD}';
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_app') THEN
+              CREATE ROLE claimops_app WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_APP_PASSWORD}';
             END IF;
             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_worker') THEN
-              CREATE ROLE claimops_worker WITH LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';
+              CREATE ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';
             END IF;
           END
           \$\$;
-          ALTER ROLE claimops WITH LOGIN PASSWORD '${CLAIMOPS_PASSWORD}';
-          ALTER ROLE claimops_worker WITH LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';"
+          ALTER ROLE claimops_app WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_APP_PASSWORD}';
+          ALTER ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';"
           docker run --rm --network host \
             postgres:16-alpine \
-            psql "$TEST_POSTGRES_DSN" -v ON_ERROR_STOP=1 -c "$BOOTSTRAP_SQL"
+            psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -c "$BOOTSTRAP_SQL"
 
-      - name: Bootstrap DB schema (PLACEHOLDER — verify on first run)
-        # TODO(ci-hardening): confirm on first green run. Known subtlety:
-        # production roles are created by infra/terraform/database.tf
-        # (claimops_app is a least-privilege non-superuser; RLS + privilege
-        # revocation in 002/006 are asserted by postgres_test.go). This step
-        # applies migrations as the service superuser, so RLS/privilege-
-        # denial assertions may behave differently than against the
-        # Terraform-provisioned shape. If they fail, the bootstrap must
-        # create non-superuser roles (CREATE ROLE ... + GRANTs) instead of
-        # running everything as superuser — do NOT weaken the tests.
+      - name: Bootstrap DB schema (migrations run as owner claimops)
+        # Migrations run as the owner/superuser `claimops` — the same shape
+        # as local (`psql` direct) and as production's migration path — so
+        # GRANT/REVOKE/DEFAULT PRIVILEGES land identically. Tests run as
+        # `claimops_app` (TEST_POSTGRES_DSN below), a non-superuser, so RLS
+        # + privilege-denial assertions (postgres_test.go) execute against
+        # the real enforced shape. If they fail, fix roles/grants here —
+        # do NOT weaken the tests.
         # `--network host` assumes a Linux runner (GitHub ubuntu / act on
         # Linux); revisit if runners change OS.
         env:
-          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
         run: |
           for f in infra/postgres/migrations/*.sql; do
             echo "applying $f"
             docker run --rm --network host \
               -v "${GITHUB_WORKSPACE}/infra/postgres/migrations:/migrations:ro" \
               postgres:16-alpine \
-              psql "$TEST_POSTGRES_DSN" -v ON_ERROR_STOP=1 -f "/migrations/$(basename "$f")"
+              psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -f "/migrations/$(basename "$f")"
           done
 
       - name: Start Mockoon (PLACEHOLDER — verify on first run)
