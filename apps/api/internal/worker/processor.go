@@ -53,6 +53,8 @@ import (
 	"claimops-api/internal/ports"
 	"claimops-api/internal/verify"
 	"claimops-api/internal/verifywrap"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // MaxAttempts bounds transient retries (fetch, persist, and read-model
@@ -230,6 +232,37 @@ func isPermanent(err error) bool {
 	return errors.Is(err, ErrCorruptedBlob) || errors.Is(err, ErrBlobTooLarge)
 }
 
+// retryableStoreErr reports whether a store/dependency error merits another
+// attempt (S3/F8). Integrity-constraint violations (pgconn class 23) are
+// data faults retry cannot heal: the repository layer already converts real
+// dedup conflicts to inserted=false, so a surfaced class-23 error is
+// unexpected and terminal. Serialization (40001), transport, and ordinary
+// DB errors stay TRANSIENT.
+func retryableStoreErr(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return len(pgErr.Code) < 2 || pgErr.Code[:2] != "23"
+	}
+	return true
+}
+
+// abortedByCtx returns a raw-context TRANSIENT outcome when err wraps
+// cancellation or the context is already done (S3/F7: cancellation
+// precedence — never wrap ctx errors, never classify them, never retry
+// them). Callers must consult it first on any store/dependency error.
+func abortedByCtx(ctx context.Context, docID string, attempt int, err error) (Outcome, bool) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if cerr := ctx.Err(); cerr != nil {
+			err = cerr
+		}
+		return Outcome{DocumentID: docID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: attempt, Err: err}, true
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return Outcome{DocumentID: docID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: attempt, Err: cerr}, true
+	}
+	return Outcome{}, false
+}
+
 // Handle processes one raw event payload to a terminal Outcome.
 // Kind assignment table (delivery semantics, #23):
 //
@@ -340,6 +373,33 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 		if err := ctx.Err(); err != nil {
 			return Outcome{DocumentID: ev.DocumentID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: attempt - 1, Err: err}, ""
 		}
+		// S3/F2: cancellation/deadline stops retrying immediately — check
+		// before every IO stage, not just at loop top. Returns raw ctx
+		// error (F7), never wrapped, never classified.
+		preempt := func() (Outcome, bool) {
+			if cerr := ctx.Err(); cerr != nil {
+				return Outcome{DocumentID: ev.DocumentID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: attempt, Err: cerr}, true
+			}
+			return Outcome{}, false
+		}
+		// S3/F8: store/dependency faults that retry cannot heal become
+		// TERMINAL (FAILED row best-effort, ACK, no retry). Constraint
+		// violations are data faults; everything else stays TRANSIENT.
+		terminalStoreErr := func(docType documents.DocType, fileName, mime, content string, step string, err error) (Outcome, string) {
+			p.persistFailedDoc(ctx, ev, docType, fileName, mime, content)
+			buildExtraction := documents.ExtractionPartial
+			if len(content) == 0 {
+				buildExtraction = documents.ExtractionNoContent
+			}
+			return Outcome{
+				DocumentID: ev.DocumentID,
+				Status:     documents.StFailed,
+				Extraction: buildExtraction,
+				Kind:       OutcomeTerminal,
+				Attempts:   attempt,
+				Err:        fmt.Errorf("worker: %s: %w", step, err),
+			}, string(docType)
+		}
 		fileName, mime, content, err := p.Fetcher.Fetch(ctx, ev.Tenant, ev.Claim, ev.DocumentID)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -412,7 +472,16 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 			SizeBytes: int64(len(content)),
 			Status:    documents.StProcessed,
 		}
+		if out, stop := preempt(); stop {
+			return out, ""
+		}
 		if inserted, err := p.Store.InsertDocument(ctx, doc); err != nil {
+			if out, stop := abortedByCtx(ctx, ev.DocumentID, attempt, err); stop {
+				return out, ""
+			}
+			if !retryableStoreErr(err) {
+				return terminalStoreErr(docType, fileName, mime, content, "persist document", err)
+			}
 			lastErr = fmt.Errorf("worker: persist document: %w", err)
 			continue
 		} else if !inserted {
@@ -429,6 +498,9 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 			// the reported outcome converge to canonical.
 			existing, err := p.Store.ListDocuments(ctx, claims.ClaimID(ev.Claim))
 			if err != nil {
+				if out, stop := abortedByCtx(ctx, ev.DocumentID, attempt, err); stop {
+					return out, ""
+				}
 				lastErr = fmt.Errorf("worker: list documents: %w", err)
 				continue
 			}
@@ -451,9 +523,18 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 			}
 			doc.ID = canonical
 		}
+		if out, stop := preempt(); stop {
+			return out, string(docType)
+		}
 		persisted := true
 		for _, e := range rows {
 			if _, err := p.Store.InsertEvidence(ctx, e); err != nil {
+				if out, stop := abortedByCtx(ctx, ev.DocumentID, attempt, err); stop {
+					return out, string(docType)
+				}
+				if !retryableStoreErr(err) {
+					return terminalStoreErr(docType, fileName, mime, content, "persist evidence", err)
+				}
 				lastErr = fmt.Errorf("worker: persist evidence: %w", err)
 				persisted = false
 				break
@@ -463,25 +544,49 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 			continue
 		}
 
+		if out, stop := preempt(); stop {
+			return out, string(docType)
+		}
 		view, err := p.Claims.LoadClaim(ctx, ev.Tenant, ev.Claim)
 		if err != nil {
+			if out, stop := abortedByCtx(ctx, ev.DocumentID, attempt, err); stop {
+				return out, string(docType)
+			}
+			if !retryableStoreErr(err) {
+				return terminalStoreErr(docType, fileName, mime, content, "load claim", err)
+			}
 			lastErr = fmt.Errorf("worker: load claim: %w", err)
 			continue
 		}
 		storedDocs, err := p.Store.ListDocuments(ctx, claims.ClaimID(ev.Claim))
 		if err != nil {
+			if out, stop := abortedByCtx(ctx, ev.DocumentID, attempt, err); stop {
+				return out, string(docType)
+			}
 			lastErr = fmt.Errorf("worker: list documents: %w", err)
 			continue
 		}
 		storedEv, err := p.Store.ListEvidence(ctx, claims.ClaimID(ev.Claim))
 		if err != nil {
+			if out, stop := abortedByCtx(ctx, ev.DocumentID, attempt, err); stop {
+				return out, string(docType)
+			}
 			lastErr = fmt.Errorf("worker: list evidence: %w", err)
 			continue
 		}
 		// The policy lookup is keyed by the claim's policy number; the
 		// sibling adapter owns canonical policy resolution.
+		if out, stop := preempt(); stop {
+			return out, string(docType)
+		}
 		policy, err := p.Policy.CheckPolicy(ctx, ev.Tenant, view.PolicyNumber)
 		if err != nil {
+			if out, stop := abortedByCtx(ctx, ev.DocumentID, attempt, err); stop {
+				return out, string(docType)
+			}
+			if !retryableStoreErr(err) {
+				return terminalStoreErr(docType, fileName, mime, content, "check policy", err)
+			}
 			lastErr = fmt.Errorf("worker: check policy: %w", err)
 			continue
 		}
@@ -670,6 +775,12 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 
 	view, err := p.Claims.LoadClaim(ctx, tenant, claimID)
 	if err != nil {
+		if out, stop := abortedByCtx(ctx, docID, 1, err); stop {
+			return out, effective
+		}
+		if !retryableStoreErr(err) {
+			return failTerminal(documents.DocType(effective), fmt.Errorf("worker: load claim: %w", err))
+		}
 		return Outcome{
 			DocumentID: docID,
 			Status:     documents.StFailed,
@@ -681,6 +792,12 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 	}
 	policy, err := p.Policy.CheckPolicy(ctx, tenant, view.PolicyNumber)
 	if err != nil {
+		if out, stop := abortedByCtx(ctx, docID, 1, err); stop {
+			return out, effective
+		}
+		if !retryableStoreErr(err) {
+			return failTerminal(documents.DocType(effective), fmt.Errorf("worker: check policy: %w", err))
+		}
 		return Outcome{
 			DocumentID: docID,
 			Status:     documents.StFailed,
