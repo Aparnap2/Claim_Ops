@@ -1,8 +1,8 @@
 # 10 — Phase 3 Local Cloud E2E Qualification
 
-**Status**: Proposed
+**Status**: Partially implemented (slices 1–2 landed #80 main@5cb15f1; remainder pending)
 **Date**: 2026-09-15
-**Depends on**: Phase 2 frozen baseline (PR #79, SHA eec02a0)
+**Depends on**: Phase 2 frozen baseline (PR #79, SHA eec02a0); current base main@9f7a196 (APA-13)
 
 ## Summary
 

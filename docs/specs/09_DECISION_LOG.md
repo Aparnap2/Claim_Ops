@@ -93,6 +93,30 @@ Options considered (historical):
 
 The decision was evidence-driven.
 
+### APA-9 mandatory HMAC webhook auth + trusted tenant binding (accepted 2026-09-22)
+HMAC-SHA256 over method + path (claim binding) + tenant (tenant binding)
++ raw body; constant-time compare; fail-closed in every env (no APP_ENV
+bypass); empty secret → 500 WEBHOOK_MISCONFIGURED. Single canonical
+trimmed tenantID feeds MAC + RLS/lookup/mutation/audit; padded header
+rejected 400; tenant is header-only (never default/body). Optimistic
+concurrency via UPDATE WHERE id/tenant/version + RowsAffected (same-event
+loser → replay:true, different-event → 409 VERSION_CONFLICT). No
+secrets/payloads in logs. Source: `fix(api): mandatory HMAC webhook auth
++ trusted tenant binding (APA-9) (#82)` (1ad00dd, PR #82).
+Regression: `TestDecision` 18/18 (13 boundary + SignerBindsExactTenantBytes
++ PaddedHeaderUsesCanonicalIdentity + 3 live PG integration); `TestHITL`
+4/4 intact; eval-v1 unchanged.
+
+### APA-10 canonical HITL pending-state persistence/query (accepted 2026-09-22)
+`ListPendingHITL` consumes the single canonical `hitlPendingStatuses`
+`[HITL, ACTION_PENDING]` via `WHERE status = ANY($1)` parameterized.
+Invariant: one canonical definition → query consumes it → tests protect
+it. Source: `fix(postgres): canonical HITL pending-state
+persistence/query (APA-10) (#81)` (f16e508, PR #81).
+Regression: `TestHITL` 4/4 PASS live PG :5433 (PendingCanonicalMapping,
+AllStatesRoundTrip, ListPendingReturnsPendingOnly, TenantIsolation);
+eval-v1 unchanged.
+
 ### APA-11 agent authoritative mutation boundary (ADR-008, accepted 2026-09-22)
 Agents are read-only over authoritative state. Deterministic code owns
 claim/document/HITL mutations via version-checked, tenant-scoped commands
@@ -113,13 +137,34 @@ Typed `documents.OCRConfidence` (available vs unavailable, validated [0,1])
 owns the trust policy; `IsLow(0.85)` is the HITL predicate
 (unavailable/invalid or value <=0.85 -> HITL YES, value >0.85 -> HITL NO).
 `Classify` 0.85 is deterministic classification, not provider OCR confidence
-and never becomes available. LiteParse vendorSilent 1.0 is placeholder
-(uncalibrated, scorer never rewards) and is not treated as provider signal
-beyond available 1.0 high. Worker `runNewPipeline` gate after `Parse` uses
+and never becomes available. LiteParse vendorSilent 1.0 is stamped ConfidenceAvailable=false → Unavailable → HITL; only blocks with ConfidenceAvailable=true may become available via NewOCRConfidence. Worker `runNewPipeline` gate after `Parse` uses
 `aggregateOCRConfidence` -> `shouldEscalateForOCR` to route low-quality
 documents to exception/HITL (`LOW_OCR_CONFIDENCE` + R8 envelope). Detail:
 `docs/adr/009-ocr-confidence-hitl.md`. Regression: `documents/ocr_confidence_test.go`
 (7 boundary cases) + `worker/processor_ocr_test.go` (8 unit + full-chain HITL integration).
+
+### APA-13 bounded retry classification, fallback, worker deadline (accepted 2026-09-23)
+Groq: 408/429/5xx retryable (1 retry + 10ms backoff), 4xx terminal
+`ErrModelContract`, empty `ErrModelEmpty`, raw cancellation,
+`: exhausted` marker. Loop: `isLoopRetryable` (retryable Upstream only) +
+backoff; turn semantics unchanged. `FallbackModelClient` shared budget 4
+with `markExhausted` terminal marker (Loop-level total exactly 4, not 8).
+Worker: min(parent, now+60s) deadline envelope with raw ctx propagation.
+Source: `feat(llm): bounded retry classification, fallback, worker
+deadline (APA-13) (#85)` (9f7a196, PR #85).
+Regression: 4 RED suites (Groq 4, Loop 5 groups, Worker 7, Fallback 9
+incl. Loop-level bound) GREEN; filtered 37 PASS; eval-v1 PASS;
+pytest 24 PASS; ruff PASS.
+
+### ADR-002 model string — open discrepancy (adjudication pending, recorded 2026-09-23)
+`README.md:14` contracts Groq model `openai/gpt-oss-20b` per ADR-002 while
+`apps/api/internal/investigate/orchestrate/groq_model.go:19` defaults to
+`llama-3.1-8b-instant`. Code is unchanged by this docs pass. Explicit
+options, no silent pick:
+- Option A: amend ADR-002 (and README) to the code default.
+- Option B: change the code default to the ADR-002 string.
+Adjudication requires a code-owner decision; this entry records the
+discrepancy only.
 
 ### #32 evidence (LiteParse 2.14.4, 45 cases, deterministic)
 - 45/45 parse_ok. Fields 280 exact / 27 normalized / 150 missing. Tables 27 pass / 13 partial / 3 missed.

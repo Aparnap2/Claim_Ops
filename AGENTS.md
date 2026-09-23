@@ -29,5 +29,5 @@ If sources conflict, STOP and report. Never silently choose.
 `gofmt` clean · `go vet` clean · `go test ./...` green (live infra: PG :5433, localgcp :8085/:4443, Mockoon :3001) · `uv run pytest tests/unit` green · `ruff` clean on touched Python.
 
 ## Current chain
-#28 contract ✓ → #29 corpus ✓ → #30 LiteParse adapter ✓ → #31 benchmark ✓ → #32 report ✓ → #33 ADR ✓ → #44-#47 deterministic chain ✓ → #50 ordering ✓ → #53 contracts ✓ → #54 tools ✓ → #66 orchestration ✓ → eval v1 ✓.
+#28 contract ✓ → #29 corpus ✓ → #30 LiteParse adapter ✓ → #31 benchmark ✓ → #32 report ✓ → #33 ADR ✓ → #44-#47 deterministic chain ✓ → #50 ordering ✓ → #53 contracts ✓ → #54 tools ✓ → #66 orchestration ✓ → eval v1 ✓ → #80 GCW/Agent/ModelClients slices 1-2 ✓ → APA-9 HMAC ✓ → APA-10 pending-state ✓ → APA-11/ADR-008 ✓ → APA-12/ADR-009 ✓ → APA-13 runtime bounds ✓ (main@9f7a196).
 Go 1.27 pinned. `encoding/json/v2` rejected for byte-sensitive paths (see 09_DECISION_LOG.md).
