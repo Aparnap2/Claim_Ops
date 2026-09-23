@@ -41,10 +41,12 @@ go test ./internal/adapters/http/ -count=1
 ```text
 apps/api/               Go Fiber edge + deterministic core + investigate (authoritative)
   cmd/api/              main (wiring lives in internal/app for testability)
+  cmd/agent/            Agent service :8081 (POST /v1/investigations, read-only registry)
   internal/
+    investigate/        cognitive orchestration (orchestrate Loop + ModelClient seam)
     claims/             Claim aggregate + state machine (stdlib-only)
     validation/         six pure validators (stdlib-only)
-    workflow/           tenant-scoped store + Apply + domain events
+    workflow/           tenant-scoped store + Apply + domain events + WorkflowProvider
     ports/              Policy/Claims/Provider/Risk outbound interfaces
     adapters/http/      typed clients (timeouts, request IDs, strict decode)
     contracts/external/ wire DTOs (aliases of ports types)
@@ -54,16 +56,17 @@ apps/api/               Go Fiber edge + deterministic core + investigate (author
 packages/domain/        Python specification artifacts (Pydantic strict)
 fixtures/               golden_cases.json — language-independent behavior contract
 mocks/mockoon/          claims-systems.json — 4 systems × 7 scenarios
-infra/postgres/         migrations 001 (schema+RLS) 002 (grants) 003 (evidence)
+infra/postgres/         migrations 001 (schema+RLS) 002 (grants) 003 (evidence) 009 (investigations)
 tests/unit/             Python golden suite (no network, untouched by Go work)
-docs/adr/               001 go-first, 002 groq provider, 004 external boundary
+workflows/              claim-investigation.yaml (durable business coordination, GCW)
+docs/adr/               001 go-first, 002 groq provider, 004 external boundary, 008 agent mutation boundary, 009 ocr-confidence-hitl
 ```
 
 ## Phase progression
 - ✅ Deterministic domain + Postgres RLS + external contracts/Mockoon
 - ✅ Parser contract → corpus → LiteParse → benchmark → report → ADR
 - ✅ Deterministic chain #44-#47 + ordering #50 + contracts #53 + tools #54 + orchestration #66 → eval v1 ✓
-- Next: real-model evaluation → infrastructure hardening
+- Next: Groq qualification on frozen harness → Phase-3 E2E remainder
 
 ## Standing rules
 - Deterministic > structured > rules > retrieval > LLM. No LLM for

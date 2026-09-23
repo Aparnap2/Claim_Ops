@@ -1,6 +1,6 @@
 # ClaimOps — Living Progress Tracker
 
-Last updated: 2026-09-11
+Last updated: 2026-09-23
 
 ## Completed
 
@@ -37,13 +37,28 @@ Last updated: 2026-09-11
 - [x] #44/#45 deterministic extraction (DocumentFacts, no-confidence rule)
 - [x] #46 canonical assembly (agreement, ConflictEntry/NeedsReview, typed-mapping gate)
 - [x] #47 verification R1–R10 + verifywrap Unresolved channel
+- [x] #50 Agreed ordering stability (derive Agreed from sorted sources; 604936e, PR #55)
+- [x] #53 investigation contracts (exception envelope, epistemics, capabilities; f85cf79, PR #62)
+- [x] #54 bounded evidence/tool capabilities (11 tools; 229ebd6, PR #64)
+- [x] #66 bounded investigation orchestrator (FakeModelClient-first; 877c052, PR #68)
+- [x] eval v1 bounded-investigation harness + baseline (E0 gates, A–P corpus; ca98d96, PR #71; PR #73)
+- [x] #80 Phase-3 slices 1–2: GCW provider + Agent service + Mock/Groq ModelClients (5cb15f1, PR #80)
+- [x] APA-9 mandatory HMAC webhook auth + trusted tenant binding (1ad00dd, PR #82)
+- [x] APA-10 canonical HITL pending-state persistence/query (f16e508, PR #81)
+- [x] APA-11 authoritative mutation boundary + ADR-008 (10d8256, PR #83)
+- [x] APA-12 typed OCRConfidence + low-evidence HITL gate + ADR-009 (5450ee5, PR #84)
+- [x] APA-13 bounded retry classification, fallback, worker deadline (9f7a196, PR #85)
 - [x] Go 1.27 toolchain migration
 - [x] act-compatible CI (fast/integration/security, Layer A green under act)
 
+## APA-8 qualification matrix linkage
+
+- Canonical APA-8 qualification matrix lives on Linear APA-8 (comment c13658aa). This file records milestone status only; the Linear comment is authoritative for the matrix.
+
 ## Current
 
-- [ ] #50 Agreed ordering stability (in progress)
-- [ ] #53 investigation contracts (specification complete, implementation pending)
+- [ ] Phase-3 E2E remainder (slices 3+ per docs/specs/10_PHASE3_E2E_QUALIFICATION.md; slices 1–2 landed #80 main@5cb15f1)
+- [ ] Groq qualification on frozen harness (Fake vs Groq, hard gates fabricated=0 crossTenant=0 unauthorized=0; no eval mutation)
 
 ## Next
 
