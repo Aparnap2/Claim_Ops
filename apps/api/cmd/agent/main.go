@@ -26,6 +26,7 @@ import (
 	"claimops-api/internal/metrics"
 	"claimops-api/internal/middleware"
 	"claimops-api/internal/observability"
+	"claimops-api/internal/repository/postgres"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
@@ -226,6 +227,10 @@ func investigationHandler(pool *pgxpool.Pool, defaultModel orchestrate.ModelClie
 		// Deadline from envelope scope (authoritative exception, not caller-supplied).
 		deadline := time.Now().Add(time.Duration(exception.Scope.DeadlineMs) * time.Millisecond)
 		exec := investigate.NewExecutor(registry, deadline)
+		// S4: wire the intended audit path — tool-call rows via
+		// AuditHookFor plus loop started/finished rows. Best-effort by
+		// contract: hook failures never fail a tool result or run.
+		exec.SetAuditHook(investigate.AuditHookFor(pool))
 		scope := investigate.Scope{
 			TenantID:   exception.TenantID,
 			ClaimID:    exception.ClaimID,
@@ -238,11 +243,16 @@ func investigationHandler(pool *pgxpool.Pool, defaultModel orchestrate.ModelClie
 			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": err.Error()})
 		}
 		budgets := orchestrate.DefaultBudgets(scope)
-		loop, err := orchestrate.NewLoop(modelClient, exec, budgets, scope, exception, nil)
+		loop, err := orchestrate.NewLoop(modelClient, exec, budgets, scope, exception, orchestrate.LoopAuditHookFor(pool))
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"ok": false, "code": "BAD_REQUEST", "message": err.Error()})
 		}
-		out, runErr := loop.Run(c.UserContext())
+		// Tenant-bound ctx: the audit writers (tool-call + loop rows)
+		// require the acting tenant on the ctx (defense in depth with the
+		// tenant-scoped tx). Readers/tools set their own tenant ctx
+		// internally, so this changes no tool behavior.
+		loopCtx := postgres.WithTenant(c.UserContext(), claims.TenantID(tenantID))
+		out, runErr := loop.Run(loopCtx)
 		status := 200
 		if out.Outcome == orchestrate.OutcomeEscalated {
 			status = 200

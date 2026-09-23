@@ -302,7 +302,14 @@ func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
 	p.mu.Unlock()
 
 	out, docType := p.process(ctx, ev)
-	p.remember(ev.DocumentID, out)
+	// S4: remember only durably-decided outcomes. SUCCESS outcomes and
+	// TERMINAL failures are safe to ACK on redelivery (DUPLICATE). A
+	// TRANSIENT outcome means nothing durable happened — remembering it
+	// would turn the redelivery into DUPLICATE/ACK and lose the work, so
+	// redelivery must reprocess instead.
+	if out.Kind != OutcomeTransient {
+		p.remember(ev.DocumentID, out)
+	}
 	p.observe(ctx, ev.Tenant, ev.Claim, ev.DocumentID, docType, out)
 	return out
 }
