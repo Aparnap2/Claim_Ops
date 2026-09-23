@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -86,7 +87,7 @@ type groqChatResponse struct {
 }
 
 // Complete renders the prompt and calls Groq. Never logs key or prompt.
-// Retry policy: exactly one retry on transient transport errors and 5xx; 4xx, empty, and decode of 4xx body are not retried.
+// Retry policy: exactly one retry on transient transport errors, 408, 429, and 5xx; 4xx (400,401,403,404) and empty are terminal; cancellation returns raw context error.
 func (g *GroqModelClient) Complete(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return ModelResponse{}, err
@@ -107,8 +108,12 @@ func (g *GroqModelClient) Complete(ctx context.Context, req ModelRequest) (Model
 	}
 	url := g.baseURL + "/chat/completions"
 	var lastErr error
+	var lastStatus int
 	var result ModelResponse
 	for attempt := 0; attempt < 2; attempt++ {
+		if ctx.Err() != nil {
+			return ModelResponse{}, ctx.Err()
+		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			return ModelResponse{}, fmt.Errorf("groq: request: %w", err)
@@ -121,19 +126,31 @@ func (g *GroqModelClient) Complete(ctx context.Context, req ModelRequest) (Model
 				return ModelResponse{}, ctx.Err()
 			}
 			lastErr = fmt.Errorf("groq: do: %w: %w", err, ErrModelUpstream)
-			if attempt == 0 {
+			lastStatus = 0
+			if attempt == 0 && isGroqRetryable(lastErr, lastStatus) {
+				select {
+				case <-ctx.Done():
+					return ModelResponse{}, ctx.Err()
+				case <-time.After(groqBackoff(attempt)):
+				}
 				continue
 			}
 			return ModelResponse{}, lastErr
 		}
 		func() {
 			defer resp.Body.Close()
+			lastStatus = resp.StatusCode
 			var gr groqChatResponse
 			if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
-				lastErr = fmt.Errorf("groq: decode: %w: %w", err, ErrModelUpstream)
+				// Decode of 5xx body is retryable only if status was 5xx; otherwise contract.
+				if isRetryableStatus(lastStatus) {
+					lastErr = fmt.Errorf("groq: decode: %w: %w", err, ErrModelUpstream)
+				} else {
+					lastErr = fmt.Errorf("groq: decode: %w: %w", err, ErrModelContract)
+				}
 				return
 			}
-			if resp.StatusCode >= 500 {
+			if isRetryableStatus(lastStatus) {
 				lastErr = fmt.Errorf("groq: status %d: %w", resp.StatusCode, ErrModelUpstream)
 				return
 			}
@@ -142,16 +159,17 @@ func (g *GroqModelClient) Complete(ctx context.Context, req ModelRequest) (Model
 				if gr.Error != nil && gr.Error.Message != "" {
 					msg = gr.Error.Message
 				}
-				lastErr = fmt.Errorf("groq: status %d: %s: %w", resp.StatusCode, msg, ErrModelUpstream)
+				// 4xx is terminal contract error, not upstream.
+				lastErr = fmt.Errorf("groq: status %d: %s: %w", resp.StatusCode, msg, ErrModelContract)
 				return
 			}
 			if len(gr.Choices) == 0 {
-				lastErr = fmt.Errorf("groq: no choices: %w", ErrModelUpstream)
+				lastErr = fmt.Errorf("groq: no choices: %w", ErrModelEmpty)
 				return
 			}
 			content := gr.Choices[0].Message.Content
 			if strings.TrimSpace(content) == "" {
-				lastErr = fmt.Errorf("groq: empty content: %w", ErrModelUpstream)
+				lastErr = fmt.Errorf("groq: empty content: %w", ErrModelEmpty)
 				return
 			}
 			modelID := gr.Model
@@ -164,28 +182,79 @@ func (g *GroqModelClient) Complete(ctx context.Context, req ModelRequest) (Model
 		if lastErr == nil {
 			return result, nil
 		}
-		if attempt == 0 && isGroqRetryable(lastErr, nil) {
-			// Only retry on 5xx / transport / decode; not on 4xx/empty.
-			// We already know 4xx produced lastErr with status 4, so isGroqRetryable will be false.
+		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+			return ModelResponse{}, lastErr
+		}
+		if attempt == 0 && isGroqRetryable(lastErr, lastStatus) {
+			select {
+			case <-ctx.Done():
+				return ModelResponse{}, ctx.Err()
+			case <-time.After(groqBackoff(attempt)):
+			}
 			continue
 		}
+		// Exhausted retryable error: mark as exhausted so Loop does not retry again (bounded total 2).
+		if isGroqRetryable(lastErr, lastStatus) {
+			return ModelResponse{}, fmt.Errorf("%w: exhausted", lastErr)
+		}
 		return ModelResponse{}, lastErr
+	}
+	// Final fallback if loop exhausted (should not reach here, but handle).
+	if lastErr != nil && isGroqRetryable(lastErr, lastStatus) {
+		return ModelResponse{}, fmt.Errorf("%w: exhausted", lastErr)
 	}
 	return ModelResponse{}, lastErr
 }
 
-func isGroqRetryable(err error, _ *http.Response) bool {
-	msg := err.Error()
-	if strings.Contains(msg, "status 5") {
+// isRetryableStatus reports whether an HTTP status is retryable at the provider layer.
+func isRetryableStatus(code int) bool {
+	if code == 408 || code == 429 {
 		return true
 	}
-	if strings.Contains(msg, "groq: do:") || strings.Contains(msg, "groq: decode:") {
-		// Transport or decode of 5xx body is retryable; but 4xx decode is not.
-		// We already excluded 4xx via status string, so treat transport as retryable.
-		if strings.Contains(msg, "status 4") {
-			return false
-		}
+	if code >= 500 && code <= 599 {
 		return true
 	}
 	return false
+}
+
+func isGroqRetryable(err error, status int) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "exhausted") {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, ErrModelEmpty) || errors.Is(err, ErrModelContract) {
+		return false
+	}
+	if errors.Is(err, ErrModelUpstream) {
+		// If we have a status, use it; otherwise transport error is retryable.
+		if status != 0 {
+			return isRetryableStatus(status)
+		}
+		// No status (transport) -> retryable
+		return true
+	}
+	// Fallback string check for wrapped errors without status
+	if strings.Contains(msg, "status 5") || strings.Contains(msg, "status 408") || strings.Contains(msg, "status 429") {
+		return true
+	}
+	return false
+}
+
+// groqBackoff returns a deterministic bounded backoff for attempt.
+// Attempt 0 -> 10ms, 1 -> 20ms, capped at 50ms. No real long sleeps.
+func groqBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		return 0
+	}
+	d := time.Duration(10*(attempt+1)) * time.Millisecond
+	if d > 50*time.Millisecond {
+		d = 50 * time.Millisecond
+	}
+	return d
 }
