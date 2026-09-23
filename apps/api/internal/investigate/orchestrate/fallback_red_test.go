@@ -295,3 +295,44 @@ func TestRED_Fallback_Contract_Exists(t *testing.T) {
 	}
 	var _ ModelClient = fb
 }
+
+// TestRED_Fallback_LoopLevel_BothExhausted_TotalCallsBounded is the
+// re-review blocker 2 regression test: it runs through Loop (not merely the
+// decorator) and proves primary + secondary + Loop retries total <= 4
+// provider calls when both providers exhaust. Without the ": exhausted"
+// marker on fallback-terminal errors, Loop would re-retry the whole
+// decorator (4 more calls, total 8) — the multiplicative retry APA-13
+// eliminates.
+func TestRED_Fallback_LoopLevel_BothExhausted_TotalCallsBounded(t *testing.T) {
+	env := testEnvelope(t)
+	scope := testScope(env)
+	mkErrs := func(prefix string) []error {
+		errs := make([]error, 0, 10)
+		for i := 0; i < 10; i++ {
+			errs = append(errs, redRetryable5xx(prefix+fmt.Sprintf(" 500 attempt %d", i+1)))
+		}
+		return errs
+	}
+	primary := &FakeModelClient{Errs: mkErrs("primary")}
+	secondary := &FakeModelClient{Errs: mkErrs("secondary")}
+	fb := NewFallbackModelClient(primary, secondary, 4)
+
+	lp := newTestLoop(t, fb, successExecutor(), scope, env)
+	out, err := lp.Run(context.Background())
+	if err == nil {
+		t.Fatal("want MODEL_UPSTREAM escalation when both providers exhaust")
+	}
+	if !errors.Is(err, ErrModelUpstream) {
+		t.Fatalf("want ErrModelUpstream terminal, got %v", err)
+	}
+	if out.EscalationReason != EscalationModelUpstream {
+		t.Fatalf("Reason = %q, want MODEL_UPSTREAM", out.EscalationReason)
+	}
+	total := primary.Calls + secondary.Calls
+	if total > 4 {
+		t.Fatalf("Loop retried the exhausted decorator: total provider calls = %d (primary=%d secondary=%d), want <= 4", total, primary.Calls, secondary.Calls)
+	}
+	if total != 4 {
+		t.Fatalf("want exactly 4 provider calls (2 primary + 2 secondary), got %d", total)
+	}
+}

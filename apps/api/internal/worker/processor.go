@@ -257,10 +257,12 @@ func isPermanent(err error) bool {
 //	 4. The outcome edge (observe) runs exactly once per non-duplicate
 //	    terminal outcome.
 func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
-	// Bounded worker deadline: total wall-clock must not exceed workerDeadline.
-	// Derive from parent ctx if it already has a sooner deadline, otherwise cap at 60s.
+	// Bounded worker deadline: total wall-clock is min(parent deadline,
+	// now+60s). A sooner parent deadline is preserved; a later (or absent)
+	// parent deadline is capped at 60s so no job outlives the worker bound
+	// regardless of provider retries or fallback.
 	workerDeadline := 60 * time.Second
-	if _, ok := ctx.Deadline(); !ok {
+	if d, ok := ctx.Deadline(); !ok || time.Until(d) > workerDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, workerDeadline)
 		defer cancel()

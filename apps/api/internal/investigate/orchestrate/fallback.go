@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -77,7 +78,7 @@ func (f *FallbackModelClient) Complete(ctx context.Context, req ModelRequest) (M
 		}
 	}
 	if calls >= f.MaxTotalCalls {
-		return ModelResponse{}, primaryErr
+		return ModelResponse{}, markExhausted(primaryErr)
 	}
 	select {
 	case <-ctx.Done():
@@ -107,7 +108,20 @@ func (f *FallbackModelClient) Complete(ctx context.Context, req ModelRequest) (M
 	if secondaryErr == nil {
 		return secondaryResp, nil
 	}
-	return ModelResponse{}, secondaryErr
+	return ModelResponse{}, markExhausted(secondaryErr)
+}
+
+// markExhausted tags a retryable-class terminal error as budget-spent so an
+// outer retry layer (Loop via isLoopRetryable) treats it terminal and does
+// not re-retry the whole decorator. Without this, Loop would retry a fully
+// exhausted primary+secondary chain (2+2 calls) a second time — the exact
+// multiplicative retry APA-13 eliminates. Non-retryable errors pass through
+// unchanged; errors.Is chains (Upstream/Contract/Empty) are preserved.
+func markExhausted(err error) error {
+	if err == nil || !isFallbackRetryable(err) {
+		return err
+	}
+	return fmt.Errorf("%w: exhausted", err)
 }
 
 // isFallbackRetryable mirrors Groq's retryable classification for fallback decision.

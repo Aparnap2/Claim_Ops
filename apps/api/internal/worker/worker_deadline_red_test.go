@@ -434,3 +434,53 @@ func TestWorker_IgnoringFetcher_WallClockMustStillBound(t *testing.T) {
 		t.Fatalf("ignoring: fetcher calls = %d, want < %d", fetcher.count(), MaxAttempts)
 	}
 }
+
+// deadlineCaptureFetcher records the deadline of the ctx it receives, then
+// fails transient so Handle exercises the retry path quickly.
+type deadlineCaptureFetcher struct {
+	mu          sync.Mutex
+	calls       int
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (f *deadlineCaptureFetcher) Fetch(ctx context.Context, _, _, _ string) (string, string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if d, ok := ctx.Deadline(); ok {
+		f.deadline, f.hasDeadline = d, true
+	}
+	return "", "", "", errors.New("fake transient boom")
+}
+
+// Test 7 (re-review blocker 1): parent deadline later than 60s must still be
+// capped at now+60s by the worker. Deterministic: asserts the observed ctx
+// deadline value, never waits 60s.
+func TestWorker_Deadline_ParentLaterThan60s_CappedAt60s(t *testing.T) {
+	fetcher := &deadlineCaptureFetcher{}
+	store := &countingStore{}
+	loader := &fakeClaimLoader{view: ClaimView{PolicyNumber: "POL-1", PatientName: "Alice"}}
+	checker := &fakePolicyChecker{data: PolicyData{Number: "POL-1", Active: true}}
+	p := NewProcessor(fetcher, store, loader, checker)
+
+	parent, cancel := context.WithTimeout(context.Background(), 5*60*time.Second)
+	defer cancel()
+	before := time.Now()
+	_ = p.Handle(parent, deadlineEvent(t, "doc-cap-60s"))
+
+	fetcher.mu.Lock()
+	defer fetcher.mu.Unlock()
+	if fetcher.calls == 0 {
+		t.Fatal("fetcher never called")
+	}
+	if !fetcher.hasDeadline {
+		t.Fatal("worker ctx has no deadline (60s cap missing)")
+	}
+	if remaining := time.Until(fetcher.deadline); remaining > 61*time.Second {
+		t.Fatalf("worker deadline in %v exceeds 60s cap (parent was 5min)", remaining)
+	}
+	if fetcher.deadline.Before(before.Add(59 * time.Second)) {
+		t.Fatalf("worker deadline %v is sooner than now+60s (over-capped)", fetcher.deadline)
+	}
+}
