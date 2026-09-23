@@ -574,11 +574,17 @@ func executeLoop(l *Loop, ctx context.Context, known *KnownEvidence) (Investigat
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return InvestigationOutput{}, ctxErr
 				}
-				if !errors.Is(cerr, ErrModelUpstream) {
+				if !isLoopRetryable(cerr) {
 					return fail(EscalationModelUpstream, nil, turn, cerr)
 				}
 				if modelCalls >= l.budgets.MaxModelCalls {
 					return fail(EscalationCallsExhausted, nil, turn, cerr)
+				}
+				// Bounded backoff before retry: deterministic 10ms, subordinate to worker deadline.
+				select {
+				case <-ctx.Done():
+					return InvestigationOutput{}, ctx.Err()
+				case <-time.After(loopBackoff()):
 				}
 				turnCtx2, cancel2 := context.WithTimeout(ctx, time.Duration(l.budgets.TurnTimeoutMs)*time.Millisecond)
 				resp2, cerr2 := complete(turnCtx2, req)
@@ -729,3 +735,39 @@ func executeLoop(l *Loop, ctx context.Context, known *KnownEvidence) (Investigat
 	}
 	return fail(EscalationTurnsExhausted, nil, l.budgets.MaxTurns, nil)
 }
+
+// isLoopRetryable reports whether a ModelClient error should be retried at the Loop layer.
+// Only retryable Upstream (5xx, 429, 408, transport) is retried; 4xx contract, empty, and exhausted are terminal.
+// This prevents multiplicative retry (Groq already retried once internally, so Loop retry would be 2*2=4).
+func isLoopRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "exhausted") {
+		return false
+	}
+	if errors.Is(err, ErrModelEmpty) || errors.Is(err, ErrModelContract) {
+		return false
+	}
+	if !errors.Is(err, ErrModelUpstream) {
+		return false
+	}
+	// 4xx terminal even though Upstream in old code — now Contract, but keep string check for safety.
+	if strings.Contains(msg, "status 400") || strings.Contains(msg, "status 401") || strings.Contains(msg, "status 403") || strings.Contains(msg, "status 404") {
+		if strings.Contains(msg, "status 429") {
+			return true
+		}
+		return false
+	}
+	if strings.Contains(msg, "status 429") || strings.Contains(msg, "status 408") || strings.Contains(msg, "status 5") || strings.Contains(msg, "groq: do:") {
+		return true
+	}
+	// Plain Upstream without status (e.g., FakeModelClient) is retryable.
+	return true
+}
+
+func loopBackoff() time.Duration { return 10 * time.Millisecond }

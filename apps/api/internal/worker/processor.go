@@ -257,6 +257,19 @@ func isPermanent(err error) bool {
 //	 4. The outcome edge (observe) runs exactly once per non-duplicate
 //	    terminal outcome.
 func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
+	// Bounded worker deadline: total wall-clock must not exceed workerDeadline.
+	// Derive from parent ctx if it already has a sooner deadline, otherwise cap at 60s.
+	workerDeadline := 60 * time.Second
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, workerDeadline)
+		defer cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		out := Outcome{Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Err: err}
+		p.observe(ctx, "", "", "", "", out)
+		return out
+	}
 	var ev documentIngestedEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		out := Outcome{Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTerminal, Err: fmt.Errorf("worker: malformed event: %w", err)}
@@ -315,8 +328,14 @@ func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outc
 	}
 	var lastErr error
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return Outcome{DocumentID: ev.DocumentID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: attempt - 1, Err: err}, ""
+		}
 		fileName, mime, content, err := p.Fetcher.Fetch(ctx, ev.Tenant, ev.Claim, ev.DocumentID)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return Outcome{DocumentID: ev.DocumentID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: attempt, Err: err}, ""
+			}
 			fetchErr := fmt.Errorf("worker: fetch document: %w", err)
 			if isPermanent(err) {
 				// Permanent: the stored bytes failed the integrity
@@ -591,11 +610,20 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 		[]byte(content),
 	)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return Outcome{DocumentID: docID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: 1, Err: err}, effective
+		}
 		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: trusted document: %w", err))
 	}
 
 	parsed, err := p.Parser.Parse(ctx, trusted)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Outcome{DocumentID: docID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: 1, Err: ctx.Err()}, effective
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return Outcome{DocumentID: docID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: 1, Err: err}, effective
+		}
 		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: parse document: %w", err))
 	}
 	validateErr := parsed.Validate()
