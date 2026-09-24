@@ -166,6 +166,12 @@ type Processor struct {
 	// ScopeDeadlineMs bounds one investigation's wall clock. <= 0
 	// selects the default deadline.
 	ScopeDeadlineMs int64
+	// Launcher persists the exception envelope and starts the workflow
+	// exactly once per stable investigation ID (S6). Nil disables
+	// launching: the envelope is still returned in the outcome.
+	Launcher InvestigationLauncher
+	// WorkflowID overrides defaultWorkflowID when set.
+	WorkflowID string
 
 	mu   sync.Mutex
 	done map[string]Outcome
@@ -846,8 +852,37 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 				Message: "low OCR confidence: evidence below trust threshold",
 			})
 		}
-		if env, ok := p.buildExceptionEnvelope(ctx, tenant, claimID, claim, unresolved, lowRes); ok {
-			envelope = env
+		// S6: stable investigation identity per document delivery so
+		// envelope persistence + workflow launch converge on redelivery
+		// instead of minting duplicate investigations. A blank-identity
+		// failure keeps the verify outcome without an envelope.
+		invID, invErr := investigationIDForDocument(tenant, claimID, docID)
+		if invErr == nil {
+			if built, raw, ok := p.buildExceptionEnvelope(ctx, tenant, claimID, invID, claim, unresolved, lowRes); ok {
+				envelope = raw
+				// S6: persist-then-launch. Launch failure is TRANSIENT:
+				// the envelope is durable, so transport redelivery
+				// re-enters EnsureLaunched, which looks up launch state
+				// and launches exactly once (never orphan, never duplicate).
+				if p.Launcher != nil {
+					wfID := p.WorkflowID
+					if wfID == "" {
+						wfID = defaultWorkflowID
+					}
+					if _, _, lerr := p.Launcher.EnsureLaunched(ctx, tenant, claimID, invID, built, wfID); lerr != nil {
+						return Outcome{
+							DocumentID:        docID,
+							Status:            documents.StProcessed,
+							Extraction:        documents.ExtractionPartial,
+							Kind:              OutcomeTransient,
+							ExceptionCodes:    codes,
+							Attempts:          1,
+							ExceptionEnvelope: envelope,
+							Err:               fmt.Errorf("worker: launch investigation: %w", lerr),
+						}, effective
+					}
+				}
+			}
 		} else if lowOCREscalate {
 			// Envelope build is best-effort; low-OCR code still surfaces in
 			// ExceptionCodes even if envelope mint fails.
@@ -950,22 +985,21 @@ func scopeForInvestigation(sc invest.ScopeConstraints) (investigate.Scope, error
 	return out, nil
 }
 
-// buildExceptionEnvelope mints deterministic-side IDs, applies the
-// resolved scope budgets carried on the Processor (injected by
-// BuildFullProcessor via ResolveScopeDefaults; nil/zero selects the
-// read-only 5-tool / 5-call / 60s defaults), validates the mapped
-// investigate.Scope contract, and best-effort builds +
-// marshals the invest envelope. ok=false means no envelope (ID entropy,
-// scope validation, Build provenance, or Marshal failed); the caller returns the verify
-// outcome without an envelope rather than failing the pipeline.
-func (p *Processor) buildExceptionEnvelope(ctx context.Context, tenant, claimID string, claim assemble.CanonicalClaim, unresolved []verifywrap.Unresolved, res verify.Result) ([]byte, bool) {
+// buildExceptionEnvelope applies the resolved scope budgets carried on the
+// Processor (injected by BuildFullProcessor via ResolveScopeDefaults;
+// nil/zero selects the read-only 5-tool / 5-call / 60s defaults),
+// validates the mapped investigate.Scope contract, and best-effort builds +
+// marshals the invest envelope. The investigation ID is caller-supplied and
+// must be the stable per-document ID (investigationIDForDocument) so
+// redelivery converges instead of minting duplicate investigations.
+// ok=false means no envelope (scope validation, Build provenance, or Marshal
+// failed); the caller returns the verify outcome without an envelope rather
+// than failing the pipeline.
+func (p *Processor) buildExceptionEnvelope(ctx context.Context, tenant, claimID, invID string, claim assemble.CanonicalClaim, unresolved []verifywrap.Unresolved, res verify.Result) (invest.UnresolvedException, []byte, bool) {
+	var zero invest.UnresolvedException
 	exID, err := invest.NewExceptionID()
 	if err != nil {
-		return nil, false
-	}
-	invID, err := invest.NewInvestigationID()
-	if err != nil {
-		return nil, false
+		return zero, nil, false
 	}
 	tools := p.ScopeAllowTools
 	if tools == nil {
@@ -990,7 +1024,7 @@ func (p *Processor) buildExceptionEnvelope(ctx context.Context, tenant, claimID 
 	// Explicit executor-side contract check: invalid scope values fail
 	// closed here (no envelope) instead of being silently coerced.
 	if _, err := scopeForInvestigation(scope); err != nil {
-		return nil, false
+		return zero, nil, false
 	}
 	env, err := invest.Build(invest.BuildParams{
 		TenantID:        tenant,
@@ -1004,13 +1038,13 @@ func (p *Processor) buildExceptionEnvelope(ctx context.Context, tenant, claimID 
 		Scope:           scope,
 	})
 	if err != nil {
-		return nil, false
+		return zero, nil, false
 	}
 	raw, err := invest.Marshal(env)
 	if err != nil {
-		return nil, false
+		return zero, nil, false
 	}
-	return raw, true
+	return env, raw, true
 }
 
 // requestIDForScope propagates the request ID for the invest scope:
