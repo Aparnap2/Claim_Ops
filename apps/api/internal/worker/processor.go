@@ -136,8 +136,11 @@ type PolicyChecker interface {
 }
 
 // Processor runs the document pipeline. The zero value is not usable;
-// build via NewProcessor. The processed-set (done) is mutex-guarded and
-// keyed by document ID.
+// build via NewProcessor. The processed-set (done) is mutex-guarded,
+// keyed by document ID, and strictly in-process: a short-lived
+// same-run redelivery optimization, not durable work identity (see the
+// `done` field comment; five boundaries are spelled out in
+// tenant_swap_redelivery_test.go).
 //
 // Parser is optional: nil selects the Tier-1 regex path (default,
 // byte-identical behavior). A non-nil Parser routes process() through
@@ -181,7 +184,17 @@ type Processor struct {
 	// as the API's HITL_WEBHOOK_SECRET).
 	WebhookSecret string
 
-	mu   sync.Mutex
+	mu sync.Mutex
+	// done is the in-process processed-set: document ID -> outcome bound
+	// to the tenant it was decided under (APA-28). It is a SHORT-LIVED
+	// same-run redelivery optimization only — explicitly NOT durable work
+	// identity (durable identity lives in the document/evidence rows,
+	// the tenant-hashed investigation ID, and the envelope/launch
+	// tables). Migration/backfill: NONE — the map is process-local; a
+	// restart starts empty by design and the durable tenant boundary
+	// (RLS-scoped fetch/reads + tenant-partitioned blob keys) rejects
+	// cross-tenant redelivery first (see restart_tenant_swap_test.go,
+	// option B). Never persist, replicate, or warm this map.
 	done map[string]rememberedOutcome
 }
 
@@ -212,10 +225,13 @@ func NewProcessor(f ContentFetcher, s DocumentStore, c ClaimLoader, p PolicyChec
 // change the result. See #23 ([#16C] Event delivery semantics).
 //
 // APA-28: the processed-set is tenant-bound. A redelivery of an already
-// decided document ID under a DIFFERENT tenant is a TERMINAL
-// tenant-mismatch rejection (ErrTenantMismatch), never DUPLICATE:
+// decided document ID under a DIFFERENT tenant is a terminal REJECTION
+// (OutcomeTerminal + ErrTenantMismatch): permanent and non-recoverable
+// for that delivery — retrying under the wrong tenant can never converge
+// — and never SUCCESS/DUPLICATE. In particular it is never DUPLICATE:
 // adopting another tenant's stored outcome (envelope included) would be
-// a cross-tenant execution adoption.
+// a cross-tenant execution adoption. No new outcome kind: TERMINAL is
+// the rejection signal.
 type OutcomeKind string
 
 const (
@@ -244,10 +260,12 @@ type Outcome struct {
 }
 
 // ErrTenantMismatch marks a redelivery whose event tenant differs from
-// the tenant recorded when the same document ID was durably decided
-// (APA-28). It is terminal: retrying under the wrong tenant can never
-// converge, and adopting the recorded tenant's outcome would cross the
-// tenant boundary. Callers match it with errors.Is.
+// the tenant recorded when the same document ID was decided
+// (APA-28). It is a terminal REJECTION: permanent and non-recoverable
+// for that delivery — retrying under the wrong tenant can never
+// converge — and adopting the recorded tenant's outcome would cross the
+// tenant boundary. No new outcome kind: callers see OutcomeTerminal and
+// match the cause with errors.Is.
 var ErrTenantMismatch = errors.New("worker: tenant mismatch")
 
 // documentIngestedEvent mirrors ingest.BuildUploadPayload, the JSON
@@ -307,8 +325,10 @@ func abortedByCtx(ctx context.Context, docID string, attempt int, err error) (Ou
 //		Handle processed-set hit, same tenant (redelivery)
 //		                                  -> DUPLICATE (stored outcome + Duplicate=true)
 //		Handle processed-set hit, other tenant (tenant swap)
-//		                                  -> TERMINAL tenant-mismatch (Attempts 0,
-//		                                     no store writes, no launch, no adoption)
+//		                                  -> TERMINAL terminal REJECTION
+//		                                     (Attempts 0, permanent for that
+//		                                     delivery, no store writes,
+//		                                     no launch, no adoption)
 //		process integrity failure
 //		  (ErrCorruptedBlob/ErrBlobTooLarge) -> TERMINAL (no retry, FAILED row best-effort)
 //		process invalid extracted field
@@ -367,11 +387,13 @@ func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
 	p.mu.Lock()
 	if prev, ok := p.done[ev.DocumentID]; ok {
 		if prev.tenant != ev.Tenant {
-			// APA-28: same durable work identity, different tenant.
-			// Fail closed: never adopt the recorded tenant's outcome
-			// (DUPLICATE would hand over its envelope and execution),
-			// never write, never launch. Rejected before the pipeline,
-			// so no store/launch side effects are possible.
+			// APA-28: same event identity, different tenant. Fail closed
+			// with a terminal REJECTION (permanent, non-recoverable for
+			// this delivery; never SUCCESS, never DUPLICATE): never
+			// adopt the recorded tenant's outcome (DUPLICATE would hand
+			// over its envelope and execution), never write, never
+			// launch. Rejected before the pipeline, so no store/launch
+			// side effects are possible.
 			p.mu.Unlock()
 			out := Outcome{
 				DocumentID: ev.DocumentID,

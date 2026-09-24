@@ -68,12 +68,15 @@ func DocumentEventHandler(proc *worker.Processor) func(ctx context.Context, even
 // APA-28 tenant binding: when the incoming context already carries a
 // transport tenant (Pub/Sub attrs via pushevents, pull-loop attrs via
 // cmd/api) AND the event bytes carry a tenant, the two must agree. A
-// mismatch is a tenant-swapped redelivery and fails closed here as
-// TERMINAL (worker.ErrTenantMismatch) BEFORE the processor runs: no
-// fetch, no store writes, no launch, and no silent overwrite of the
-// transport tenant with the bytes tenant. Either side blank preserves
-// the legacy pass-through (blank bytes tenant still fails downstream
-// via postgres.ErrNoTenant; absent transport tenant scopes from bytes).
+// mismatch is a tenant-swapped redelivery and fails closed here with a
+// terminal REJECTION (OutcomeTerminal + worker.ErrTenantMismatch):
+// permanent and non-recoverable for that delivery, never SUCCESS and
+// never DUPLICATE (which would adopt the other tenant's execution).
+// Rejected BEFORE the processor runs: no fetch, no store writes, no
+// launch, and no silent overwrite of the transport tenant with the bytes
+// tenant. Either side blank preserves the legacy pass-through (blank
+// bytes tenant still fails downstream via postgres.ErrNoTenant; absent
+// transport tenant scopes from bytes).
 func DocumentOutcomeHandler(proc *worker.Processor) func(ctx context.Context, event []byte) worker.Outcome {
 	return func(ctx context.Context, event []byte) worker.Outcome {
 		var t documentTenant

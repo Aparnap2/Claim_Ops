@@ -1,18 +1,23 @@
 package app
 
 // APA-28 RED: tenant-swapped redelivery must fail closed at the
-// transport-binding seam.
+// transport-binding seam with a terminal REJECTION (permanent,
+// non-recoverable for that delivery; never SUCCESS/DUPLICATE). No new
+// outcome kind: TERMINAL is the rejection.
 //
-// Seam choice: DocumentOutcomeHandler is the single scoping site shared by
-// the push endpoint (pushevents.go attrs scoping) and the pull consumer
-// (DocumentEventHandler); cmd/api's pull loop applies the identical
-// attrs->ctx pattern before delegating here, so driving this handler with
-// an attrs-scoped ctx exercises both wirings. The processor-seam proof
-// (durable identity binding vs the processed-set) lives in
-// internal/worker/tenant_swap_redelivery_test.go; THIS file proves the
-// transport seam: when the attrs tenant and the event-bytes tenant
-// disagree, the handler must return an explicit TERMINAL rejection
-// without invoking the processor at all.
+// Seam choice and boundary vocabulary (ruling 2): this file proves
+// boundary (2), transport tenant binding — DocumentOutcomeHandler is the
+// single scoping site shared by the push endpoint (pushevents.go attrs
+// scoping) and the pull consumer (DocumentEventHandler); cmd/api's pull
+// loop applies the identical attrs->ctx pattern before delegating here,
+// so driving this handler with an attrs-scoped ctx exercises both
+// wirings. The in-memory-dedup seam (boundary 3: same event identity,
+// different tenant, one lifetime) lives in
+// internal/worker/tenant_swap_redelivery_test.go; the across-restart
+// durable-boundary proof (boundaries 4+5, option B) lives in
+// restart_tenant_swap_test.go (both packages). THIS file: when the attrs
+// tenant and the event-bytes tenant disagree, the handler must return an
+// explicit TERMINAL rejection without invoking the processor at all.
 //
 // Inverse (same run): legitimate same-tenant redelivery still dedupes
 // (S6 convergence) — guards against over-blocking.
@@ -133,7 +138,7 @@ func tswapEvent(t *testing.T, tenant string) []byte {
 	return raw
 }
 
-func TestTenantSwap_TransportSeam_FailClosed(t *testing.T) {
+func TestTenantSwap_TransportSeam_TerminalRejection(t *testing.T) {
 	handle, fetch, store := tswapRig()
 	ctxA := postgres.WithTenant(context.Background(), claims.TenantID("tA"))
 	ctxB := postgres.WithTenant(context.Background(), claims.TenantID("tB"))
@@ -185,12 +190,12 @@ func TestTenantSwap_TransportSeam_FailClosed(t *testing.T) {
 	}
 }
 
-// TestTenantSwap_PushPath_FailClosed drives the full Pub/Sub push wiring
+// TestTenantSwap_PushPath_TerminalRejection drives the full Pub/Sub push wiring
 // (attrs scoping in DocumentPushHandler + DocumentOutcomeHandler) with a
 // tenant-swapped envelope: the observed outcome kind must be TERMINAL
 // (acked as 200 per terminal-ack semantics, never hidden as success or
 // duplicate), and the processor must stay untouched.
-func TestTenantSwap_PushPath_FailClosed(t *testing.T) {
+func TestTenantSwap_PushPath_TerminalRejection(t *testing.T) {
 	handle, fetch, _ := tswapRig()
 	var kinds []worker.OutcomeKind
 	capturing := func(ctx context.Context, event []byte) worker.Outcome {
