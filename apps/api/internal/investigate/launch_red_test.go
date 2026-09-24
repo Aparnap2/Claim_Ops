@@ -134,7 +134,7 @@ func TestLaunch_PersistBeforeLaunch_Ordering(t *testing.T) {
 	prov := &fakeProvider{}
 	l := NewLauncher(NewInMemoryEnvelopeStore(), prov, launches)
 
-	name, launched, err := l.EnsureLaunched(context.Background(), "tnt-s6-01", "clm-s6-01", env.InvestigationID, env, launchTestWorkflow)
+	name, launched, err := l.EnsureLaunched(context.Background(), "tnt-s6-01", "clm-s6-01", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{})
 	if err != nil {
 		t.Fatalf("EnsureLaunched: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestLaunch_IdentifierPropagation(t *testing.T) {
 	prov := &fakeProvider{}
 	l := NewLauncher(NewInMemoryEnvelopeStore(), prov, launches)
 
-	name, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-02", "clm-s6-02", env.InvestigationID, env, launchTestWorkflow)
+	name, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-02", "clm-s6-02", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{})
 	if err != nil {
 		t.Fatalf("EnsureLaunched: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestLaunch_PersistOKLaunchFailed_RedeliveryLaunches(t *testing.T) {
 	prov := &fakeProvider{script: []error{fmt.Errorf("workflow down")}}
 	l := NewLauncher(NewInMemoryEnvelopeStore(), prov, launches)
 
-	_, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-03", "clm-s6-03", env.InvestigationID, env, launchTestWorkflow)
+	_, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-03", "clm-s6-03", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{})
 	if err == nil {
 		t.Fatal("want launch error, got success")
 	}
@@ -203,7 +203,7 @@ func TestLaunch_PersistOKLaunchFailed_RedeliveryLaunches(t *testing.T) {
 		t.Fatal("failed launch must not record launch state")
 	}
 	// ...so redelivery launches exactly once more and converges.
-	name, launched, err := l.EnsureLaunched(context.Background(), "tnt-s6-03", "clm-s6-03", env.InvestigationID, env, launchTestWorkflow)
+	name, launched, err := l.EnsureLaunched(context.Background(), "tnt-s6-03", "clm-s6-03", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{})
 	if err != nil || !launched || name == "" {
 		t.Fatalf("redelivery: launched=%v name=%q err=%v, want launch", launched, name, err)
 	}
@@ -219,11 +219,11 @@ func TestLaunch_AlreadyLaunched_NoDuplicateStart(t *testing.T) {
 	prov := &fakeProvider{}
 	l := NewLauncher(NewInMemoryEnvelopeStore(), prov, launches)
 
-	first, launched, err := l.EnsureLaunched(context.Background(), "tnt-s6-04", "clm-s6-04", env.InvestigationID, env, launchTestWorkflow)
+	first, launched, err := l.EnsureLaunched(context.Background(), "tnt-s6-04", "clm-s6-04", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{})
 	if err != nil || !launched {
 		t.Fatalf("first: launched=%v err=%v", launched, err)
 	}
-	second, launched2, err := l.EnsureLaunched(context.Background(), "tnt-s6-04", "clm-s6-04", env.InvestigationID, env, launchTestWorkflow)
+	second, launched2, err := l.EnsureLaunched(context.Background(), "tnt-s6-04", "clm-s6-04", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{})
 	if err != nil {
 		t.Fatalf("redelivery: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestLaunch_TenantMismatch_NoPersistNoLaunch(t *testing.T) {
 	prov := &fakeProvider{}
 	l := NewLauncher(NewInMemoryEnvelopeStore(), prov, launches)
 
-	_, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-EVIL", "clm-s6-05", env.InvestigationID, env, launchTestWorkflow)
+	_, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-EVIL", "clm-s6-05", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{})
 	if err == nil {
 		t.Fatal("want tenant-mismatch error, got success")
 	}
@@ -264,7 +264,7 @@ func TestLaunch_TenantScoping(t *testing.T) {
 	prov := &fakeProvider{}
 	l := NewLauncher(NewInMemoryEnvelopeStore(), prov, launches)
 
-	if _, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-06", "clm-s6-06", env.InvestigationID, env, launchTestWorkflow); err != nil {
+	if _, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-06", "clm-s6-06", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{}); err != nil {
 		t.Fatalf("EnsureLaunched: %v", err)
 	}
 	if _, found, _ := launches.GetLaunch(context.Background(), "tnt-s6-OTHER", env.InvestigationID); found {
@@ -285,11 +285,64 @@ func TestLaunch_InvalidIdentifiers_FailClosed(t *testing.T) {
 		"bad inv":      {"tnt-s6-07", "clm-s6-07", "nope", launchTestWorkflow},
 		"blank wf":     {"tnt-s6-07", "clm-s6-07", env.InvestigationID, ""},
 	} {
-		if _, _, err := l.EnsureLaunched(context.Background(), tc.tenant, tc.claim, tc.inv, env, tc.wf); err == nil {
+		if _, _, err := l.EnsureLaunched(context.Background(), tc.tenant, tc.claim, tc.inv, env, tc.wf, ExpireAuth{}); err == nil {
 			t.Fatalf("%s: want contract error, got success", name)
 		}
 	}
 	if prov.callCount() != 0 {
 		t.Fatalf("provider calls = %d, want 0 (validation first)", prov.callCount())
+	}
+}
+
+// S5: the pre-signed expire credential travels opaquely in the launch
+// argument when present, and is omitted when absent.
+type argCaptureProvider struct {
+	fakeProvider
+	lastArg map[string]string
+}
+
+func (f *argCaptureProvider) StartExecution(ctx context.Context, workflowID string, arg any) (string, error) {
+	if m, ok := arg.(map[string]string); ok {
+		cp := make(map[string]string, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		f.lastArg = cp
+	}
+	return f.fakeProvider.StartExecution(ctx, workflowID, arg)
+}
+
+func TestLaunch_ExpireAuth_FlowIntoArgument(t *testing.T) {
+	env := launchTestEnv(t, "tnt-s6-08", "clm-s6-08", "inv-88888888888888888888888888888888")
+	launches := newFakeLaunches()
+	prov := &argCaptureProvider{}
+	l := NewLauncher(NewInMemoryEnvelopeStore(), prov, launches)
+
+	auth := ExpireAuth{Body: `{"action":"EXPIRE"}`, Signature: "abc123"}
+	if _, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-08", "clm-s6-08", env.InvestigationID, env, launchTestWorkflow, auth); err != nil {
+		t.Fatalf("EnsureLaunched: %v", err)
+	}
+	if prov.lastArg["expire_body"] != auth.Body || prov.lastArg["expire_signature"] != auth.Signature {
+		t.Fatalf("argument = %v, want expire_body/signature forwarded opaquely", prov.lastArg)
+	}
+	if prov.lastArg["idempotency_key"] != env.InvestigationID {
+		t.Fatalf("argument missing idempotency_key: %v", prov.lastArg)
+	}
+}
+
+func TestLaunch_ExpireAuth_AbsentWhenZero(t *testing.T) {
+	env := launchTestEnv(t, "tnt-s6-09", "clm-s6-09", "inv-99999999999999999999999999999999")
+	launches := newFakeLaunches()
+	prov := &argCaptureProvider{}
+	l := NewLauncher(NewInMemoryEnvelopeStore(), prov, launches)
+
+	if _, _, err := l.EnsureLaunched(context.Background(), "tnt-s6-09", "clm-s6-09", env.InvestigationID, env, launchTestWorkflow, ExpireAuth{}); err != nil {
+		t.Fatalf("EnsureLaunched: %v", err)
+	}
+	if _, ok := prov.lastArg["expire_body"]; ok {
+		t.Fatalf("zero auth must omit expire_body: %v", prov.lastArg)
+	}
+	if _, ok := prov.lastArg["expire_signature"]; ok {
+		t.Fatalf("zero auth must omit expire_signature: %v", prov.lastArg)
 	}
 }

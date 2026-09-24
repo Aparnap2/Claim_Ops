@@ -12,12 +12,15 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 
 	"claimops-api/internal/documents"
 	"claimops-api/internal/invest"
+	"claimops-api/internal/investigate"
+	"claimops-api/internal/webauth"
 )
 
 type fakeLauncher struct {
@@ -28,14 +31,16 @@ type fakeLauncher struct {
 	invID    string
 	env      invest.UnresolvedException
 	workflow string
+	expire   investigate.ExpireAuth
 	err      error
 }
 
-func (f *fakeLauncher) EnsureLaunched(_ context.Context, tenantID, claimID, investigationID string, env invest.UnresolvedException, workflowID string) (string, bool, error) {
+func (f *fakeLauncher) EnsureLaunched(_ context.Context, tenantID, claimID, investigationID string, env invest.UnresolvedException, workflowID string, expire investigate.ExpireAuth) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	f.tenant, f.claim, f.invID, f.env, f.workflow = tenantID, claimID, investigationID, env, workflowID
+	f.expire = expire
 	if f.err != nil {
 		return "", false, f.err
 	}
@@ -127,4 +132,59 @@ func TestLaunchWiring_NilLauncher_SkipsLaunch(t *testing.T) {
 		t.Fatal("want envelope bytes (unchanged legacy behavior)")
 	}
 	_ = documents.StProcessed
+}
+
+func (f *fakeLauncher) expireSnapshot() investigate.ExpireAuth {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.expire
+}
+
+// S5: with WebhookSecret set, the worker mints the pre-signed timeout
+// credential and passes it to the launcher; the minted pair verifies
+// through the real webauth boundary (proven live in handlers).
+func TestLaunchWiring_ExpireAuthMintedWhenSecretSet(t *testing.T) {
+	store := newDedupStore()
+	p, _ := lowOCRProcessor(store)
+	fl := &fakeLauncher{}
+	p.Launcher = fl
+	p.WebhookSecret = "s5-test-secret"
+
+	out, _ := p.runNewPipeline(context.Background(), "t1", "c1", "abc123", "doc-wire-04", "")
+	if out.Kind != OutcomeSuccess {
+		t.Fatalf("kind = %q (%v), want SUCCESS", out.Kind, out.Err)
+	}
+	auth := fl.expireSnapshot()
+	if auth.Body == "" || auth.Signature == "" {
+		t.Fatal("expire auth must be minted when WebhookSecret is set")
+	}
+	// The minted pair satisfies the real decision boundary byte-for-byte.
+	if !webauth.VerifyWebhookRequest("s5-test-secret", "POST", "/v1/claims/c1/decision", "t1", []byte(auth.Body), auth.Signature) {
+		t.Fatal("minted expire auth does not verify through webauth (byte mismatch)")
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(auth.Body), &decoded); err != nil {
+		t.Fatalf("expire body not JSON: %v", err)
+	}
+	if decoded["action"] != "EXPIRE" {
+		t.Fatalf("expire body action = %q, want EXPIRE", decoded["action"])
+	}
+}
+
+// S5: without a secret nothing is minted (launch argument omits expire
+// fields; the timeout branch then fails loud instead of approving).
+func TestLaunchWiring_ExpireAuthAbsentWithoutSecret(t *testing.T) {
+	store := newDedupStore()
+	p, _ := lowOCRProcessor(store)
+	fl := &fakeLauncher{}
+	p.Launcher = fl
+	p.WebhookSecret = ""
+
+	out, _ := p.runNewPipeline(context.Background(), "t1", "c1", "abc123", "doc-wire-05", "")
+	if out.Kind != OutcomeSuccess {
+		t.Fatalf("kind = %q (%v), want SUCCESS", out.Kind, out.Err)
+	}
+	if auth := fl.expireSnapshot(); auth != (investigate.ExpireAuth{}) {
+		t.Fatalf("expire auth = %+v, want zero (no secret, no minting)", auth)
+	}
 }

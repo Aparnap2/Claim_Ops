@@ -22,7 +22,7 @@ const defaultWorkflowID = "claim-investigation"
 // tests substitute fakes. A nil Launcher disables launching (current
 // behavior for constructions that do not set it).
 type InvestigationLauncher interface {
-	EnsureLaunched(ctx context.Context, tenantID, claimID, investigationID string, env invest.UnresolvedException, workflowID string) (executionName string, launched bool, err error)
+	EnsureLaunched(ctx context.Context, tenantID, claimID, investigationID string, env invest.UnresolvedException, workflowID string, expire investigate.ExpireAuth) (executionName string, launched bool, err error)
 }
 
 // investigationIDForDocument derives a STABLE investigation ID from

@@ -153,7 +153,7 @@ func TestLaunch_CrashBetweenStartAndRecord_NoDuplicate(t *testing.T) {
 
 	// Arrange: first delivery starts the execution but the launch commit fails.
 	// Act:
-	_, _, err := l.EnsureLaunched(ctx, tenant, claim, invID, env, launchTestWorkflow)
+	_, _, err := l.EnsureLaunched(ctx, tenant, claim, invID, env, launchTestWorkflow, ExpireAuth{})
 	// Assert: the crash surfaces as an error (no silent orphan).
 	if err == nil {
 		t.Fatal("first EnsureLaunched: want record-crash error, got success")
@@ -164,7 +164,7 @@ func TestLaunch_CrashBetweenStartAndRecord_NoDuplicate(t *testing.T) {
 
 	// Arrange: redelivery of the same envelope after the crash.
 	// Act:
-	name, launched, err := l.EnsureLaunched(ctx, tenant, claim, invID, env, launchTestWorkflow)
+	name, launched, err := l.EnsureLaunched(ctx, tenant, claim, invID, env, launchTestWorkflow, ExpireAuth{})
 	// Assert: reconcile adopts the existing execution, starts nothing new.
 	if err != nil {
 		t.Fatalf("redelivery EnsureLaunched: %v", err)
@@ -200,7 +200,7 @@ func TestLaunch_ReconcileOutage_FailsClosed(t *testing.T) {
 
 	// Arrange: launch state absent, reconcile lookup outages.
 	// Act:
-	_, _, err := l.EnsureLaunched(ctx, tenant, claim, invID, env, launchTestWorkflow)
+	_, _, err := l.EnsureLaunched(ctx, tenant, claim, invID, env, launchTestWorkflow, ExpireAuth{})
 	// Assert: fail closed, never start on unknown reconcile state.
 	if err == nil {
 		t.Fatal("outage EnsureLaunched: want reconcile error, got success")

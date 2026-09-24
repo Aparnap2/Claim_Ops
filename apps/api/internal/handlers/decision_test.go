@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"claimops-api/internal/handlers"
+	"claimops-api/internal/webauth"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -21,7 +22,7 @@ func apa9Path(claimID string) string {
 // apa9Sign signs the full logical request: method + path (claim binding) +
 // tenant (tenant binding) + raw body.
 func apa9Sign(secret, claimID, tenant, body string) string {
-	return handlers.SignWebhookRequest(secret, http.MethodPost, apa9Path(claimID), tenant, []byte(body))
+	return webauth.SignWebhookRequest(secret, http.MethodPost, apa9Path(claimID), tenant, []byte(body))
 }
 
 func apa9App(secret string) *fiber.App {
@@ -197,8 +198,8 @@ func TestDecision_TrustedTenantStillRequired(t *testing.T) {
 // identity into the other.
 func TestDecision_SignerBindsExactTenantBytes(t *testing.T) {
 	body := []byte(apa9Body())
-	a := handlers.SignWebhookRequest(apa9Secret, http.MethodPost, apa9Path("clm-apa9-01"), "tnt-apa9", body)
-	b := handlers.SignWebhookRequest(apa9Secret, http.MethodPost, apa9Path("clm-apa9-01"), " tnt-apa9 ", body)
+	a := webauth.SignWebhookRequest(apa9Secret, http.MethodPost, apa9Path("clm-apa9-01"), "tnt-apa9", body)
+	b := webauth.SignWebhookRequest(apa9Secret, http.MethodPost, apa9Path("clm-apa9-01"), " tnt-apa9 ", body)
 	if a == b {
 		t.Fatal("padded tenant shares MAC with trimmed tenant (silent normalization)")
 	}

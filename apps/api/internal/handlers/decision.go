@@ -13,6 +13,7 @@ import (
 
 	"claimops-api/internal/claims"
 	"claimops-api/internal/repository/postgres"
+	"claimops-api/internal/webauth"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -59,11 +60,11 @@ func DecisionHandler(pool *pgxpool.Pool, secret string) fiber.Handler {
 			return WriteError(c, fiber.StatusBadRequest, "BAD_REQUEST", "claim id required")
 		}
 		raw := c.Body()
-		sig := c.Get(signatureHeader)
+		sig := c.Get(webauth.SignatureHeader)
 		if strings.TrimSpace(sig) == "" {
 			return WriteError(c, fiber.StatusUnauthorized, "WEBHOOK_UNAUTHORIZED", "signature required")
 		}
-		if !verifyWebhookRequest(secret, c.Method(), c.Path(), tenantID, raw, sig) {
+		if !webauth.VerifyWebhookRequest(secret, c.Method(), c.Path(), tenantID, raw, sig) {
 			return WriteError(c, fiber.StatusUnauthorized, "WEBHOOK_UNAUTHORIZED", "invalid signature")
 		}
 		var req DecisionRequest
@@ -91,6 +92,12 @@ func DecisionHandler(pool *pgxpool.Pool, secret string) fiber.Handler {
 			target = claims.ClaimStatusException
 		case "HITL", "HOLD":
 			target = claims.ClaimStatusHITL
+		case "EXPIRE":
+			// S5/APA-26: HITL-wait timeout. Same HMAC + version +
+			// idempotency controls as every decision; the state machine
+			// admits only HITL/ACTION_PENDING -> EXPIRED, and EXPIRED has
+			// no out-edges, so expiry can never approve or decide.
+			target = claims.ClaimStatusExpired
 		default:
 			return WriteError(c, fiber.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("unknown action %q", req.Action))
 		}

@@ -53,6 +53,10 @@ type ProcessorDeps struct {
 	// ScopeDeadlineMs bounds one investigation's wall clock. <= 0
 	// selects DefaultScopeDeadlineMs (60000, matching the corpus).
 	ScopeDeadlineMs int64
+	// WebhookSecret enables the worker's pre-signed workflow timeout
+	// credential (S5/APA-26 webauth mint). Empty disables minting; the
+	// launch argument then omits expire fields.
+	WebhookSecret string
 }
 
 // BuildProcessor wires the Tier-1 pipeline: GCS-backed fetch, idempotent
@@ -140,6 +144,7 @@ func BuildFullProcessor(d ProcessorDeps) (*FullProcessor, error) {
 	proc.ScopeAllowTools = tools
 	proc.ScopeMaxCalls = maxCalls
 	proc.ScopeDeadlineMs = deadlineMs
+	proc.WebhookSecret = d.WebhookSecret
 	return &FullProcessor{
 		Processor:       proc,
 		Parser:          p,
