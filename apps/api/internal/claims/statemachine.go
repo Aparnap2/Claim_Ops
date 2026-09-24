@@ -52,9 +52,11 @@ var Transitions = map[ClaimStatus]map[ClaimStatus]bool{
 	},
 	ClaimStatusHITL: {
 		ClaimStatusActionPending: true,
+		ClaimStatusExpired:       true,
 	},
 	ClaimStatusActionPending: {
 		ClaimStatusActioned: true,
+		ClaimStatusExpired:  true,
 	},
 	ClaimStatusActioned: {
 		ClaimStatusVerified: true,
@@ -113,7 +115,8 @@ func isKnownStatus(s ClaimStatus) bool {
 		ClaimStatusActionPending,
 		ClaimStatusActioned,
 		ClaimStatusVerified,
-		ClaimStatusClosed:
+		ClaimStatusClosed,
+		ClaimStatusExpired:
 		return true
 	default:
 		return false

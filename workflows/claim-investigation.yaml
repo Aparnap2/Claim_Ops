@@ -16,6 +16,14 @@ main:
             investigation_id: ${investigation_id}
             tenant_id: ${tenant_id}
             claim_id: ${claim_id}
+          timeout: 60
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 3
+          backoff:
+            initial_delay: 1
+            max_delay: 10
+            multiplier: 2
         result: invResult
     - check:
         switch:
@@ -28,12 +36,45 @@ main:
         args:
           callback_type: "hitl-decision"
         result: cb
+    # S5/APA-26: the HITL wait must never resolve into an approval by
+    # timeout. On callback expiry the workflow deterministically records
+    # EXPIRE (same HMAC/version/idempotency controls as any decision) and
+    # ends EXPIRED. Re-drive is an explicit new decision/round, never an
+    # implicit edge. Auth shape mirrors the apply steps exactly; the
+    # workflow->decision HMAC gap (no X-Signature anywhere in this file)
+    # affects apply and expire identically and is tracked separately.
     - wait_human:
-        call: events.await_callback
-        args:
-          callback: ${cb}
-          timeout: 3600
-        result: decision
+        try:
+          call: events.await_callback
+          args:
+            callback: ${cb}
+            timeout: 3600
+          result: decision
+        except:
+          as: e
+          steps:
+            - expire:
+                call: http.post
+                args:
+                  url: ${sys.get_env("API_URL") + "/v1/claims/" + claim_id + "/decision"}
+                  headers:
+                    X-Tenant-ID: ${tenant_id}
+                  body:
+                    action: "EXPIRE"
+                    reason: "hitl-timeout"
+                    actor: "system"
+                    event_id: ${"hitl-expiry:" + investigation_id}
+                  timeout: 60
+                retry:
+                  predicate: ${http.default_retry_predicate}
+                  max_retries: 3
+                  backoff:
+                    initial_delay: 1
+                    max_delay: 10
+                    multiplier: 2
+                result: expired
+            - done_expired:
+                return: ${expired.body}
     - apply:
         call: http.post
         args:
@@ -41,6 +82,14 @@ main:
           headers:
             X-Tenant-ID: ${tenant_id}
           body: ${decision.http_request.body}
+          timeout: 60
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 3
+          backoff:
+            initial_delay: 1
+            max_delay: 10
+            multiplier: 2
         result: applied
     - done:
         return: ${applied.body}
@@ -49,12 +98,39 @@ main:
         args:
           callback_type: "hitl-decision-escalated"
         result: cbEsc
+    # S5/APA-26: same timeout-expiry contract as the primary wait above.
     - wait_human_escalated:
-        call: events.await_callback
-        args:
-          callback: ${cbEsc}
-          timeout: 3600
-        result: decisionEsc
+        try:
+          call: events.await_callback
+          args:
+            callback: ${cbEsc}
+            timeout: 3600
+          result: decisionEsc
+        except:
+          as: e
+          steps:
+            - expire_escalated:
+                call: http.post
+                args:
+                  url: ${sys.get_env("API_URL") + "/v1/claims/" + claim_id + "/decision"}
+                  headers:
+                    X-Tenant-ID: ${tenant_id}
+                  body:
+                    action: "EXPIRE"
+                    reason: "hitl-timeout"
+                    actor: "system"
+                    event_id: ${"hitl-expiry:" + investigation_id}
+                  timeout: 60
+                retry:
+                  predicate: ${http.default_retry_predicate}
+                  max_retries: 3
+                  backoff:
+                    initial_delay: 1
+                    max_delay: 10
+                    multiplier: 2
+                result: expiredEsc
+            - done_expired_escalated:
+                return: ${expiredEsc.body}
     - apply_escalated:
         call: http.post
         args:
@@ -62,6 +138,14 @@ main:
           headers:
             X-Tenant-ID: ${tenant_id}
           body: ${decisionEsc.http_request.body}
+          timeout: 60
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 3
+          backoff:
+            initial_delay: 1
+            max_delay: 10
+            multiplier: 2
         result: appliedEsc
     - done_escalated:
         return: ${appliedEsc.body}

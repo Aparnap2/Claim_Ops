@@ -91,6 +91,12 @@ func DecisionHandler(pool *pgxpool.Pool, secret string) fiber.Handler {
 			target = claims.ClaimStatusException
 		case "HITL", "HOLD":
 			target = claims.ClaimStatusHITL
+		case "EXPIRE":
+			// S5/APA-26: HITL-wait timeout. Same HMAC + version +
+			// idempotency controls as every decision; the state machine
+			// admits only HITL/ACTION_PENDING -> EXPIRED, and EXPIRED has
+			// no out-edges, so expiry can never approve or decide.
+			target = claims.ClaimStatusExpired
 		default:
 			return WriteError(c, fiber.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("unknown action %q", req.Action))
 		}

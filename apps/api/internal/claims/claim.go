@@ -114,6 +114,11 @@ const (
 	ClaimStatusActionPending ClaimStatus = "ACTION_PENDING"
 	// ClaimStatusActioned indicates the HITL action was applied.
 	ClaimStatusActioned ClaimStatus = "ACTIONED"
+	// ClaimStatusExpired indicates a HITL wait timed out without a human
+	// decision (S5/APA-26). Terminal-for-round: no outgoing transitions.
+	// Re-drive is an explicit new decision/round, never an implicit edge.
+	// Timeout expiry can never approve or otherwise decide the claim.
+	ClaimStatusExpired ClaimStatus = "EXPIRED"
 	// ClaimStatusVerified indicates the claim outcome was verified.
 	ClaimStatusVerified ClaimStatus = "VERIFIED"
 	// ClaimStatusClosed is the terminal closed state.
