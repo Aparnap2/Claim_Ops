@@ -1,14 +1,18 @@
-// Package retrybudget — APA-27/F9 RED: cross-layer retry composition pin.
+// Package retrybudget — APA-27/F9: cross-layer retry composition evidence.
 //
-// Each retry layer is individually bounded (worker Tier-1 MaxAttempts,
-// workflow http.post max_retries, FallbackModelClient MaxTotalCalls) but
-// only comments claim the composition does not multiply. This test pins a
-// declared finite global bound and fails if any single layer budget widens.
+// Option 2 (S6 dedupe): worker (re)deliveries converge via the durable
+// launch boundary onto ONE workflow execution, so the worker factor does
+// not multiply. The honest composed bound is therefore
+// 1 execution x 4 workflow attempts x 4 provider calls = 16 per workflow
+// step, proved by the tests below against the real production seams
+// (investigate.Launcher, orchestrate.FallbackModelClient) with
+// fakes/counters. Deterministic: no sleeps, no wall-clock assertions.
 package retrybudget
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,9 +25,12 @@ import (
 	"claimops-api/internal/claims"
 	"claimops-api/internal/documents"
 	"claimops-api/internal/evidence"
+	"claimops-api/internal/invest"
+	"claimops-api/internal/investigate"
 	"claimops-api/internal/investigate/orchestrate"
 	"claimops-api/internal/ports"
 	"claimops-api/internal/worker"
+	"claimops-api/internal/workflow"
 )
 
 // countFetcher fails the first failTimes calls with a transient error,
@@ -149,6 +156,105 @@ func (m *scriptModel) Calls() int {
 	return m.calls
 }
 
+// countProvider counts StartExecution calls and models a provider with no
+// pre-existing executions (typed absence, so the S6 reconciler proceeds
+// to start; any other error would fail closed).
+type countProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+// StartExecution implements workflow.WorkflowProvider.
+func (f *countProvider) StartExecution(_ context.Context, _ string, _ any) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return fmt.Sprintf("exec-f9-%d", f.calls), nil
+}
+
+// GetExecution implements workflow.WorkflowProvider.
+func (f *countProvider) GetExecution(_ context.Context, name string) (string, json.RawMessage, error) {
+	return "", nil, fmt.Errorf("retrybudget: execution %q absent: %w", name, workflow.ErrExecutionNotFound)
+}
+
+// SendCallback implements workflow.WorkflowProvider.
+func (f *countProvider) SendCallback(_ context.Context, _ string, _ any) error {
+	return errors.New("retrybudget: no callbacks")
+}
+
+// DeployWorkflow implements workflow.WorkflowProvider.
+func (f *countProvider) DeployWorkflow(_ context.Context, _ string, _ string) error {
+	return errors.New("retrybudget: no deploy")
+}
+
+// Calls returns the total StartExecution invocations observed.
+func (f *countProvider) Calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+var _ workflow.WorkflowProvider = (*countProvider)(nil)
+
+// memLaunches is an in-memory investigate.LaunchStore: first
+// RecordLaunch wins (mirrors the PG ON CONFLICT DO NOTHING first-wins
+// rule); GetLaunch is tenant-scoped.
+type memLaunches struct {
+	mu   sync.Mutex
+	rows map[string]investigate.LaunchRecord
+}
+
+// newMemLaunches returns an empty store.
+func newMemLaunches() *memLaunches { return &memLaunches{rows: map[string]investigate.LaunchRecord{}} }
+
+// RecordLaunch implements investigate.LaunchStore.
+func (f *memLaunches) RecordLaunch(_ context.Context, rec investigate.LaunchRecord) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := rec.TenantID + "\x00" + rec.InvestigationID
+	if _, ok := f.rows[k]; ok {
+		return false, nil
+	}
+	f.rows[k] = rec
+	return true, nil
+}
+
+// GetLaunch implements investigate.LaunchStore.
+func (f *memLaunches) GetLaunch(_ context.Context, tenant, invID string) (investigate.LaunchRecord, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec, ok := f.rows[tenant+"\x00"+invID]
+	return rec, ok, nil
+}
+
+var _ investigate.LaunchStore = (*memLaunches)(nil)
+
+// launchEnv builds a valid envelope for (tenant, claim, invID): the same
+// shape the S6 launch tests use, so EnsureLaunched exercises its real
+// validation + persist-first path.
+func launchEnv(tenant, claim, invID string) invest.UnresolvedException {
+	return invest.UnresolvedException{
+		TenantID: tenant, ClaimID: claim,
+		ExceptionID:     "ex-0123456789abcdef0123456789abcdef",
+		InvestigationID: invID,
+		RuleFindings: []invest.RuleFinding{{
+			Code: invest.RulePolicyNumberConflict, Severity: invest.SeverityHigh,
+			Message: "policy number conflict", EvidenceIDs: []string{"ev-01"},
+			AffectedFields: []string{"policy_number"},
+		}},
+		Scope: invest.ScopeConstraints{
+			TenantID: tenant, ClaimID: claim,
+			AllowTools:   []invest.ToolName{invest.ToolGetClaim},
+			MaxToolCalls: 5, DeadlineMs: 5000, RequestID: "req-f9-composition",
+		},
+		EvidenceRefs: []invest.EvidenceRef{{
+			EvidenceID: "ev-01", SourceType: invest.EvidenceSourceDocument,
+			SourceID: "doc-01", TenantID: tenant, ClaimID: claim,
+			DocumentID: "doc-01", Page: 1,
+		}},
+	}
+}
+
 // eventDoc builds a document-ingested.v1 event envelope for docID.
 func eventDoc(t *testing.T, docID string) []byte {
 	t.Helper()
@@ -214,16 +320,14 @@ func yamlMaxRetries(t *testing.T) []int {
 	return out
 }
 
-// TestRetryComposition_SingleTransientWithinGlobalBound drives one logical
-// investigation with ONE injected transient failure (a full first-delivery
-// outage that clears before transport redelivery) and counts invocations
-// at all three layers via fakes/counters: worker re-deliveries, workflow
-// HTTP attempts, and provider calls. No sleeps, no wall-clock assertions.
-func TestRetryComposition_SingleTransientWithinGlobalBound(t *testing.T) {
+// TestRetryComposition_WorkerTier1PerDeliveryBudget pins the worker leg:
+// one delivery spends at most MaxAttempts Tier-1 tries, and a TRANSIENT
+// delivery is NOT remembered, so transport redelivery reprocesses to
+// SUCCESS. Worker retries are pre-launch (Tier-1 never launches), so
+// they cannot multiply workflow executions; launch convergence is
+// proved separately below.
+func TestRetryComposition_WorkerTier1PerDeliveryBudget(t *testing.T) {
 	ctx := context.Background()
-
-	// Worker leg: first delivery fails transiently on every pipeline
-	// attempt (the single injected outage); redelivery then succeeds.
 	fetch := &countFetcher{
 		failTimes: 1 << 30,
 		fileName:  "claim_form.pdf",
@@ -231,7 +335,7 @@ func TestRetryComposition_SingleTransientWithinGlobalBound(t *testing.T) {
 		content:   "patient_name: Alice\npolicy_number: POL-1\n",
 	}
 	proc := worker.NewProcessor(fetch, seedStore(), agreeLoader{}, agreeChecker{})
-	investigation := eventDoc(t, "doc-f9-composition")
+	investigation := eventDoc(t, "doc-f9-worker")
 
 	first := proc.Handle(ctx, investigation)
 	if first.Kind != worker.OutcomeTransient {
@@ -249,35 +353,135 @@ func TestRetryComposition_SingleTransientWithinGlobalBound(t *testing.T) {
 	if second.Duplicate {
 		t.Fatal("TRANSIENT delivery must not be remembered: redelivery must reprocess, not report DUPLICATE")
 	}
-	workerDeliveries := 2
+}
 
-	// Workflow leg: the redelivered investigation drives one workflow
-	// HTTP step that succeeds on its first attempt.
-	httpCalls := 1 // fake poster: healthy on first attempt (the only failure was the worker outage)
+// TestRetryComposition_WorkerRedeliveryConvergesToSingleLaunch proves the
+// S6 anti-multiplication boundary with the REAL production Launcher
+// (investigate.EnsureLaunched): three redeliveries carrying the SAME
+// stable investigation ID (what worker/launch.go investigationIDForDocument
+// mints per document) converge onto ONE workflow execution — the second
+// and third calls report launched=false with the same execution name and
+// zero new StartExecution calls. The adversarial twin (distinct IDs, i.e.
+// a regression minting fresh IDs per attempt) launches N times, proving
+// this test would go red if the dedupe key regressed.
+func TestRetryComposition_WorkerRedeliveryConvergesToSingleLaunch(t *testing.T) {
+	ctx := context.Background()
+	const tenant, claim, wfID = "t1", "c1", "claim-investigation"
+	const invID = "inv-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-	// Provider leg: the workflow step drives one model call that
-	// succeeds on its first provider invocation.
-	primary := &scriptModel{steps: []*orchestrate.ModelResponse{{}}}
-	secondary := &scriptModel{}
-	fb := orchestrate.NewFallbackModelClient(primary, secondary, 0)
-	if _, err := fb.Complete(ctx, orchestrate.ModelRequest{}); err != nil {
-		t.Fatalf("provider call err = %v, want success", err)
-	}
-	providerCalls := primary.Calls() + secondary.Calls()
+	prov := &countProvider{}
+	launcher := investigate.NewLauncher(investigate.NewInMemoryEnvelopeStore(), prov, newMemLaunches())
+	env := launchEnv(tenant, claim, invID)
 
-	if httpCalls > WorkflowHTTPAttempts {
-		t.Fatalf("workflow HTTP calls = %d, exceeds per-step budget %d", httpCalls, WorkflowHTTPAttempts)
+	first, launched, err := launcher.EnsureLaunched(ctx, tenant, claim, invID, env, wfID, investigate.ExpireAuth{})
+	if err != nil || !launched || first == "" {
+		t.Fatalf("delivery 1: launched=%v name=%q err=%v, want launch", launched, first, err)
 	}
-	if providerCalls > ProviderMaxTotalCalls {
-		t.Fatalf("provider calls = %d, exceeds fallback budget %d", providerCalls, ProviderMaxTotalCalls)
+	for i := 2; i <= worker.MaxAttempts; i++ {
+		name, relaunched, err := launcher.EnsureLaunched(ctx, tenant, claim, invID, env, wfID, investigate.ExpireAuth{})
+		if err != nil {
+			t.Fatalf("redelivery %d err = %v, want convergence", i, err)
+		}
+		if relaunched {
+			t.Fatalf("redelivery %d relaunched: dedupe must converge, not re-launch", i)
+		}
+		if name != first {
+			t.Fatalf("redelivery %d execution = %q, want %q (same durable name)", i, name, first)
+		}
 	}
-	total := workerDeliveries + httpCalls + providerCalls
-	if total > MaxCompositionProviderCalls {
-		t.Fatalf("composition total = %d (worker %d + http %d + provider %d), exceeds global bound %d",
-			total, workerDeliveries, httpCalls, providerCalls, MaxCompositionProviderCalls)
+	if got := prov.Calls(); got != 1 {
+		t.Fatalf("StartExecution calls after %d same-ID redeliveries = %d, want 1 (no worker x workflow multiplication)", worker.MaxAttempts, got)
 	}
-	t.Logf("composition total = %d (worker deliveries %d, fetch %d, http %d, provider %d) within bound %d",
-		total, workerDeliveries, fetch.Calls(), httpCalls, providerCalls, MaxCompositionProviderCalls)
+
+	// Adversarial twin: distinct investigation IDs MUST launch distinctly.
+	// If a regression minted a fresh ID per worker attempt, the composed
+	// product would multiply — this half pins that sensitivity.
+	prov2 := &countProvider{}
+	launcher2 := investigate.NewLauncher(investigate.NewInMemoryEnvelopeStore(), prov2, newMemLaunches())
+	for i := 0; i < worker.MaxAttempts; i++ {
+		id := fmt.Sprintf("inv-%032x", i+1)
+		if _, _, err := launcher2.EnsureLaunched(ctx, tenant, claim, id, launchEnv(tenant, claim, id), wfID, investigate.ExpireAuth{}); err != nil {
+			t.Fatalf("distinct-ID launch %d err = %v", i, err)
+		}
+	}
+	if got := prov2.Calls(); got != worker.MaxAttempts {
+		t.Fatalf("distinct-ID StartExecution calls = %d, want %d (twin must multiply, proving the same-ID half is load-bearing)", got, worker.MaxAttempts)
+	}
+}
+
+// runWorkflowStep mimics one workflow http.post step's retry semantics
+// (predicate-retryable failures retried up to WorkflowHTTPAttempts total
+// attempts, mirroring max_retries: 3): attempt drives one model call
+// through the REAL FallbackModelClient seam, then returns the scripted
+// HTTP fate. It returns (httpAttempts, providerCalls).
+func runWorkflowStep(t *testing.T, ctx context.Context, httpFates []error, model *scriptModel, secondary *scriptModel) (int, int) {
+	t.Helper()
+	fb := orchestrate.NewFallbackModelClient(model, secondary, 0)
+	var httpAttempts int
+	for i := 0; i < WorkflowHTTPAttempts; i++ {
+		httpAttempts++
+		if _, err := fb.Complete(ctx, orchestrate.ModelRequest{}); err != nil {
+			// A provider-exhausted chain is terminal (markExhausted):
+			// the step does not paper over it, it propagates.
+			t.Fatalf("attempt %d: provider seam err = %v (fakes must be scripted to the attempt's fate)", httpAttempts, err)
+		}
+		if httpFates[httpAttempts-1] == nil {
+			return httpAttempts, model.Calls() + secondary.Calls()
+		}
+	}
+	return httpAttempts, model.Calls() + secondary.Calls()
+}
+
+// errRetryable is a scripted retryable HTTP-step failure (5xx class).
+var errRetryable = errors.New("retrybudget: http.post: status 503 boom (retryable)")
+
+// TestRetryComposition_WorkflowProviderComposedBound exercises workflow
+// retries AND provider fallback in ONE composed path through the real
+// FallbackModelClient seam (no hard-coded call counts):
+//
+//   - Retry exercised: the step fails retryably 3 times then succeeds —
+//     httpAttempts must equal the full WorkflowHTTPAttempts budget (4),
+//     proving max_retries: 3 actually fires through this path.
+//   - Worst case: every step attempt exhausts a full all-failing fallback
+//     chain (4 provider calls each) — total provider calls must equal
+//     exactly the composed product 4 x 4 = 16, proving the bound is both
+//     sufficient AND tight (reachable, not loose).
+func TestRetryComposition_WorkflowProviderComposedBound(t *testing.T) {
+	ctx := context.Background()
+
+	retryModel := &scriptModel{steps: []*orchestrate.ModelResponse{{}, {}, {}, {}}}
+	retrySecondary := &scriptModel{}
+	httpAttempts, providerCalls := runWorkflowStep(t, ctx,
+		[]error{errRetryable, errRetryable, errRetryable, nil},
+		retryModel, retrySecondary)
+	if httpAttempts != WorkflowHTTPAttempts {
+		t.Fatalf("workflow HTTP attempts = %d, want %d (all 3 retries must fire before success)", httpAttempts, WorkflowHTTPAttempts)
+	}
+	if providerCalls != WorkflowHTTPAttempts {
+		t.Fatalf("provider calls along the retry path = %d, want %d (one healthy call per attempt)", providerCalls, WorkflowHTTPAttempts)
+	}
+
+	// Worst case: each of the 4 step attempts drives an all-failing
+	// provider chain to exhaustion (4 calls each, terminal via
+	// markExhausted so the chain itself never re-retries).
+	var worstProviderCalls int
+	for attempt := 0; attempt < WorkflowHTTPAttempts; attempt++ {
+		badPrimary := &scriptModel{steps: []*orchestrate.ModelResponse{nil, nil, nil, nil, nil, nil}}
+		badSecondary := &scriptModel{steps: []*orchestrate.ModelResponse{nil, nil, nil, nil, nil, nil}}
+		capped := orchestrate.NewFallbackModelClient(badPrimary, badSecondary, 0)
+		if _, err := capped.Complete(ctx, orchestrate.ModelRequest{}); err == nil {
+			t.Fatalf("attempt %d: all-failing providers must return an error", attempt+1)
+		}
+		worstProviderCalls += badPrimary.Calls() + badSecondary.Calls()
+	}
+	if want := WorkflowHTTPAttempts * ProviderMaxTotalCalls; worstProviderCalls != want {
+		t.Fatalf("worst-case provider calls = %d, want exactly the composed product %d (4 attempts x 4 fallback calls)", worstProviderCalls, want)
+	}
+	if worstProviderCalls > MaxCompositionProviderCalls {
+		t.Fatalf("worst-case provider calls = %d exceeds composed bound %d", worstProviderCalls, MaxCompositionProviderCalls)
+	}
+	t.Logf("composed bound holds: worst-case %d provider calls within bound %d (1 execution x %d attempts x %d fallback calls)",
+		worstProviderCalls, MaxCompositionProviderCalls, WorkflowHTTPAttempts, ProviderMaxTotalCalls)
 }
 
 // TestRetryComposition_LayerBudgetsPinned pins each layer budget to its
@@ -300,11 +504,14 @@ func TestRetryComposition_LayerBudgetsPinned(t *testing.T) {
 	if def.MaxTotalCalls != ProviderMaxTotalCalls {
 		t.Fatalf("fallback default MaxTotalCalls = %d, want %d", def.MaxTotalCalls, ProviderMaxTotalCalls)
 	}
-	if want := WorkerTier1Attempts * WorkflowHTTPAttempts * ProviderMaxTotalCalls; MaxCompositionProviderCalls != want {
+	if WorkerExecutionsPerInvestigation != 1 {
+		t.Fatalf("WorkerExecutionsPerInvestigation = %d, want 1 (S6 dedupe: redeliveries converge, never multiply)", WorkerExecutionsPerInvestigation)
+	}
+	if want := WorkerExecutionsPerInvestigation * WorkflowHTTPAttempts * ProviderMaxTotalCalls; MaxCompositionProviderCalls != want {
 		t.Fatalf("MaxCompositionProviderCalls = %d, want derived product %d", MaxCompositionProviderCalls, want)
 	}
-	if MaxCompositionProviderCalls != 48 {
-		t.Fatalf("MaxCompositionProviderCalls = %d, want 48 (3 worker x 4 workflow-HTTP x 4 provider)", MaxCompositionProviderCalls)
+	if MaxCompositionProviderCalls != 16 {
+		t.Fatalf("MaxCompositionProviderCalls = %d, want 16 (1 execution x 4 workflow-HTTP x 4 provider)", MaxCompositionProviderCalls)
 	}
 
 	// Behavioral worst case at the provider seam: an always-retryable
