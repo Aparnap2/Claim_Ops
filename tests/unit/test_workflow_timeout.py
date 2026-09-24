@@ -16,7 +16,9 @@ import pathlib
 
 import yaml
 
-WF = pathlib.Path(__file__).resolve().parent.parent.parent / "workflows" / "claim-investigation.yaml"
+WF = (
+    pathlib.Path(__file__).resolve().parent.parent.parent / "workflows" / "claim-investigation.yaml"
+)
 
 
 def load_steps():
@@ -56,8 +58,12 @@ def test_expire_posts_are_signed_opaque():
         post = sub[expire]
         assert post["call"] == "http.post"
         headers = post["args"]["headers"]
-        assert headers["X-Signature"] == "${args.expire_signature}", "signature must come from launch args"
-        assert post["args"]["body"] == "${args.expire_body}", "body must be forwarded verbatim"
+        assert headers["X-Signature"] == "${args.expire_signature}", (
+            "signature must come from launch args"
+        )
+        assert post["args"]["body"] == "${args.expire_body}", (
+            "body must be forwarded verbatim"
+        )
         # The workflow constructs no auth material itself.
         dumped = yaml.safe_dump(post)
         assert "compute_hmac" not in dumped
