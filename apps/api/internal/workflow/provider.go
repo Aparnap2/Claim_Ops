@@ -8,6 +8,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -20,6 +21,13 @@ type WorkflowProvider interface {
 	SendCallback(ctx context.Context, callbackID string, payload any) error
 	DeployWorkflow(ctx context.Context, workflowID string, sourceContents string) error
 }
+
+// ErrExecutionNotFound marks a typed execution absence: the provider has
+// no execution under the requested name. The launch reconciler treats
+// exactly this as "safe to start"; any other GetExecution error fails
+// closed (no start) so a provider outage can never read as absence and
+// cause a duplicate launch.
+var ErrExecutionNotFound = errors.New("workflow: execution not found")
 
 // NoopProvider returns errors for all operations.
 // Use in tests that do not require a GCW emulator.
@@ -36,8 +44,8 @@ func (n *NoopProvider) StartExecution(_ context.Context, _ string, _ any) (strin
 	return "", fmt.Errorf("noop provider: StartExecution not implemented")
 }
 
-func (n *NoopProvider) GetExecution(_ context.Context, _ string) (string, json.RawMessage, error) {
-	return "", nil, fmt.Errorf("noop provider: GetExecution not implemented")
+func (n *NoopProvider) GetExecution(_ context.Context, executionName string) (string, json.RawMessage, error) {
+	return "", nil, fmt.Errorf("noop provider: execution %q absent: %w", executionName, ErrExecutionNotFound)
 }
 
 func (n *NoopProvider) SendCallback(_ context.Context, _ string, _ any) error {
