@@ -57,6 +57,9 @@ func main() {
 		Blobs:         gcsblob.New(cfg.GCSBucketDocuments, sclient),
 		Pool:          pool,
 		PolicyBaseURL: cfg.PolicyBaseURL,
+		// S5/APA-26: same out-of-band channel as the API's
+		// HITL_WEBHOOK_SECRET; empty disables expire-auth minting.
+		WebhookSecret: cfg.HITLWebhookSecret,
 	})
 	if err != nil {
 		log.Fatalf("worker: full processor: %v", err)

@@ -172,6 +172,16 @@ func NewLauncher(envs EnvelopeStore, prov workflow.WorkflowProvider, launches La
 	return &Launcher{Envelopes: envs, Workflows: prov, Launches: launches}
 }
 
+// ExpireAuth is the pre-signed workflow timeout credential, minted by the
+// producer that knows the exact decision bytes (worker via
+// webauth.MintExpireAuth). The workflow forwards body + signature opaquely
+// and never constructs auth material. Zero value omits both fields from
+// the launch argument.
+type ExpireAuth struct {
+	Body      string
+	Signature string
+}
+
 // EnsureLaunched persists env (idempotent) and starts workflowID exactly
 // once per investigation ID. It returns the durable execution name and
 // whether this call performed the launch. Errors: contract failures
@@ -179,7 +189,7 @@ func NewLauncher(envs EnvelopeStore, prov workflow.WorkflowProvider, launches La
 // nothing so redelivery converges. No retries inside: one provider call
 // per EnsureLaunched at most... (see below: at most one StartExecution;
 // envelope save is idempotent and precedes it).
-func (l *Launcher) EnsureLaunched(ctx context.Context, tenantID, claimID, investigationID string, env invest.UnresolvedException, workflowID string) (executionName string, launched bool, err error) {
+func (l *Launcher) EnsureLaunched(ctx context.Context, tenantID, claimID, investigationID string, env invest.UnresolvedException, workflowID string, expire ExpireAuth) (executionName string, launched bool, err error) {
 	if l == nil || l.Envelopes == nil || l.Workflows == nil || l.Launches == nil {
 		return "", false, fmt.Errorf("investigate: launcher needs envelopes, provider, launches: %w", ErrContract)
 	}
@@ -237,13 +247,19 @@ func (l *Launcher) EnsureLaunched(ctx context.Context, tenantID, claimID, invest
 	}
 	// Provider contract: the argument carries the idempotency key and the
 	// requested execution name; conforming providers create-or-return it.
-	name, err := l.Workflows.StartExecution(ctx, workflowID, map[string]string{
+	// The pre-signed expire credential travels opaquely when present.
+	arg := map[string]string{
 		"tenant_id":        tenantID,
 		"claim_id":         claimID,
 		"investigation_id": investigationID,
 		"idempotency_key":  investigationID,
 		"execution_name":   expected,
-	})
+	}
+	if expire.Body != "" && expire.Signature != "" {
+		arg["expire_body"] = expire.Body
+		arg["expire_signature"] = expire.Signature
+	}
+	name, err := l.Workflows.StartExecution(ctx, workflowID, arg)
 	if err != nil {
 		return "", false, fmt.Errorf("investigate: launch start: %w", err)
 	}

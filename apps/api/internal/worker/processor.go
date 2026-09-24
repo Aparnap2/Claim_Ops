@@ -53,6 +53,7 @@ import (
 	"claimops-api/internal/ports"
 	"claimops-api/internal/verify"
 	"claimops-api/internal/verifywrap"
+	"claimops-api/internal/webauth"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -172,6 +173,13 @@ type Processor struct {
 	Launcher InvestigationLauncher
 	// WorkflowID overrides defaultWorkflowID when set.
 	WorkflowID string
+	// WebhookSecret enables minting the pre-signed workflow timeout
+	// credential (S5/APA-26): the canonical EXPIRE body + HMAC carried
+	// opaquely in the launch argument so the workflow timeout branch
+	// satisfies the identical HMAC boundary. Empty disables minting
+	// (launch argument omits expire fields; same out-of-band channel
+	// as the API's HITL_WEBHOOK_SECRET).
+	WebhookSecret string
 
 	mu   sync.Mutex
 	done map[string]Outcome
@@ -869,7 +877,18 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 					if wfID == "" {
 						wfID = defaultWorkflowID
 					}
-					if _, _, lerr := p.Launcher.EnsureLaunched(ctx, tenant, claimID, invID, built, wfID); lerr != nil {
+					// S5/APA-26: pre-signed timeout credential minted here
+					// (Go owns the exact body bytes + MAC; the workflow
+					// forwards both strings opaquely). Absent secret means
+					// no expire auth: the timeout branch then fails loud
+					// (401) rather than approving anything.
+					var expire investigate.ExpireAuth
+					if strings.TrimSpace(p.WebhookSecret) != "" {
+						if body, sig, merr := webauth.MintExpireAuth(p.WebhookSecret, tenant, claimID, invID); merr == nil {
+							expire = investigate.ExpireAuth{Body: body, Signature: sig}
+						}
+					}
+					if _, _, lerr := p.Launcher.EnsureLaunched(ctx, tenant, claimID, invID, built, wfID, expire); lerr != nil {
 						return Outcome{
 							DocumentID:        docID,
 							Status:            documents.StProcessed,

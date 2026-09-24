@@ -79,12 +79,12 @@ func TestLaunchLive_EnsureLaunched_EndToEnd(t *testing.T) {
 	prov := &fakeProvider{}
 	l := NewLauncher(NewPGEnvelopeStore(pool), prov, NewPGLaunchStore(pool))
 
-	name, launched, err := l.EnsureLaunched(ctx, "tnt-s6-live", "clm-s6-live", env.InvestigationID, env, "claim-investigation")
+	name, launched, err := l.EnsureLaunched(ctx, "tnt-s6-live", "clm-s6-live", env.InvestigationID, env, "claim-investigation", ExpireAuth{})
 	if err != nil || !launched || name == "" {
 		t.Fatalf("EnsureLaunched: launched=%v name=%q err=%v", launched, name, err)
 	}
 	// Redelivery converges with zero new provider calls (durable state).
-	name2, launched2, err := l.EnsureLaunched(ctx, "tnt-s6-live", "clm-s6-live", env.InvestigationID, env, "claim-investigation")
+	name2, launched2, err := l.EnsureLaunched(ctx, "tnt-s6-live", "clm-s6-live", env.InvestigationID, env, "claim-investigation", ExpireAuth{})
 	if err != nil || launched2 || name2 != name {
 		t.Fatalf("redelivery: launched=%v name=%q err=%v, want converge %q", launched2, name2, err, name)
 	}

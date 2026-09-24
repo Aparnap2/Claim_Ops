@@ -37,12 +37,11 @@ main:
           callback_type: "hitl-decision"
         result: cb
     # S5/APA-26: the HITL wait must never resolve into an approval by
-    # timeout. On callback expiry the workflow deterministically records
-    # EXPIRE (same HMAC/version/idempotency controls as any decision) and
-    # ends EXPIRED. Re-drive is an explicit new decision/round, never an
-    # implicit edge. Auth shape mirrors the apply steps exactly; the
-    # workflow->decision HMAC gap (no X-Signature anywhere in this file)
-    # affects apply and expire identically and is tracked separately.
+    # timeout. ONLY a TimeoutError deterministically records EXPIRE (the
+    # pre-signed body + HMAC minted by the worker travels opaquely in the
+    # launch argument, satisfying the identical HMAC boundary); any other
+    # callback error is re-raised, never converted into business state.
+    # Re-drive is an explicit new decision/round, never an implicit edge.
     - wait_human:
         try:
           call: events.await_callback
@@ -53,17 +52,20 @@ main:
         except:
           as: e
           steps:
+            - check_timeout:
+                switch:
+                  - condition: ${"TimeoutError" in e.tags}
+                    next: expire
+                  - condition: true
+                    next: propagate
             - expire:
                 call: http.post
                 args:
                   url: ${sys.get_env("API_URL") + "/v1/claims/" + claim_id + "/decision"}
                   headers:
                     X-Tenant-ID: ${tenant_id}
-                  body:
-                    action: "EXPIRE"
-                    reason: "hitl-timeout"
-                    actor: "system"
-                    event_id: ${"hitl-expiry:" + investigation_id}
+                    X-Signature: ${args.expire_signature}
+                  body: ${args.expire_body}
                   timeout: 60
                 retry:
                   predicate: ${http.default_retry_predicate}
@@ -75,6 +77,8 @@ main:
                 result: expired
             - done_expired:
                 return: ${expired.body}
+            - propagate:
+                raise: ${e}
     - apply:
         call: http.post
         args:
@@ -98,7 +102,8 @@ main:
         args:
           callback_type: "hitl-decision-escalated"
         result: cbEsc
-    # S5/APA-26: same timeout-expiry contract as the primary wait above.
+    # S5/APA-26: same timeout-expiry contract as the primary wait above:
+    # TimeoutError only; anything else re-raises.
     - wait_human_escalated:
         try:
           call: events.await_callback
@@ -109,17 +114,20 @@ main:
         except:
           as: e
           steps:
+            - check_timeout_escalated:
+                switch:
+                  - condition: ${"TimeoutError" in e.tags}
+                    next: expire_escalated
+                  - condition: true
+                    next: propagate_escalated
             - expire_escalated:
                 call: http.post
                 args:
                   url: ${sys.get_env("API_URL") + "/v1/claims/" + claim_id + "/decision"}
                   headers:
                     X-Tenant-ID: ${tenant_id}
-                  body:
-                    action: "EXPIRE"
-                    reason: "hitl-timeout"
-                    actor: "system"
-                    event_id: ${"hitl-expiry:" + investigation_id}
+                    X-Signature: ${args.expire_signature}
+                  body: ${args.expire_body}
                   timeout: 60
                 retry:
                   predicate: ${http.default_retry_predicate}
@@ -131,6 +139,8 @@ main:
                 result: expiredEsc
             - done_expired_escalated:
                 return: ${expiredEsc.body}
+            - propagate_escalated:
+                raise: ${e}
     - apply_escalated:
         call: http.post
         args:

@@ -22,6 +22,7 @@ import (
 	"claimops-api/internal/claims"
 	"claimops-api/internal/handlers"
 	"claimops-api/internal/repository/postgres"
+	"claimops-api/internal/webauth"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,7 +32,7 @@ func expirySignedReq(t *testing.T, secret, tenant, claimID, action, eventID stri
 	t.Helper()
 	body := fmt.Sprintf(`{"action":%q,"reason":"hitl-timeout","actor":"system","event_id":%q}`, action, eventID)
 	path := "/v1/claims/" + claimID + "/decision"
-	sig := handlers.SignWebhookRequest(secret, http.MethodPost, path, tenant, []byte(body))
+	sig := webauth.SignWebhookRequest(secret, http.MethodPost, path, tenant, []byte(body))
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", tenant)
@@ -108,6 +109,37 @@ func TestDecision_ExpireFromNonHITL_Rejected_Live(t *testing.T) {
 	}
 	if m["code"] != "TRANSITION_ERROR" {
 		t.Fatalf("code = %v, want TRANSITION_ERROR", m["code"])
+	}
+}
+
+// S5 review ask #1: the worker-minted timeout credential (webauth mint,
+// the exact producer the workflow forwards opaquely) satisfies the real
+// decision boundary byte-for-byte: 200 EXPIRED, not 401.
+func TestDecision_MintedExpireAuth_SucceedsLive(t *testing.T) {
+	pool := requireDecisionPool(t)
+	secret := "s5-mint-secret"
+	tenant := claims.TenantID(fmt.Sprintf("tnt-s5-mint-%d-%d", os.Getpid(), decisionIntSeq.Add(1)))
+	invID := fmt.Sprintf("inv-%032d", 51001)
+	id := seedStatusClaim(t, pool, tenant, claims.ClaimStatusHITL)
+
+	body, sig, err := webauth.MintExpireAuth(secret, string(tenant), string(id), invID)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	path := "/v1/claims/" + string(id) + "/decision"
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", string(tenant))
+	req.Header.Set("X-Signature", sig)
+
+	app := fiber.New()
+	app.Post("/v1/claims/:id/decision", handlers.DecisionHandler(pool, secret))
+	status, m := decisionResp(t, app, req)
+	if status != 200 {
+		t.Fatalf("minted EXPIRE status = %d (%v), want 200", status, m)
+	}
+	if m["status"] != string(claims.ClaimStatusExpired) {
+		t.Fatalf("status = %v, want EXPIRED", m["status"])
 	}
 }
 

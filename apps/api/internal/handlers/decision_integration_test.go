@@ -26,6 +26,7 @@ import (
 	"claimops-api/internal/claims"
 	"claimops-api/internal/handlers"
 	"claimops-api/internal/repository/postgres"
+	"claimops-api/internal/webauth"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -85,7 +86,7 @@ func decisionSignedReq(t *testing.T, secret, tenant, claimID, eventID string) *h
 	t.Helper()
 	body := fmt.Sprintf(`{"action":"APPROVE","reason":"hitl-ok","actor":"human","event_id":%q}`, eventID)
 	path := "/v1/claims/" + claimID + "/decision"
-	sig := handlers.SignWebhookRequest(secret, http.MethodPost, path, tenant, []byte(body))
+	sig := webauth.SignWebhookRequest(secret, http.MethodPost, path, tenant, []byte(body))
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", tenant)

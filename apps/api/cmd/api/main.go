@@ -138,6 +138,7 @@ func startTransportPlane(ctx context.Context, cfg config.Config, svc *ingest.Ser
 		Blobs:         svc.Blobs,
 		Pool:          svc.Pool,
 		PolicyBaseURL: cfg.PolicyBaseURL,
+		WebhookSecret: cfg.HITLWebhookSecret,
 	})
 	if err != nil {
 		wpool.Close()
