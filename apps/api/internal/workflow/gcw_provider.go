@@ -199,6 +199,9 @@ func (g *GCWProvider) GetExecution(ctx context.Context, executionName string) (s
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil, fmt.Errorf("get execution %q failed: status %d: %s: %w", executionName, resp.StatusCode, string(respBody), ErrExecutionNotFound)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", nil, fmt.Errorf("get execution %q failed: status %d: %s", executionName, resp.StatusCode, string(respBody))
 	}

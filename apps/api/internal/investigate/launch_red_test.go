@@ -55,8 +55,10 @@ func (f *fakeProvider) StartExecution(_ context.Context, _ string, _ any) (strin
 	return name, nil
 }
 
-func (f *fakeProvider) GetExecution(_ context.Context, _ string) (string, json.RawMessage, error) {
-	return "", nil, errors.New("fake: no executions")
+func (f *fakeProvider) GetExecution(_ context.Context, name string) (string, json.RawMessage, error) {
+	// Models a provider with no executions: typed absence so the
+	// reconciler proceeds to start (a generic error would fail closed).
+	return "", nil, fmt.Errorf("fake: execution %q absent: %w", name, workflow.ErrExecutionNotFound)
 }
 func (f *fakeProvider) SendCallback(_ context.Context, _ string, _ any) error {
 	return errors.New("fake: no callbacks")

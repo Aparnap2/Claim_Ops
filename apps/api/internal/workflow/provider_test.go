@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -432,5 +433,39 @@ func TestGCWProvider_Timeout(t *testing.T) {
 	_, err := p.StartExecution(context.Background(), "w", map[string]string{"a": "b"})
 	if err != nil {
 		t.Fatalf("StartExecution: %v", err)
+	}
+}
+
+func TestGCWProvider_GetExecution_NotFound_Sentinel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`not found`))
+	}))
+	defer srv.Close()
+
+	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
+	_, _, err := p.GetExecution(context.Background(), "exec-missing")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrExecutionNotFound) {
+		t.Fatalf("404 must wrap ErrExecutionNotFound, got %v", err)
+	}
+}
+
+func TestGCWProvider_GetExecution_ServerError_NotSentinel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`boom`))
+	}))
+	defer srv.Close()
+
+	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
+	_, _, err := p.GetExecution(context.Background(), "exec-x")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if errors.Is(err, ErrExecutionNotFound) {
+		t.Fatalf("500 must not be ErrExecutionNotFound, got %v", err)
 	}
 }

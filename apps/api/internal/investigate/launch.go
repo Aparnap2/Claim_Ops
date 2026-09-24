@@ -15,6 +15,8 @@ package investigate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -69,6 +71,19 @@ type Launcher struct {
 	Envelopes EnvelopeStore
 	Workflows workflow.WorkflowProvider
 	Launches  LaunchStore
+}
+
+// executionNameFor derives the deterministic execution name for
+// (workflowID, investigationID): "exec-" + first 32 hex of
+// sha256("claimops-execution-v1\x00"+workflowID+"\x00"+invID).
+// Conforming providers create-or-return this name when the launch argument
+// carries it (see EnsureLaunched), so a crash between StartExecution and
+// RecordLaunch is recoverable by reconciliation instead of a duplicate
+// start. The derivation binds the workflow: same investigation under a
+// different workflow yields a different name.
+func executionNameFor(workflowID, investigationID string) string {
+	sum := sha256.Sum256([]byte("claimops-execution-v1\x00" + workflowID + "\x00" + investigationID))
+	return "exec-" + hex.EncodeToString(sum[:16])
 }
 
 // PGLaunchStore persists launch rows in workflow_launches with RLS.
@@ -196,10 +211,38 @@ func (l *Launcher) EnsureLaunched(ctx context.Context, tenantID, claimID, invest
 	} else if found {
 		return rec.ExecutionName, false, nil
 	}
+	// Crash-window reconcile: the provider may have accepted a start whose
+	// RecordLaunch never committed (worker died in between). The expected
+	// execution name is deterministic, so ask the provider before starting:
+	// found => adopt it (record, no new start); typed absence =>
+	// proceed to start; any other provider error fails closed with no
+	// start (an outage must never read as absence, or redelivery would
+	// duplicate the execution).
+	expected := executionNameFor(workflowID, investigationID)
+	if _, _, gerr := l.Workflows.GetExecution(ctx, expected); gerr == nil {
+		rec := LaunchRecord{
+			TenantID: tenantID, ClaimID: claimID,
+			InvestigationID: investigationID,
+			WorkflowID:      workflowID, ExecutionName: expected,
+		}
+		if err := rec.validate(); err != nil {
+			return "", false, err
+		}
+		if _, err := l.Launches.RecordLaunch(ctx, rec); err != nil {
+			return "", false, fmt.Errorf("investigate: launch adopt: %w", err)
+		}
+		return expected, false, nil
+	} else if !errors.Is(gerr, workflow.ErrExecutionNotFound) {
+		return "", false, fmt.Errorf("investigate: launch reconcile: %w", gerr)
+	}
+	// Provider contract: the argument carries the idempotency key and the
+	// requested execution name; conforming providers create-or-return it.
 	name, err := l.Workflows.StartExecution(ctx, workflowID, map[string]string{
 		"tenant_id":        tenantID,
 		"claim_id":         claimID,
 		"investigation_id": investigationID,
+		"idempotency_key":  investigationID,
+		"execution_name":   expected,
 	})
 	if err != nil {
 		return "", false, fmt.Errorf("investigate: launch start: %w", err)
