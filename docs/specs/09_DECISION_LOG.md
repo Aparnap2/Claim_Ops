@@ -156,6 +156,56 @@ Regression: 4 RED suites (Groq 4, Loop 5 groups, Worker 7, Fallback 9
 incl. Loop-level bound) GREEN; filtered 37 PASS; eval-v1 PASS;
 pytest 24 PASS; ruff PASS.
 
+### S3 explicit worker retry contract (accepted 2026-09-23)
+Frozen delivery contract for `internal/worker`: TRANSIENT retries while
+budget permits (Tier-1 `MaxAttempts<=3`, new-pipeline Attempts==1, no
+worker sleep — transport owns backoff); TERMINAL writes FAILED row
+best-effort, ACK, never retry (including pgconn class 23 via
+`retryableStoreErr`); CANCELLED returns raw `ctx.Err()` as TRANSIENT with
+zero further attempts (`preempt` / `abortedByCtx`); DUPLICATE returns the
+stored outcome with zero side effects (TRANSIENT is never remembered).
+F2 mid-call hung dependencies stay out of scope (60s wall-clock envelope
+bounds them; preemption would orphan writes). F3/F4 convergence is proven
+against a dedup-mimicking store (UNIQUE + ON CONFLICT DO NOTHING; no
+prod schema change). F8 classification applies at insert/load/check seams
+only — list-classification remains a non-goal. Source: `feat(worker):
+explicit retry contract — preempt, raw ctx, DB class 23 terminal (S3)
+(#89)` (1c3624f, PR #89). Regression: `retry_contract_test.go` 15/15
+(F2/F3/F4/F7/F8/F9 + interaction; 7 RED pre-fix).
+
+### F9 cross-layer retry composition bound 16 (accepted 2026-09-24, APA-27)
+Declared product 48 (3 worker × 4 workflow × 4 provider) was unreachable:
+S6 durable launch/idempotency boundary prevents worker redelivery from
+multiplying workflow executions (stable tenant-hashed investigation IDs,
+persist-first + `GetLaunch` convergence, first-wins `RecordLaunch`,
+Launcher performs no retries). Honest bound: 1 execution × 4 workflow
+attempts × 4 provider calls = 16 per workflow step, proven tight via
+real-Launcher redelivery test + real-fallback-seam composed test, both
+red-proofed. Leaf package `internal/retrybudget/` only; no retry
+semantics changed. Source: PR #92 (34e3c8e). Note: workflow portion is a
+deterministic harness of workflow retry semantics, not live GCP E2E.
+
+### P2 tenant-swap redelivery fail-closed (accepted 2026-09-24, APA-28)
+RED exposed real cross-tenant adoption: tenant-B redelivery of
+tenant-A-decided doc returned DUPLICATE with A's execution (processed-set
+keyed by doc ID only; attrs tenant silently overwritten by bytes tenant).
+Fix at tenant-binding seam only: same-run mismatch → TERMINAL REJECTION
+(permanent, never SUCCESS/DUPLICATE, ACKs to avoid poison-loop);
+post-restart fetch-miss → TRANSIENT per frozen S3 (TERMINAL would poison
+genuine ingest races), bounded by Tier-1 attempts → transport redelivery
+→ DLQ, no false ACK (pull Nack, push 503). Durable authority (option B):
+tenant-scoped blob fetch, RLS/FORCE RLS, tenant-hashed investigation IDs,
+fetch-before-side-effects. Migration/backfill: NONE (processed-set is
+in-memory). Source: PR #93 (6404ce2).
+
+### APA-30 pull-loop TRANSIENT Nack (accepted 2026-09-25)
+`cmd/api` pull loop swallowed TRANSIENT (always-Ack); now propagates the
+handler error (Nack) for TRANSIENT only via `app.PullCallback`, matching
+push (503 → redeliver → DLQ). TERMINAL/SUCCESS/DUPLICATE still ACK
+(poison-message protection at the frozen classification layer). Wiring/
+contract only; retry classification and P2 semantics untouched. Source:
+PR #94 (2152ad0).
+
 ### ADR-002 model string — open discrepancy (adjudication pending, recorded 2026-09-23)
 `README.md:14` contracts Groq model `openai/gpt-oss-20b` per ADR-002 while
 `apps/api/internal/investigate/orchestrate/groq_model.go:19` defaults to

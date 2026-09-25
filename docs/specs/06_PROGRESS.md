@@ -1,6 +1,6 @@
 # ClaimOps — Living Progress Tracker
 
-Last updated: 2026-09-23
+Last updated: 2026-09-25
 
 ## Completed
 
@@ -48,6 +48,10 @@ Last updated: 2026-09-23
 - [x] APA-11 authoritative mutation boundary + ADR-008 (10d8256, PR #83)
 - [x] APA-12 typed OCRConfidence + low-evidence HITL gate + ADR-009 (5450ee5, PR #84)
 - [x] APA-13 bounded retry classification, fallback, worker deadline (9f7a196, PR #85)
+- [x] S3 explicit worker retry contract — preempt, raw ctx, DB class 23 terminal (1c3624f, PR #89)
+- [x] F9 cross-layer retry composition bound 16 — S6 launch dedupe, no worker×workflow multiplication (34e3c8e, PR #92, APA-27)
+- [x] P2 tenant-swap redelivery fail-closed — same-run TERMINAL rejection, post-restart TRANSIENT via durable boundary (6404ce2, PR #93, APA-28)
+- [x] APA-30 pull-loop TRANSIENT Nack via app.PullCallback — push/pull parity (2152ad0, PR #94)
 - [x] Go 1.27 toolchain migration
 - [x] act-compatible CI (fast/integration/security, Layer A green under act)
 
