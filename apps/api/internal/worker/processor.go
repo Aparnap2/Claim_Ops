@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,7 @@ import (
 	"claimops-api/internal/observability"
 	"claimops-api/internal/parser"
 	"claimops-api/internal/ports"
+	"claimops-api/internal/sufficiency"
 	"claimops-api/internal/verify"
 	"claimops-api/internal/verifywrap"
 	"claimops-api/internal/webauth"
@@ -849,6 +851,27 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: extract document: %w", err))
 	}
 
+	// APA-31: per-class sufficiency gate (deterministic, HITL-routed).
+	// Evaluated after extraction inputs exist, before assembly/verification
+	// can treat them as passed. Insufficient evidence does not short-circuit:
+	// the pipeline continues through assemble/Map/Verify so the envelope
+	// carries full context, and the synthesized R8 finding below routes it
+	// to the existing exception/HITL/Unresolved machinery. Blank-DocumentID
+	// evidence is unattributable and terminal.
+	suffRes, err := sufficiency.Evaluate(facts)
+	if err != nil {
+		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: sufficiency: %w", err))
+	}
+	suffInsufficient := !suffRes.Sufficient
+	var suffFinding verify.Exception
+	if suffInsufficient {
+		var ok bool
+		suffFinding, ok = suffRes.SynthesizeFinding()
+		if !ok {
+			return failTerminal(documents.DocType(effective), fmt.Errorf("worker: sufficiency: insufficient result synthesized no finding"))
+		}
+	}
+
 	claim, err := assemble.Assemble([]extract.DocumentFacts{facts})
 	if err != nil {
 		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: assemble claim: %w", err))
@@ -899,6 +922,18 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: map verify input: %w", err))
 	}
 	res := verify.Verify(in)
+	// APA-31: insufficient evidence raises the existing R8
+	// evidence-sufficiency signal (MEDIUM with the document as evidence
+	// pointer, via sufficiency.SynthesizeFinding) in R1-R10 emission order,
+	// so the envelope below routes to HITL through the closed taxonomy.
+	// The per-key gaps travel as structured invest.MissingField items via
+	// the bridge below (finding Message text is display-only and
+	// contractually non-decision-bearing); the verifywrap Unresolved slice
+	// forwards unchanged.
+	if suffInsufficient {
+		res.Exceptions = insertSufficiencyFinding(res.Exceptions, suffFinding)
+		res.Passed = false
+	}
 	codes := make([]string, 0, len(res.Exceptions))
 	for _, ex := range res.Exceptions {
 		codes = append(codes, ex.Code)
@@ -911,7 +946,7 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 	}
 
 	var envelope []byte
-	if len(res.Exceptions) > 0 || len(unresolved) > 0 || lowOCREscalate {
+	if len(res.Exceptions) > 0 || len(unresolved) > 0 || lowOCREscalate || suffInsufficient {
 		// Low OCR without other exceptions still needs a HITL envelope.
 		// Synthesize a minimal exception result for the low-OCR signal so
 		// invest.Build succeeds (LOW_OCR_CONFIDENCE is not a verify R-code).
@@ -935,6 +970,20 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 		if invErr == nil {
 			if built, raw, ok := p.buildExceptionEnvelope(ctx, tenant, claimID, invID, claim, unresolved, lowRes); ok {
 				envelope = raw
+				// APA-31 bridge: the synthesized R8 carries no
+				// AffectedFields (the frozen invest taxonomy projects
+				// R8 to no fields), so invest.Build derives no
+				// per-key MissingField from it and the gaps would end
+				// as display-only finding text. Merge the leaf gate's
+				// MissingItems (same closed MissingField kind, same
+				// Missing-sorted keys) into MissingEvidence so the
+				// gaps are structured HITL/agent input. Best-effort:
+				// a bridge failure keeps the valid unbridged envelope.
+				if suffInsufficient {
+					if bridged, braw, bok := bridgeSufficiencyMissing(built, suffRes.MissingItems()); bok {
+						built, envelope = bridged, braw
+					}
+				}
 				// S6: persist-then-launch. Launch failure is TRANSIENT:
 				// the envelope is durable, so transport redelivery
 				// re-enters EnsureLaunched, which looks up launch state
@@ -1318,6 +1367,63 @@ func buildVerifyInput(view ClaimView, policy PolicyData, current documents.DocTy
 		ExternalMismatch:  "",
 		Duplicates:        nil,
 	}
+}
+
+// bridgeSufficiencyMissing merges the leaf gate's MissingItems into a
+// built envelope's MissingEvidence in invest.Validate canonical order
+// ((Kind, Key, Detail), exact duplicates removed) and re-marshals. It
+// introduces no new kinds (the gate emits MissingField only, already
+// closed) and no new topology (RuleFindings/Unresolved untouched).
+// ok=false keeps the caller's valid unbridged envelope: the bridge is
+// best-effort and never fails the pipeline. An empty item set bridges
+// nothing (ok=false, no bytes).
+func bridgeSufficiencyMissing(env invest.UnresolvedException, items []invest.MissingItem) (invest.UnresolvedException, []byte, bool) {
+	if len(items) == 0 {
+		return env, nil, false
+	}
+	merged := append(append([]invest.MissingItem(nil), env.MissingEvidence...), items...)
+	slices.SortFunc(merged, func(a, b invest.MissingItem) int {
+		if c := strings.Compare(string(a.Kind), string(b.Kind)); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.Key, b.Key); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Detail, b.Detail)
+	})
+	merged = slices.CompactFunc(merged, func(a, b invest.MissingItem) bool {
+		return a == b
+	})
+	env.MissingEvidence = merged
+	if err := invest.Validate(env); err != nil {
+		return invest.UnresolvedException{}, nil, false
+	}
+	raw, err := invest.Marshal(env)
+	if err != nil {
+		return invest.UnresolvedException{}, nil, false
+	}
+	return env, raw, true
+}
+
+// insertSufficiencyFinding inserts the APA-31 synthesized R8 finding into
+// the verify exception list preserving R1-R10 emission order (invest.Validate
+// rejects out-of-order findings, so a plain append would fail closed when
+// R9/R10 are present). R8 ranks 8: insert before the first R9
+// (EXTERNAL_POLICY_MISMATCH) or R10 (DATE_CONFLICT), else append. Existing
+// entries are already in emission order; all R8s stay grouped.
+func insertSufficiencyFinding(exs []verify.Exception, f verify.Exception) []verify.Exception {
+	idx := len(exs)
+	for i, e := range exs {
+		if e.Code == verify.CodeExternalPolicyMismatch || e.Code == verify.CodeDateConflict {
+			idx = i
+			break
+		}
+	}
+	out := make([]verify.Exception, 0, len(exs)+1)
+	out = append(out, exs[:idx]...)
+	out = append(out, f)
+	out = append(out, exs[idx:]...)
+	return out
 }
 
 // isBillLineField reports whether a canonical field name denotes a bill
