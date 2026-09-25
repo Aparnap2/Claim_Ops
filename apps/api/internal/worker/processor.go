@@ -136,8 +136,11 @@ type PolicyChecker interface {
 }
 
 // Processor runs the document pipeline. The zero value is not usable;
-// build via NewProcessor. The processed-set (done) is mutex-guarded and
-// keyed by document ID.
+// build via NewProcessor. The processed-set (done) is mutex-guarded,
+// keyed by document ID, and strictly in-process: a short-lived
+// same-run redelivery optimization, not durable work identity (see the
+// `done` field comment; five boundaries are spelled out in
+// tenant_swap_redelivery_test.go).
 //
 // Parser is optional: nil selects the Tier-1 regex path (default,
 // byte-identical behavior). A non-nil Parser routes process() through
@@ -181,8 +184,27 @@ type Processor struct {
 	// as the API's HITL_WEBHOOK_SECRET).
 	WebhookSecret string
 
-	mu   sync.Mutex
-	done map[string]Outcome
+	mu sync.Mutex
+	// done is the in-process processed-set: document ID -> outcome bound
+	// to the tenant it was decided under (APA-28). It is a SHORT-LIVED
+	// same-run redelivery optimization only — explicitly NOT durable work
+	// identity (durable identity lives in the document/evidence rows,
+	// the tenant-hashed investigation ID, and the envelope/launch
+	// tables). Migration/backfill: NONE — the map is process-local; a
+	// restart starts empty by design and the durable tenant boundary
+	// (RLS-scoped fetch/reads + tenant-partitioned blob keys) rejects
+	// cross-tenant redelivery first (see restart_tenant_swap_test.go,
+	// option B). Never persist, replicate, or warm this map.
+	done map[string]rememberedOutcome
+}
+
+// rememberedOutcome binds a durably-decided Outcome to the tenant it was
+// decided under (APA-28). The processed-set key stays the document ID;
+// the tenant binding is what fails a cross-tenant redelivery closed
+// instead of adopting another tenant's execution.
+type rememberedOutcome struct {
+	tenant  string
+	outcome Outcome
 }
 
 // NewProcessor builds a Processor over the four narrow dependencies.
@@ -192,7 +214,7 @@ func NewProcessor(f ContentFetcher, s DocumentStore, c ClaimLoader, p PolicyChec
 		Store:   s,
 		Claims:  c,
 		Policy:  p,
-		done:    make(map[string]Outcome),
+		done:    make(map[string]rememberedOutcome),
 	}
 }
 
@@ -201,6 +223,15 @@ func NewProcessor(f ContentFetcher, s DocumentStore, c ClaimLoader, p PolicyChec
 // heal on redelivery (non-2xx / Nack), while TERMINAL, SUCCESS, and
 // DUPLICATE all acknowledge (2xx / Ack) because redelivery could never
 // change the result. See #23 ([#16C] Event delivery semantics).
+//
+// APA-28: the processed-set is tenant-bound. A redelivery of an already
+// decided document ID under a DIFFERENT tenant is a terminal REJECTION
+// (OutcomeTerminal + ErrTenantMismatch): permanent and non-recoverable
+// for that delivery — retrying under the wrong tenant can never converge
+// — and never SUCCESS/DUPLICATE. In particular it is never DUPLICATE:
+// adopting another tenant's stored outcome (envelope included) would be
+// a cross-tenant execution adoption. No new outcome kind: TERMINAL is
+// the rejection signal.
 type OutcomeKind string
 
 const (
@@ -227,6 +258,15 @@ type Outcome struct {
 	Err               error
 	ExceptionEnvelope []byte
 }
+
+// ErrTenantMismatch marks a redelivery whose event tenant differs from
+// the tenant recorded when the same document ID was decided
+// (APA-28). It is a terminal REJECTION: permanent and non-recoverable
+// for that delivery — retrying under the wrong tenant can never
+// converge — and adopting the recorded tenant's outcome would cross the
+// tenant boundary. No new outcome kind: callers see OutcomeTerminal and
+// match the cause with errors.Is.
+var ErrTenantMismatch = errors.New("worker: tenant mismatch")
 
 // documentIngestedEvent mirrors ingest.BuildUploadPayload, the JSON
 // payload consumed from ports.TopicDocumentIngested.
@@ -282,7 +322,13 @@ func abortedByCtx(ctx context.Context, docID string, attempt int, err error) (Ou
 //
 //		Handle malformed JSON event          -> TERMINAL (Attempts 0)
 //		Handle schema_version mismatch       -> TERMINAL (Attempts 0)
-//		Handle processed-set hit (redelivery)-> DUPLICATE (stored outcome + Duplicate=true)
+//		Handle processed-set hit, same tenant (redelivery)
+//		                                  -> DUPLICATE (stored outcome + Duplicate=true)
+//		Handle processed-set hit, other tenant (tenant swap)
+//		                                  -> TERMINAL terminal REJECTION
+//		                                     (Attempts 0, permanent for that
+//		                                     delivery, no store writes,
+//		                                     no launch, no adoption)
 //		process integrity failure
 //		  (ErrCorruptedBlob/ErrBlobTooLarge) -> TERMINAL (no retry, FAILED row best-effort)
 //		process invalid extracted field
@@ -333,14 +379,34 @@ func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
 			Kind:       OutcomeTerminal,
 			Err:        fmt.Errorf("worker: unsupported schema_version %q (want %q)", ev.SchemaVersion, ports.DocumentIngestedSchemaVersion),
 		}
-		p.remember(ev.DocumentID, out)
+		p.remember(ev.DocumentID, ev.Tenant, out)
 		p.observe(ctx, ev.Tenant, ev.Claim, ev.DocumentID, "", out)
 		return out
 	}
 
 	p.mu.Lock()
 	if prev, ok := p.done[ev.DocumentID]; ok {
-		dup := prev
+		if prev.tenant != ev.Tenant {
+			// APA-28: same event identity, different tenant. Fail closed
+			// with a terminal REJECTION (permanent, non-recoverable for
+			// this delivery; never SUCCESS, never DUPLICATE): never
+			// adopt the recorded tenant's outcome (DUPLICATE would hand
+			// over its envelope and execution), never write, never
+			// launch. Rejected before the pipeline, so no store/launch
+			// side effects are possible.
+			p.mu.Unlock()
+			out := Outcome{
+				DocumentID: ev.DocumentID,
+				Status:     documents.StFailed,
+				Extraction: documents.ExtractionNotAttempted,
+				Kind:       OutcomeTerminal,
+				Err: fmt.Errorf("worker: tenant mismatch for document %q: redelivery tenant %q != recorded tenant %q: %w",
+					ev.DocumentID, ev.Tenant, prev.tenant, ErrTenantMismatch),
+			}
+			p.observe(ctx, ev.Tenant, ev.Claim, ev.DocumentID, "", out)
+			return out
+		}
+		dup := prev.outcome
 		dup.Duplicate = true
 		dup.Kind = OutcomeDuplicate
 		p.mu.Unlock()
@@ -355,25 +421,26 @@ func (p *Processor) Handle(ctx context.Context, raw []byte) Outcome {
 	// would turn the redelivery into DUPLICATE/ACK and lose the work, so
 	// redelivery must reprocess instead.
 	if out.Kind != OutcomeTransient {
-		p.remember(ev.DocumentID, out)
+		p.remember(ev.DocumentID, ev.Tenant, out)
 	}
 	p.observe(ctx, ev.Tenant, ev.Claim, ev.DocumentID, docType, out)
 	return out
 }
 
-// remember records a terminal outcome for idempotency. Empty document IDs
+// remember records a terminal outcome for idempotency, bound to the
+// tenant it was decided under (APA-28). Empty document IDs
 // (unparseable envelopes) are not recorded so unrelated malformed
 // payloads can never collapse into a single duplicate entry.
-func (p *Processor) remember(docID string, out Outcome) {
+func (p *Processor) remember(docID, tenant string, out Outcome) {
 	if docID == "" {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.done == nil {
-		p.done = make(map[string]Outcome)
+		p.done = make(map[string]rememberedOutcome)
 	}
-	p.done[docID] = out
+	p.done[docID] = rememberedOutcome{tenant: tenant, outcome: out}
 }
 
 // process runs the retry loop. It returns the terminal Outcome and the

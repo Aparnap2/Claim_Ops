@@ -3,17 +3,24 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"claimops-api/internal/claims"
+	"claimops-api/internal/documents"
+	"claimops-api/internal/observability"
 	"claimops-api/internal/ports"
 	"claimops-api/internal/repository/postgres"
 	"claimops-api/internal/worker"
 )
 
 // documentTenant carries just the tenant field of a DocumentIngested event
-// for request-scoped tenant propagation into the processor.
+// for request-scoped tenant propagation into the processor. Claim and
+// DocumentID travel alongside for fail-closed mismatch reporting only;
+// they are never trusted for routing.
 type documentTenant struct {
-	Tenant string `json:"tenant"`
+	Tenant     string `json:"tenant"`
+	Claim      string `json:"claim"`
+	DocumentID string `json:"document_id"`
 }
 
 // StartDocumentWorker subscribes handle to document.ingested events and
@@ -57,10 +64,39 @@ func DocumentEventHandler(proc *worker.Processor) func(ctx context.Context, even
 // signature, returning the full worker.Outcome so the caller (Pub/Sub
 // push endpoint) can branch on Outcome.Kind. Tenant scoping matches
 // DocumentEventHandler; both share this single scoping site.
+//
+// APA-28 tenant binding: when the incoming context already carries a
+// transport tenant (Pub/Sub attrs via pushevents, pull-loop attrs via
+// cmd/api) AND the event bytes carry a tenant, the two must agree. A
+// mismatch is a tenant-swapped redelivery and fails closed here with a
+// terminal REJECTION (OutcomeTerminal + worker.ErrTenantMismatch):
+// permanent and non-recoverable for that delivery, never SUCCESS and
+// never DUPLICATE (which would adopt the other tenant's execution).
+// Rejected BEFORE the processor runs: no fetch, no store writes, no
+// launch, and no silent overwrite of the transport tenant with the bytes
+// tenant. Either side blank preserves the legacy pass-through (blank
+// bytes tenant still fails downstream via postgres.ErrNoTenant; absent
+// transport tenant scopes from bytes).
 func DocumentOutcomeHandler(proc *worker.Processor) func(ctx context.Context, event []byte) worker.Outcome {
 	return func(ctx context.Context, event []byte) worker.Outcome {
 		var t documentTenant
 		if err := json.Unmarshal(event, &t); err == nil && t.Tenant != "" {
+			if transport, terr := postgres.TenantFrom(ctx); terr == nil && transport != claims.TenantID(t.Tenant) {
+				out := worker.Outcome{
+					DocumentID: t.DocumentID,
+					Status:     documents.StFailed,
+					Extraction: documents.ExtractionNotAttempted,
+					Kind:       worker.OutcomeTerminal,
+					Err: fmt.Errorf("app: transport tenant %q != event tenant %q for document %q: %w",
+						transport, t.Tenant, t.DocumentID, worker.ErrTenantMismatch),
+				}
+				observability.With(ctx).Warn("worker.tenant_mismatch",
+					"tenant", t.Tenant,
+					"claim", t.Claim,
+					"document", t.DocumentID,
+				)
+				return out
+			}
 			ctx = postgres.WithTenant(ctx, claims.TenantID(t.Tenant))
 		}
 		return proc.Handle(ctx, event)
