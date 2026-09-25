@@ -18,7 +18,6 @@ import (
 	"claimops-api/internal/adapters/pubsubadapter"
 	workeradapter "claimops-api/internal/adapters/worker"
 	"claimops-api/internal/app"
-	"claimops-api/internal/claims"
 	"claimops-api/internal/config"
 	"claimops-api/internal/handlers"
 	"claimops-api/internal/ingest"
@@ -147,19 +146,12 @@ func startTransportPlane(ctx context.Context, cfg config.Config, svc *ingest.Ser
 	}
 	sub := pubsubadapter.NewSubscriber(pclient, cfg.PubSubSubDocuments)
 	handle := app.DocumentEventHandler(full.Processor)
+	// APA-30 (Option A): propagate TRANSIENT as Nack so failed work
+	// redelivers; TERMINAL/SUCCESS/DUPLICATE stay Ack via the handler's
+	// classification, keeping poison messages from spinning.
+	pull := app.PullCallback(handle)
 	go func() {
-		err := sub.ReceiveEvent(ctx, func(mctx context.Context, payload []byte, attrs map[string]string) error {
-			if t, ok := attrs["tenant_id"]; ok && t != "" {
-				mctx = postgres.WithTenant(mctx, claims.TenantID(t))
-			}
-			if err := handle(mctx, payload); err != nil {
-				log.Printf("worker: terminal outcome: %v", err)
-			}
-			// Always ack: outcomes are terminal and idempotent
-			// (processed-set + canonical IDs + idempotent inserts), so a
-			// Nack-redelivered poison message could only spin.
-			return nil
-		})
+		err := sub.ReceiveEvent(ctx, pull)
 		if err != nil {
 			log.Printf("transport: pull loop ended: %v", err)
 		}

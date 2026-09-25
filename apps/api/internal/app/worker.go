@@ -46,10 +46,11 @@ func StartDocumentWorker(bus ports.Subscriber, handle func(ctx context.Context, 
 //
 // Returning nil for TERMINAL/SUCCESS/DUPLICATE is what keeps poison
 // messages from spinning forever on a Nack-based consumer, while a
-// TRANSIENT error lets that same consumer redeliver. NOTE: cmd/api's pull
-// loop currently wraps this handler and always returns nil (always Ack),
-// so pull redelivery is disabled at the wiring layer regardless; the
-// classification here is what makes a Nack-propagating wiring correct.
+// TRANSIENT error lets that same consumer redeliver. APA-30 (Option A):
+// cmd/api's pull loop propagates this classification via PullCallback
+// (TRANSIENT -> Nack/redeliver; all other outcomes -> Ack), so pull
+// redelivery is live at the wiring layer on the same contract as push
+// (503 -> redeliver -> DLQ).
 func DocumentEventHandler(proc *worker.Processor) func(ctx context.Context, event []byte) error {
 	return func(ctx context.Context, event []byte) error {
 		out := DocumentOutcomeHandler(proc)(ctx, event)
