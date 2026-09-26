@@ -19,7 +19,12 @@ outcome is recorded here.
 
 ## Decision
 
-- Provider: Groq. Model: `openai/gpt-oss-20b` (revisit only via ADR).
+- Provider: Groq. Model: `llama-3.1-8b-instant` (code default in
+  `groq_model.go`; canonical string for the Groq qualification run).
+- Adjudication 2026-09-26 (Option A): the ADR originally contracted
+  `openai/gpt-oss-20b`, but the shipped code default is
+  `llama-3.1-8b-instant` and working code is not changed to satisfy a
+  stale ADR. ADR and README amended to the code default instead.
 - Client pattern: OpenAI-compatible (`base_url` + env key). Works with
   `openai.OpenAI`, LangChain `ChatOpenAI`, LangGraph nodes unchanged.
 - Ollama is out of scope. localgcp Vertex proxy is reserved for
