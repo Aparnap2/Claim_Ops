@@ -218,15 +218,12 @@ then existing exception/HITL/Unresolved path. No new taxonomy, kinds, or
 topology; frozen APA-12/OCR and eval semantics untouched; sufficient path
 not over-blocked. Source: PR #96 (362c676).
 
-### ADR-002 model string — open discrepancy (adjudication pending, recorded 2026-09-23)
-`README.md:14` contracts Groq model `openai/gpt-oss-20b` per ADR-002 while
-`apps/api/internal/investigate/orchestrate/groq_model.go:19` defaults to
-`llama-3.1-8b-instant`. Code is unchanged by this docs pass. Explicit
-options, no silent pick:
-- Option A: amend ADR-002 (and README) to the code default.
-- Option B: change the code default to the ADR-002 string.
-Adjudication requires a code-owner decision; this entry records the
-discrepancy only.
+### ADR-002 model string — adjudicated Option A (2026-09-26)
+Discrepancy (`README.md:14` + ADR-002 said `openai/gpt-oss-20b`;
+`groq_model.go:19` defaults to `llama-3.1-8b-instant`) resolved by owner
+decision: amend ADR-002 and README to the code default. Working code
+unchanged. Canonical Groq qualification model string:
+`llama-3.1-8b-instant`.
 
 ### #32 evidence (LiteParse 2.14.4, 45 cases, deterministic)
 - 45/45 parse_ok. Fields 280 exact / 27 normalized / 150 missing. Tables 27 pass / 13 partial / 3 missed.
