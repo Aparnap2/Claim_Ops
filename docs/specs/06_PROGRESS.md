@@ -1,6 +1,6 @@
 # ClaimOps — Living Progress Tracker
 
-Last updated: 2026-09-25
+Last updated: 2026-09-26
 
 ## Completed
 
@@ -52,6 +52,7 @@ Last updated: 2026-09-25
 - [x] F9 cross-layer retry composition bound 16 — S6 launch dedupe, no worker×workflow multiplication (34e3c8e, PR #92, APA-27)
 - [x] P2 tenant-swap redelivery fail-closed — same-run TERMINAL rejection, post-restart TRANSIENT via durable boundary (6404ce2, PR #93, APA-28)
 - [x] APA-30 pull-loop TRANSIENT Nack via app.PullCallback — push/pull parity (2152ad0, PR #94)
+- [x] APA-31 per-class sufficiency gate — extract→Evaluate→assemble→verify, R8/MissingEvidence HITL routing (362c676, PR #96)
 - [x] Go 1.27 toolchain migration
 - [x] act-compatible CI (fast/integration/security, Layer A green under act)
 
@@ -66,7 +67,7 @@ Last updated: 2026-09-25
 
 ## Next
 
-- [ ] document classification + evidence persistence (Phase 8 remainder)
+- [ ] Phase 8 remainder beyond APA-31 gate (specification only; not claimed qualified)
 - [ ] bounded cognitive investigation (specification only; no implementation yet)
 - [ ] HITL recommendation workflow
 - [ ] end-to-end evaluation

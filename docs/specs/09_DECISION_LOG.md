@@ -206,6 +206,18 @@ push (503 → redeliver → DLQ). TERMINAL/SUCCESS/DUPLICATE still ACK
 contract only; retry classification and P2 semantics untouched. Source:
 PR #94 (2152ad0).
 
+### APA-31 per-class sufficiency gate (accepted 2026-09-25, Phase 8)
+Leaf `internal/sufficiency.Evaluate`: per-class required keys, PRESENT-only
+sufficiency (MISSING/AMBIGUOUS/MULTI unusable), HOSPITAL_BILL demands ≥1
+`bill_lines_N`, unknown/blank class fails closed to HITL, deterministic
+sorted reason codes. Wired into `runNewPipeline` after extract, before
+assemble: insufficient → existing R8 MISSING_REQUIRED_DOCUMENT (MEDIUM,
+doc pointer) + per-key `MissingField` bridged into
+`MissingEvidence` via existing `invest.Build`/`Validate` canonical order,
+then existing exception/HITL/Unresolved path. No new taxonomy, kinds, or
+topology; frozen APA-12/OCR and eval semantics untouched; sufficient path
+not over-blocked. Source: PR #96 (362c676).
+
 ### ADR-002 model string — open discrepancy (adjudication pending, recorded 2026-09-23)
 `README.md:14` contracts Groq model `openai/gpt-oss-20b` per ADR-002 while
 `apps/api/internal/investigate/orchestrate/groq_model.go:19` defaults to
