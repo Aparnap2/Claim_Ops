@@ -154,6 +154,160 @@ func TestGCWProvider_StartExecution_EmptyID(t *testing.T) {
 	}
 }
 
+// TestGCWProvider_StartExecution_ForwardsExecutionNameAsExecutionId pins
+// the create-or-return half of the launch/idempotency contract
+// (investigate/launch.go:76-88, launch.go:251-261): the caller's
+// requested execution_name must reach the provider as Cloud Workflows'
+// caller-chosen executionId, on the query parameter the v1 REST API
+// defines. Without it the provider always mints a fresh name and the
+// reconciler's GetExecution probe can never adopt.
+func TestGCWProvider_StartExecution_ForwardsExecutionNameAsExecutionId(t *testing.T) {
+	var gotQuery string
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		b := make([]byte, 4096)
+		n, _ := r.Body.Read(b)
+		gotBody = string(b[:n])
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"projects/my-project/locations/us-central1/workflows/claim-investigation/executions/exec-abc"}`))
+	}))
+	defer srv.Close()
+
+	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
+	arg := map[string]string{
+		"tenant_id": "t1", "claim_id": "c1",
+		"investigation_id": "inv-1", "execution_name": "exec-1f61",
+	}
+	if _, err := p.StartExecution(context.Background(), "claim-investigation", arg); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	if q := gotQuery; !strings.Contains(q, "executionId=exec-1f61") {
+		t.Fatalf("query = %q, want executionId=exec-1f61 (the requested name must become the execution identifier)", q)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(gotBody), &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v body=%q", err, gotBody)
+	}
+	if payload["executionId"] != "exec-1f61" {
+		t.Fatalf("payload executionId = %q, want exec-1f61", payload["executionId"])
+	}
+	// The argument still travels verbatim: the launch correlation keys
+	// must not be displaced by the identifier.
+	var argDecoded map[string]string
+	if err := json.Unmarshal([]byte(payload["argument"]), &argDecoded); err != nil {
+		t.Fatalf("argument json string %q: %v", payload["argument"], err)
+	}
+	if argDecoded["investigation_id"] != "inv-1" {
+		t.Fatalf("argument investigation_id = %q, want inv-1", argDecoded["investigation_id"])
+	}
+}
+
+// TestGCWProvider_StartExecution_CreateConflictReturnsExisting pins the
+// other half: a create-409 for a requested identifier means the execution
+// already exists, which is the create-or-return OUTCOME and must not fail
+// the launch. It must surface the existing execution's resource name.
+func TestGCWProvider_StartExecution_CreateConflictReturnsExisting(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":409,"message":"ALREADY_EXISTS","status":"ALREADY_EXISTS"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
+	arg := map[string]string{"investigation_id": "inv-1", "execution_name": "exec-1f61"}
+	name, err := p.StartExecution(context.Background(), "claim-investigation", arg)
+	if err != nil {
+		t.Fatalf("create-409 with a requested executionId must be create-or-return, got error: %v", err)
+	}
+	want := "projects/my-project/locations/us-central1/workflows/claim-investigation/executions/exec-1f61"
+	if name != want {
+		t.Fatalf("name = %q, want the existing execution %q", name, want)
+	}
+}
+
+// TestGCWProvider_StartExecution_ConflictWithoutRequestedNameErrors
+// guards the boundary: a 409 is only create-or-return when the caller
+// actually requested an identifier. Otherwise there is no existing
+// execution to name, so swallowing the conflict would invent one.
+func TestGCWProvider_StartExecution_ConflictWithoutRequestedNameErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`ALREADY_EXISTS`))
+	}))
+	defer srv.Close()
+
+	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
+	if _, err := p.StartExecution(context.Background(), "claim-investigation", map[string]string{"x": "y"}); err == nil {
+		t.Fatal("expected error: 409 with no requested execution_name has no existing execution to return")
+	}
+}
+
+// TestGCWProvider_StartExecution_NoRequestedNameIsPlainCreate pins that
+// the plain-create path is unchanged: an argument with no execution_name
+// sends neither the query parameter nor the body field, so no identifier
+// is ever invented.
+func TestGCWProvider_StartExecution_NoRequestedNameIsPlainCreate(t *testing.T) {
+	var gotQuery, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		b := make([]byte, 4096)
+		n, _ := r.Body.Read(b)
+		gotBody = string(b[:n])
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"projects/my-project/locations/us-central1/workflows/claim-investigation/executions/abc123"}`))
+	}))
+	defer srv.Close()
+
+	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
+	if _, err := p.StartExecution(context.Background(), "claim-investigation", map[string]string{"claim_id": "c1"}); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	if strings.Contains(gotQuery, "executionId") {
+		t.Fatalf("query = %q, want no executionId when none was requested", gotQuery)
+	}
+	if strings.Contains(gotBody, "executionId") {
+		t.Fatalf("body = %q, want no executionId when none was requested", gotBody)
+	}
+}
+
+// TestGCWProvider_StartExecution_BlankExecutionNameIsPlainCreate: a blank
+// or whitespace-only execution_name is not an identifier and must not be
+// forwarded as one.
+func TestGCWProvider_StartExecution_BlankExecutionNameIsPlainCreate(t *testing.T) {
+	var gotQuery, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		b := make([]byte, 4096)
+		n, _ := r.Body.Read(b)
+		gotBody = string(b[:n])
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"projects/my-project/locations/us-central1/workflows/claim-investigation/executions/abc123"}`))
+	}))
+	defer srv.Close()
+
+	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
+	if _, err := p.StartExecution(context.Background(), "claim-investigation", map[string]string{"execution_name": "   "}); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	if strings.Contains(gotQuery, "executionId") || strings.Contains(gotBody, "executionId") {
+		t.Fatalf("blank execution_name was forwarded: query=%q body=%q", gotQuery, gotBody)
+	}
+}
+
+// TestGCWProvider_ExecutionResourceName pins the resource-name form that
+// GetExecution accepts. A bare execution id is NOT a valid input to
+// GetExecution (the REST path needs the collection prefix), so this
+// constructor is the only safe way to name an execution.
+func TestGCWProvider_ExecutionResourceName(t *testing.T) {
+	p := NewGCWProvider("http://localhost:8787", "my-project", "us-central1")
+	got := p.ExecutionResourceName("claim-investigation", "exec-1f61")
+	want := "projects/my-project/locations/us-central1/workflows/claim-investigation/executions/exec-1f61"
+	if got != want {
+		t.Fatalf("ExecutionResourceName = %q, want %q", got, want)
+	}
+}
+
 func TestGCWProvider_GetExecution_Succeeded(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
