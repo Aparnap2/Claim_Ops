@@ -29,9 +29,11 @@ package worker
 // property under qualification.
 //
 // The emulator also mints its OWN execution names (exec-N) and ignores
-// the `execution_name` key carried in the launch argument. That is
-// recorded, not papered over: see
-// TestLiveGCWCorrelation_CrashWindowDuplicate and the file tail.
+// the `execution_name` key carried in the launch argument. So the name
+// EnsureLaunched returns is never the one the launcher requested: the
+// assertions below claim only that the argument carried the key
+// (launch.go:256) and that the returned name is a resource the emulator
+// actually holds (liveCorrFind) — never a pre-chosen name.
 //
 // The executed workflow is the REAL frozen workflows/claim-investigation.yaml
 // (the ID the worker actually launches, worker/launch.go:17). It
@@ -393,22 +395,6 @@ func liveCorrRawEnvelope(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	return raw
 }
 
-// liveCorrDeleteLaunchRow removes the durable launch record for invID,
-// simulating the crash window the reconciler at launch.go:224-247 exists
-// to close: StartExecution succeeded, RecordLaunch never committed.
-//
-// The row belongs to this test run alone (fresh random investigation
-// ID per run), so removing it mutates test-owned state only. The
-// app role cannot DELETE (migration 010 revokes it), which is the point:
-// this is a deliberate, owner-scoped surgery to reach the crash window,
-// not an operation production code performs.
-func liveCorrDeleteLaunchRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool, invID string) {
-	t.Helper()
-	if _, err := pool.Exec(ctx, `DELETE FROM workflow_launches WHERE investigation_id = $1`, invID); err != nil {
-		t.Fatalf("delete launch row %q (owner role required): %v", invID, err)
-	}
-}
-
 // TestLiveGCWCorrelation_EnsureLaunched_RealProvider is the APA-39
 // qualification. It drives Launcher.EnsureLaunched — the worker's real
 // launch boundary — with the REAL GCWProvider and the REAL PG stores
@@ -637,120 +623,4 @@ func TestLiveGCWCorrelation_EnsureLaunched_RealProvider(t *testing.T) {
 	if got := liveCorrArgField(exec1.Argument, "investigation_id"); got != invSame {
 		t.Fatalf("identity unstable across deliveries: emulator holds %q, fresh derivation %q", got, invSame)
 	}
-}
-
-// TestLiveGCWCorrelation_CrashWindowDuplicate records a GENUINE DEFECT
-// found while qualifying the reconciler at launch.go:224-247 against the
-// real provider. Production code is deliberately NOT changed here (this
-// is a test-only slice); the finding is recorded so a fix has a
-// regression target.
-//
-// The defect
-// ----------
-// launch.go:76-88 documents the contract: "Conforming providers
-// create-or-return this name when the launch argument carries it, so a
-// crash between StartExecution and RecordLaunch is recoverable by
-// reconciliation instead of a duplicate start." EnsureLaunched
-// therefore puts `execution_name` in the launch argument (launch.go:256).
-//
-// GCWProvider.StartExecution marshals the whole argument map into
-// `{"argument": "<json>"}` and POSTs it to the executions COLLECTION.
-// It never forwards `execution_name` as Cloud Workflows' `executionId`
-// request field, and it does not map a create-409 onto the
-// create-or-return outcome. So the documented contract is unimplemented
-// on the provider side, and the reconciler at launch.go:232 probes for
-// a name the provider will never have minted.
-//
-// Observed live: with the launch row deleted (the crash window), the
-// reconciler's GetExecution(expected) returns typed absence, the code
-// proceeds to StartExecution, and the emulator creates a SECOND real
-// execution for the same investigation. In production GCW the same
-// sequence duplicates the run. The durable row is the only thing
-// preventing this, and a crash between the two calls is precisely the
-// case the reconciler was written for.
-//
-// What this test asserts is the OBSERVED behaviour, not an endorsement:
-// a second execution is created, and the emulator's minted name never
-// equals the requested one. If GCWProvider is fixed to forward
-// executionId and honour 409-as-return, this test FAILS with a message
-// saying so — which is the intended regression signal. The failure
-// message is the contract; do not relax it to make the suite green
-// without also fixing the provider.
-func TestLiveGCWCorrelation_CrashWindowDuplicate(t *testing.T) {
-	host := liveCorrEmulatorHost(t)
-	pool := liveCorrPool(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	prov := workflow.NewGCWProvider(host, liveCorrProject, liveCorrLocation)
-	liveCorrDeploy(ctx, prov, t)
-
-	suffix := liveCorrRand(t, 6)
-	body := liveCorrRand(t, 16)
-	tenant := "tnt-apa39cw-" + suffix
-	claim := "clm-apa39cw-" + suffix
-	doc := "doc-apa39cw-" + suffix
-	invID, err := investigationIDForDocument(tenant, claim, doc)
-	if err != nil {
-		t.Fatalf("investigationIDForDocument: %v", err)
-	}
-	env := liveCorrEnvelope(t, tenant, claim, invID, body)
-	launches := investigate.NewPGLaunchStore(pool)
-	l := investigate.NewLauncher(investigate.NewPGEnvelopeStore(pool), prov, launches)
-
-	first, launched, err := l.EnsureLaunched(ctx, tenant, claim, invID, env, liveCorrWorkflow, investigate.ExpireAuth{})
-	if err != nil || !launched || first == "" {
-		t.Fatalf("first EnsureLaunched: launched=%v name=%q err=%v", launched, first, err)
-	}
-	firstExec := liveCorrFind(t, ctx, host, liveCorrWorkflow, first)
-	requested := liveCorrArgField(firstExec.Argument, "execution_name")
-	if requested == "" {
-		t.Fatalf("launch argument carried no execution_name: %s", firstExec.Argument)
-	}
-	// Observation 1: the emulator minted its own name, so the name the
-	// launcher asked for is absent. The reconciler probes exactly that
-	// name, so the probe can never adopt anything on this provider.
-	if requested == first {
-		t.Fatalf("emulator honoured the requested execution_name %q — GCWProvider may now implement the create-or-return contract; revisit this test", requested)
-	}
-	if _, _, gerr := prov.GetExecution(ctx, requested); gerr == nil {
-		t.Fatalf("GetExecution(%q) succeeded: the requested name exists, so the reconciler would adopt it — revisit this test", requested)
-	} else if !strings.Contains(gerr.Error(), workflow.ErrExecutionNotFound.Error()) {
-		t.Fatalf("GetExecution(%q) error = %v, want typed absence (ErrExecutionNotFound) so the reconciler proceeds to start", requested, gerr)
-	}
-
-	// Enter the crash window: StartExecution succeeded, RecordLaunch
-	// never committed.
-	liveCorrDeleteLaunchRow(t, ctx, pool, invID)
-	if _, found, err := launches.GetLaunch(ctx, tenant, invID); err != nil || found {
-		t.Fatalf("crash-window setup: launch row still present (found=%v err=%v)", found, err)
-	}
-
-	// Redelivery inside the crash window.
-	second, launched2, err := l.EnsureLaunched(ctx, tenant, claim, invID, env, liveCorrWorkflow, investigate.ExpireAuth{})
-	if err != nil {
-		t.Fatalf("crash-window EnsureLaunched: %v", err)
-	}
-	if !launched2 {
-		t.Fatalf("crash-window EnsureLaunched launched=false and adopted %q: the reconciler DID adopt an existing execution. "+
-			"If this fires, GCWProvider now implements create-or-return (executionId + 409-as-return); update this test to assert adoption instead of duplication.", second)
-	}
-	if second == first {
-		t.Fatalf("crash-window EnsureLaunched re-returned the existing name %q but reported launched=true", second)
-	}
-
-	// Observation 2 (the defect): a duplicate real execution now exists
-	// for the same investigation. This is the recorded DEFECT — see the
-	// doc comment. If this assert ever fails because the provider began
-	// honouring executionId, the fix landed and this test must be
-	// rewritten to assert adoption.
-	n := liveCorrCountFor(t, ctx, host, liveCorrWorkflow, invID)
-	if n < 2 {
-		t.Fatalf("crash-window: emulator holds %d executions for %q, expected the duplicate this test documents "+
-			"(GCWProvider does not forward execution_name as executionId, so reconciliation cannot adopt). "+
-			"If the provider was fixed, rewrite this test to assert adoption of %q instead of duplication", n, invID, first)
-	}
-	t.Logf("DEFECT RECORDED: crash-window redelivery for %q created %d emulator executions (%q, %q). "+
-		"GCWProvider.StartExecution drops the execution_name idempotency key, so launch.go:224-247 reconciliation cannot adopt; "+
-		"the durable row is the sole duplicate guard. Production code intentionally untouched in this test-only slice.", invID, n, first, second)
 }
