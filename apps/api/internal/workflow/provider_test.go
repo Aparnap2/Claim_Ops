@@ -339,6 +339,12 @@ func TestGCWProvider_GetExecution_Succeeded(t *testing.T) {
 	}
 }
 
+// TestGCWProvider_GetExecution_Failed pins the APA-42 classification: a
+// FAILED execution is a successfully RESOLVED execution. It used to be
+// reported through the error channel, which made every caller that classifies
+// on that error (the launch reconciler) read a real execution as a lookup
+// outage. The state and the execution's own failure detail must both still
+// reach the caller — a resolved-but-failed execution is not an opaque success.
 func TestGCWProvider_GetExecution_Failed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -347,18 +353,21 @@ func TestGCWProvider_GetExecution_Failed(t *testing.T) {
 	defer srv.Close()
 
 	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
-	state, _, execErr := p.GetExecution(context.Background(), "exec1")
+	state, result, execErr := p.GetExecution(context.Background(), "exec1")
 	if state != "FAILED" {
 		t.Fatalf("state %q", state)
 	}
-	if execErr == nil {
-		t.Fatal("expected execErr for FAILED")
+	if execErr != nil {
+		t.Fatalf("execErr %v: a FAILED execution is resolved, so the lookup error must be nil", execErr)
 	}
-	if !strings.Contains(execErr.Error(), "something went wrong") {
-		t.Fatalf("execErr %q", execErr.Error())
+	if !strings.Contains(string(result), "something went wrong") {
+		t.Fatalf("result %q: the execution's own failure detail must reach the caller", string(result))
 	}
 }
 
+// TestGCWProvider_GetExecution_Failed_WithResultFallback: a FAILED execution
+// that reports a result of its own surfaces THAT result (not the error
+// payload), still with a nil lookup error.
 func TestGCWProvider_GetExecution_Failed_WithResultFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -367,12 +376,19 @@ func TestGCWProvider_GetExecution_Failed_WithResultFallback(t *testing.T) {
 	defer srv.Close()
 
 	p := NewGCWProviderWithClient(srv.URL, "my-project", "us-central1", srv.Client())
-	state, _, execErr := p.GetExecution(context.Background(), "exec1")
+	state, result, execErr := p.GetExecution(context.Background(), "exec1")
 	if state != "FAILED" {
 		t.Fatalf("state %q", state)
 	}
-	if execErr == nil {
-		t.Fatal("expected execErr")
+	if execErr != nil {
+		t.Fatalf("execErr %v: a FAILED execution is resolved, so the lookup error must be nil", execErr)
+	}
+	var res map[string]string
+	if err := json.Unmarshal(result, &res); err != nil {
+		t.Fatalf("result unmarshal: %v result=%s", err, string(result))
+	}
+	if res["message"] != "bad" {
+		t.Fatalf("result %s, want the execution's own result object", string(result))
 	}
 }
 
