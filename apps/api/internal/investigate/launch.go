@@ -256,6 +256,16 @@ func (l *Launcher) EnsureLaunched(ctx context.Context, tenantID, claimID, invest
 	// absence even when the execution exists — turning reconciliation into a
 	// duplicate start. The provider owns that mapping (it owns project and
 	// location); the Launcher must not restate it.
+	//
+	// APA-42: the decision below is made on the probe's ERROR ALONE, and the
+	// error reports whether the LOOKUP worked, not how the execution ended. A
+	// resolved execution returns a nil error whatever its state — including a
+	// terminal FAILED one, whose state the provider reports in the probe's
+	// first return value. Adoption is deliberately state-agnostic: the row
+	// records WHICH execution this investigation owns, and that is equally
+	// true of an ACTIVE, a SUCCEEDED and a FAILED execution. Only a genuinely
+	// absent execution (ErrExecutionNotFound) authorises a start; every other
+	// error is a lookup that did not complete and fails closed.
 	execID := executionIDFor(workflowID, investigationID)
 	expected := l.Workflows.ExecutionResourceName(workflowID, execID)
 	if _, _, gerr := l.Workflows.GetExecution(ctx, expected); gerr == nil {

@@ -17,6 +17,15 @@ import (
 // It mirrors GCW responsibilities without leaking GCW types into domain code.
 type WorkflowProvider interface {
 	StartExecution(ctx context.Context, workflowID string, argument any) (executionName string, err error)
+
+	// GetExecution resolves an execution and reports its state. Its third
+	// return value classifies the LOOKUP, not the execution's outcome
+	// (APA-42): a resolved execution returns a nil error whatever its state —
+	// ACTIVE, SUCCEEDED and FAILED alike — with the state in the first return
+	// value, so a caller learns both that the execution exists and how it
+	// ended. Only a genuinely absent execution returns ErrExecutionNotFound;
+	// every other error is a lookup that did not complete and must be treated
+	// as unknown, never as absence.
 	GetExecution(ctx context.Context, executionName string) (state string, result json.RawMessage, execErr error)
 	SendCallback(ctx context.Context, callbackID string, payload any) error
 	DeployWorkflow(ctx context.Context, workflowID string, sourceContents string) error

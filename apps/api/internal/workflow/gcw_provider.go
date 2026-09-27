@@ -239,6 +239,24 @@ func (g *GCWProvider) ExecutionResourceName(workflowID, executionID string) stri
 // GetExecution fetches execution state.
 //
 // GET /v1/{executionName}
+//
+// The third return value classifies the LOOKUP, never the execution's outcome:
+//
+//	resolved  -> nil error, whatever the state. ACTIVE, SUCCEEDED and FAILED
+//	            are all executions that exist; the state is returned so the
+//	            caller can act on it, and the execution's own result (or its
+//	            error payload, when it reports no result) is returned with it.
+//	absent    -> ErrExecutionNotFound, for a genuinely missing execution only.
+//	failed    -> any other error, for a transport failure, a non-404 error
+//	            status, or an undecodable body. These are never
+//	            ErrExecutionNotFound: a lookup that did not complete cannot
+//	            prove absence, and the launch reconciler must keep failing
+//	            closed on them rather than starting a duplicate execution.
+//
+// A terminal FAILED execution is therefore a SUCCESSFUL lookup, not a failure
+// of it (APA-42). Reporting it as an error made a resolved execution read as a
+// lookup outage to callers that classify on this error — see the classification
+// block below.
 func (g *GCWProvider) GetExecution(ctx context.Context, executionName string) (string, json.RawMessage, error) {
 	if executionName == "" {
 		return "", nil, fmt.Errorf("executionName must not be empty")
@@ -296,31 +314,44 @@ func (g *GCWProvider) GetExecution(ctx context.Context, executionName string) (s
 		}
 	}
 
-	// error payload (execution error when FAILED)
-	var execErr error
+	// error payload: a terminal execution's own error. It is DIAGNOSTIC data
+	// about an execution that was resolved, never a lookup outcome (APA-42).
+	var execError json.RawMessage
 	for _, k := range []string{"error", "Error"} {
 		if v, ok := raw[k]; ok && len(v) > 0 && string(v) != "null" {
-			// If error is a string, use it directly.
-			var s string
-			if json.Unmarshal(v, &s) == nil && s != "" {
-				execErr = fmt.Errorf("execution failed: %s", s)
-			} else {
-				execErr = fmt.Errorf("execution failed: %s", string(v))
-			}
+			execError = v
 			break
 		}
 	}
 
-	// If state is FAILED and no explicit error field, synthesize error from result or generic.
-	if state == "FAILED" && execErr == nil {
-		if len(result) > 0 && string(result) != "null" {
-			execErr = fmt.Errorf("execution failed: %s", string(result))
-		} else {
-			execErr = fmt.Errorf("execution failed with state FAILED")
-		}
+	// CLASSIFICATION (APA-42). The HTTP lookup SUCCEEDED, so the execution
+	// EXISTS whatever its outcome. The third return value reports whether the
+	// LOOKUP worked, never how the execution ended:
+	//
+	//	resolved (ACTIVE | SUCCEEDED | FAILED)  ->  (state, result, nil)
+	//	genuinely absent (404 / NOT_FOUND)     ->  ErrExecutionNotFound
+	//	transport / 5xx / undecodable body     ->  a real error, and NEVER
+	//	                                          ErrExecutionNotFound
+	//
+	// A FAILED execution is RESOLVED. Reporting it as an error is what made a
+	// real GCW execution that terminated — including via the workflow's own
+	// timeout → EXPIRE path — read as a lookup outage: the launch reconciler
+	// (investigate/launch.go) adopts only when this error is nil and takes the
+	// launch path only when it is ErrExecutionNotFound, so a crash-window
+	// execution that had already terminated was never adopted, its durable
+	// workflow_launches row was never repaired, and every redelivery retried.
+	// Classification belongs here, at the boundary that owns it: no caller
+	// should ever have to parse an error to learn whether an execution exists.
+	//
+	// The terminal state is reported through the FIRST return value, so it is
+	// never an opaque success, and the execution's own outcome payload is not
+	// lost on the way out: a result is preferred, and the error payload is
+	// surfaced when the execution reports no result of its own.
+	if len(execError) > 0 && (len(result) == 0 || string(result) == "null") {
+		result = execError
 	}
 
-	return state, result, execErr
+	return state, result, nil
 }
 
 // SendCallback delivers a callback payload.
