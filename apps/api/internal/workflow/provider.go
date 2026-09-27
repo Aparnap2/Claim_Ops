@@ -20,6 +20,21 @@ type WorkflowProvider interface {
 	GetExecution(ctx context.Context, executionName string) (state string, result json.RawMessage, execErr error)
 	SendCallback(ctx context.Context, callbackID string, payload any) error
 	DeployWorkflow(ctx context.Context, workflowID string, sourceContents string) error
+
+	// ExecutionResourceName maps a BARE execution id to the fully-qualified
+	// resource name
+	// projects/{project}/locations/{location}/workflows/{workflowID}/executions/{executionID}.
+	//
+	// It is the only form GetExecution can resolve: a bare execution id is
+	// NOT a valid input there. The implementation owns project and location,
+	// so callers must never assemble the prefix themselves — restating it
+	// lets the two drift, which makes reconciliation probe a name the
+	// provider never minted and silently duplicates the execution (APA-41).
+	//
+	// Present so the launch reconciler can address an existing execution by
+	// the same identity StartExecution uses, whether it is asking or
+	// answering.
+	ExecutionResourceName(workflowID, executionID string) string
 }
 
 // ErrExecutionNotFound marks a typed execution absence: the provider has
@@ -46,6 +61,15 @@ func (n *NoopProvider) StartExecution(_ context.Context, _ string, _ any) (strin
 
 func (n *NoopProvider) GetExecution(_ context.Context, executionName string) (string, json.RawMessage, error) {
 	return "", nil, fmt.Errorf("noop provider: execution %q absent: %w", executionName, ErrExecutionNotFound)
+}
+
+// ExecutionResourceName returns a noop-scoped resource name. NoopProvider
+// resolves no execution (GetExecution is always typed-absent), so the value
+// is inert and is never resolvable; it exists only to satisfy the interface
+// so the launch reconciler's addressability requirement is uniform across
+// implementations (APA-41).
+func (n *NoopProvider) ExecutionResourceName(workflowID, executionID string) string {
+	return fmt.Sprintf("projects/noop/locations/noop/workflows/%s/executions/%s", workflowID, executionID)
 }
 
 func (n *NoopProvider) SendCallback(_ context.Context, _ string, _ any) error {

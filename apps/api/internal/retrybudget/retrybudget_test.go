@@ -187,6 +187,11 @@ func (f *countProvider) DeployWorkflow(_ context.Context, _ string, _ string) er
 	return errors.New("retrybudget: no deploy")
 }
 
+// ExecutionResourceName implements workflow.WorkflowProvider (APA-41).
+func (f *countProvider) ExecutionResourceName(workflowID, executionID string) string {
+	return fmt.Sprintf("projects/retrybudget/locations/l/workflows/%s/executions/%s", workflowID, executionID)
+}
+
 // Calls returns the total StartExecution invocations observed.
 func (f *countProvider) Calls() int {
 	f.mu.Lock()

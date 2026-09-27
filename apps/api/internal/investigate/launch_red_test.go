@@ -346,3 +346,8 @@ func TestLaunch_ExpireAuth_AbsentWhenZero(t *testing.T) {
 		t.Fatalf("zero auth must omit expire_signature: %v", prov.lastArg)
 	}
 }
+
+// ExecutionResourceName implements workflow.WorkflowProvider (APA-41).
+func (f *fakeProvider) ExecutionResourceName(workflowID, executionID string) string {
+	return fmt.Sprintf("projects/test/locations/test/workflows/%s/executions/%s", workflowID, executionID)
+}

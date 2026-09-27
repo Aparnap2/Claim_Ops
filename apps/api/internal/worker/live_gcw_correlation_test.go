@@ -17,23 +17,45 @@ package worker
 //
 // WHY COUNTING IS NECESSARY (measured, not assumed)
 // ----------------------------------------------------
-// The emulator is an ADVERSARIAL provider with respect to idempotency:
-// three identical POSTs to
+// The emulator is an ADVERSARIAL provider with respect to idempotency.
+// Measured live BEFORE PR #105 (APA-40), three identical POSTs to
 //
 //	/v1/projects/{p}/locations/{l}/workflows/{id}/executions
 //
-// produce three distinct executions (exec-2, exec-3, exec-4), each
-// carrying the same argument. Verified live before this test was
-// written. So "exactly one execution" cannot come from the provider —
-// it can only come from the durable workflow_launches row. That is the
-// property under qualification.
+// produced three distinct executions (exec-2, exec-3, exec-4), each
+// carrying the same argument.
 //
-// The emulator also mints its OWN execution names (exec-N) and ignores
-// the `execution_name` key carried in the launch argument. So the name
-// EnsureLaunched returns is never the one the launcher requested: the
-// assertions below claim only that the argument carried the key
-// (launch.go:256) and that the returned name is a resource the emulator
-// actually holds (liveCorrFind) — never a pre-chosen name.
+// That measurement is superseded as a description of current behaviour:
+// since PR #105 a POST carrying a non-empty `execution_name` is forwarded
+// as Cloud Workflows' caller-chosen executionId, so identical POSTs are
+// create-or-return and address ONE execution. The DISCIPLINE below is not
+// superseded, and is the reason this file still counts rather than trusting
+// a bool: "exactly one execution" must be demonstrated by enumerating the
+// emulator's execution collection (liveCorrExecutions / liveCorrCountFor),
+// never inferred from EnsureLaunched's return value. Provider-side
+// duplicate-start protection is not evidence that no duplicate exists.
+//
+//
+// The emulator does NOT ignore `execution_name`: since PR #105 (APA-40)
+// GCWProvider forwards it as Cloud Workflows' caller-chosen `executionId`,
+// so a repeat with the same execution_name addresses the SAME execution
+// (create-or-return) instead of minting a fresh one. Two consequences for
+// the assertions below:
+//
+//   - the argument's execution_name is the BARE deterministic id
+//     (investigate.executionIDFor). It must stay bare: it becomes the
+//     executionId, and a full resource name there would nest the
+//     collection path inside the identifier.
+//   - the name EnsureLaunched returns IS the resource name built from that
+//     id (projects/{p}/locations/{l}/workflows/{w}/executions/{id}), which
+//     is the only form GetExecution can resolve. The reconciler adopts and
+//     records exactly that form (APA-41), so the returned name may be the
+//     requested execution, and the assertions below additionally require it
+//     to be a resource the emulator actually holds (liveCorrFind).
+//
+// Historical note: before PR #105 the emulator minted its own exec-N names
+// and the returned name was never the requested one. This header previously
+// described that superseded behaviour.
 //
 // The executed workflow is the REAL frozen workflows/claim-investigation.yaml
 // (the ID the worker actually launches, worker/launch.go:17). It
