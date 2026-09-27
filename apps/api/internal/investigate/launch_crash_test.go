@@ -1,16 +1,21 @@
 package investigate
 
-// S6 crash-consistency RED: StartExecution succeeds but RecordLaunch never
-// commits (crash window) => redelivery must reconcile via deterministic
-// execution name instead of starting a duplicate.
+// S6 crash-consistency: StartExecution succeeds but RecordLaunch never
+// commits (crash window) => redelivery must reconcile via the deterministic
+// execution identity instead of starting a duplicate.
 //
-// Expected fix (implemented in parallel):
-//   - executionNameFor(workflowID, invID) deterministic:
-//     "exec-" + first 32 hex of sha256("claimops-execution-v1\x00"+workflowID+"\x00"+invID)
-//   - EnsureLaunched reconcile on launch-state miss: GetExecution(expected);
-//     found => RecordLaunch adopt, return (name,false,nil) with NO new start;
-//     typed not-found (errors.Is err, workflow.ErrExecutionNotFound) => start;
-//     any other GetExecution error => fail closed, no start.
+// The identity has two distinct forms (APA-41 — they are NOT interchangeable):
+//   - executionIDFor(workflowID, invID) is a BARE deterministic id,
+//     "exec-" + first 32 hex of
+//     sha256("claimops-execution-v1\x00"+workflowID+"\x00"+invID). It is what
+//     the launch argument forwards as GCW's caller-chosen executionId.
+//   - the FULL resource name the provider mints from that id is the only
+//     form GetExecution can resolve, and it is what reconciliation probes.
+//
+// EnsureLaunched reconcile on launch-state miss: GetExecution(fullName);
+// found => RecordLaunch adopt, return (name,false,nil) with NO new start;
+// typed not-found (errors.Is err, workflow.ErrExecutionNotFound) => start;
+// any other GetExecution error => fail closed, no start.
 
 import (
 	"context"
@@ -26,19 +31,25 @@ import (
 	"claimops-api/internal/workflow"
 )
 
-// crashExpectedExecutionName inlines the documented derivation to pin the
-// contract even before executionNameFor exists.
-func crashExpectedExecutionName(workflowID, invID string) string {
+// crashExpectedExecutionID inlines the documented derivation to pin the
+// contract independently of executionIDFor. It yields a BARE id, never a
+// resource name (APA-41).
+func crashExpectedExecutionID(workflowID, invID string) string {
 	sum := sha256.Sum256([]byte("claimops-execution-v1\x00" + workflowID + "\x00" + invID))
 	return "exec-" + hex.EncodeToString(sum[:])[:32]
 }
 
-// registryFakeProvider is a WorkflowProvider fake with an execution registry.
-// StartExecution derives the deterministic name from the requested
-// workflowID + investigation_id argument, registers it, and returns it, so a
-// reconcile GetExecution(expectedName) finds it. GetExecution serves the
-// registry or wraps workflow.ErrExecutionNotFound; a configured getErr
-// overrides everything (outage simulation).
+// registryFakeProvider is a contract-shaped WorkflowProvider with an
+// execution registry, mirroring real GCW (APA-41):
+//
+//   - the registry is keyed by FULL resource name;
+//   - StartExecution receives the bare execution_name argument, registers
+//     the execution under the full resource name it mints from it (PR #105),
+//     and returns that full name;
+//   - GetExecution resolves full names ONLY — a bare id is typed absence,
+//     exactly as GET /v1/exec-<hex> 404s against the emulator.
+//
+// A configured getErr overrides everything (outage simulation).
 type registryFakeProvider struct {
 	mu     sync.Mutex
 	starts int
@@ -50,19 +61,27 @@ func newRegistryFake(getErr error) *registryFakeProvider {
 	return &registryFakeProvider{execs: map[string]string{}, getErr: getErr}
 }
 
+// ExecutionResourceName is the provider's naming authority (APA-41). The
+// Launcher must call this rather than assembling the prefix itself.
+func (f *registryFakeProvider) ExecutionResourceName(workflowID, executionID string) string {
+	return fmt.Sprintf("projects/fake/locations/fake/workflows/%s/executions/%s", workflowID, executionID)
+}
+
 func (f *registryFakeProvider) StartExecution(_ context.Context, workflowID string, arg any) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.starts++
-	invID := crashInvIDOf(arg)
-	name := crashExpectedExecutionName(workflowID, invID)
-	if invID == "" {
-		name = fmt.Sprintf("exec-fallback-%d", f.starts)
+	bare := crashExecNameOf(arg)
+	if bare == "" {
+		bare = fmt.Sprintf("exec-fallback-%d", f.starts)
 	}
-	f.execs[name] = "SUCCEEDED"
-	return name, nil
+	full := f.ExecutionResourceName(workflowID, bare)
+	f.execs[full] = "SUCCEEDED"
+	return full, nil
 }
 
+// GetExecution resolves full resource names only; a bare id cannot be
+// addressed and reads as typed absence (APA-41).
 func (f *registryFakeProvider) GetExecution(_ context.Context, name string) (string, json.RawMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -91,14 +110,14 @@ func (f *registryFakeProvider) startCount() int {
 
 var _ workflow.WorkflowProvider = (*registryFakeProvider)(nil)
 
-// crashInvIDOf extracts investigation_id from the StartExecution argument
-// (production passes map[string]string).
-func crashInvIDOf(arg any) string {
+// crashExecNameOf extracts the bare execution_name from the StartExecution
+// argument (production passes map[string]string).
+func crashExecNameOf(arg any) string {
 	switch v := arg.(type) {
 	case map[string]string:
-		return v["investigation_id"]
+		return v["execution_name"]
 	case map[string]any:
-		if s, ok := v["investigation_id"].(string); ok {
+		if s, ok := v["execution_name"].(string); ok {
 			return s
 		}
 	}
@@ -172,9 +191,13 @@ func TestLaunch_CrashBetweenStartAndRecord_NoDuplicate(t *testing.T) {
 	if launched {
 		t.Fatal("redelivery must adopt (launched=false), got launched=true (duplicate)")
 	}
-	want := crashExpectedExecutionName(launchTestWorkflow, invID)
+	// The adopted identity is the FULL resource name the provider minted
+	// from the bare id — the same form GetExecution can resolve (APA-41),
+	// not the bare id itself.
+	wantID := crashExpectedExecutionID(launchTestWorkflow, invID)
+	want := prov.ExecutionResourceName(launchTestWorkflow, wantID)
 	if name != want {
-		t.Fatalf("adopted name = %q, want deterministic %q", name, want)
+		t.Fatalf("adopted name = %q, want full resource name %q", name, want)
 	}
 	if got := prov.startCount(); got != 1 {
 		t.Fatalf("StartExecution count across both calls = %d, want exactly 1 (no duplicate)", got)
@@ -210,30 +233,38 @@ func TestLaunch_ReconcileOutage_FailsClosed(t *testing.T) {
 	}
 }
 
-// TestLaunch_ExecutionName_Deterministic pins the naming contract: same
-// inputs => same name; different invID => different; non-empty exec- prefix;
-// equals the documented inline derivation.
-func TestLaunch_ExecutionName_Deterministic(t *testing.T) {
+// TestLaunch_ExecutionID_Deterministic pins the ID derivation contract:
+// same inputs => same id; different invID => different; non-empty exec-
+// prefix; equals the documented inline derivation. It also pins that the
+// derivation yields a BARE id and never a resource name (APA-41) — a bare
+// id is what GCW accepts as executionId, and conflating the two is the
+// defect this issue fixes.
+func TestLaunch_ExecutionID_Deterministic(t *testing.T) {
 	const wf = "claim-investigation"
 	const invA = "inv-cccccccccccccccccccccccccccccc03"
 	const invB = "inv-dddddddddddddddddddddddddddd04"
 
 	// Arrange + Act:
-	a1 := executionNameFor(wf, invA)
-	a2 := executionNameFor(wf, invA)
-	b := executionNameFor(wf, invB)
+	a1 := executionIDFor(wf, invA)
+	a2 := executionIDFor(wf, invA)
+	b := executionIDFor(wf, invB)
 
 	// Assert: determinism, sensitivity, shape, and documented derivation.
 	if a1 == "" || !strings.HasPrefix(a1, "exec-") {
-		t.Fatalf("execution name = %q, want non-empty exec- prefix", a1)
+		t.Fatalf("execution id = %q, want non-empty exec- prefix", a1)
 	}
 	if a1 != a2 {
-		t.Fatalf("same inputs gave different names: %q vs %q", a1, a2)
+		t.Fatalf("same inputs gave different ids: %q vs %q", a1, a2)
 	}
 	if a1 == b {
-		t.Fatalf("different invID gave same name %q (must differ)", a1)
+		t.Fatalf("different invID gave same id %q (must differ)", a1)
 	}
-	if want := crashExpectedExecutionName(wf, invA); a1 != want {
-		t.Fatalf("executionNameFor = %q, want documented derivation %q", a1, want)
+	if want := crashExpectedExecutionID(wf, invA); a1 != want {
+		t.Fatalf("executionIDFor = %q, want documented derivation %q", a1, want)
+	}
+	// The id must stay bare: it is forwarded verbatim as GCW's
+	// caller-chosen executionId, and the provider mints the resource name.
+	if strings.Contains(a1, "projects/") || strings.Contains(a1, "/") {
+		t.Fatalf("execution id %q contains a collection path; it must be a bare id", a1)
 	}
 }

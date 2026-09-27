@@ -31,6 +31,16 @@ import (
 )
 
 // LaunchRecord is one durable workflow-launch row: first write wins.
+//
+// ExecutionName holds the full GCW resource name
+// (projects/{p}/locations/{l}/workflows/{w}/executions/{id}) for rows
+// written after APA-41, and a BARE id for rows written before it. The
+// column is append-only (REVOKE UPDATE, DELETE), so both shapes are
+// permanent and readers MUST tolerate each: on the lookup path the stored
+// value is authoritative and is returned verbatim without re-deriving or
+// rewriting it. Only the reconcile probe re-derives a name, and it derives
+// from (workflowID, investigationID), never from a stored value — so a
+// historical bare row stays interpretable and is never migrated in place.
 type LaunchRecord struct {
 	TenantID        string
 	ClaimID         string
@@ -73,15 +83,27 @@ type Launcher struct {
 	Launches  LaunchStore
 }
 
-// executionNameFor derives the deterministic execution name for
+// executionIDFor derives the deterministic BARE execution id for
 // (workflowID, investigationID): "exec-" + first 32 hex of
 // sha256("claimops-execution-v1\x00"+workflowID+"\x00"+invID).
-// Conforming providers create-or-return this name when the launch argument
-// carries it (see EnsureLaunched), so a crash between StartExecution and
-// RecordLaunch is recoverable by reconciliation instead of a duplicate
-// start. The derivation binds the workflow: same investigation under a
-// different workflow yields a different name.
-func executionNameFor(workflowID, investigationID string) string {
+// Conforming providers create-or-return the execution carrying this id when
+// the launch argument forwards it (see EnsureLaunched), so a crash between
+// StartExecution and RecordLaunch is recoverable by reconciliation instead
+// of a duplicate start. The derivation binds the workflow: same
+// investigation under a different workflow yields a different id.
+//
+// This returns an ID, NOT a resource name (APA-41). The two are distinct
+// and must not be conflated:
+//
+//   - the bare id is what GCW accepts as the caller-chosen `executionId`,
+//     and it is what the launch argument carries;
+//   - the full resource name
+//     (projects/{p}/locations/{l}/workflows/{w}/executions/{id}) is the only
+//     form GetExecution can resolve, and only the provider can build it.
+//
+// Was executionNameFor; renamed because the old name invited exactly the
+// conflation this issue fixes.
+func executionIDFor(workflowID, investigationID string) string {
 	sum := sha256.Sum256([]byte("claimops-execution-v1\x00" + workflowID + "\x00" + investigationID))
 	return "exec-" + hex.EncodeToString(sum[:16])
 }
@@ -223,12 +245,19 @@ func (l *Launcher) EnsureLaunched(ctx context.Context, tenantID, claimID, invest
 	}
 	// Crash-window reconcile: the provider may have accepted a start whose
 	// RecordLaunch never committed (worker died in between). The expected
-	// execution name is deterministic, so ask the provider before starting:
+	// execution is deterministic, so ask the provider before starting:
 	// found => adopt it (record, no new start); typed absence =>
 	// proceed to start; any other provider error fails closed with no
 	// start (an outage must never read as absence, or redelivery would
 	// duplicate the execution).
-	expected := executionNameFor(workflowID, investigationID)
+	//
+	// APA-41: the probe MUST address the execution by its full resource
+	// name. A bare id produces GET /v1/exec-<hex>, which 404s and reads as
+	// absence even when the execution exists — turning reconciliation into a
+	// duplicate start. The provider owns that mapping (it owns project and
+	// location); the Launcher must not restate it.
+	execID := executionIDFor(workflowID, investigationID)
+	expected := l.Workflows.ExecutionResourceName(workflowID, execID)
 	if _, _, gerr := l.Workflows.GetExecution(ctx, expected); gerr == nil {
 		rec := LaunchRecord{
 			TenantID: tenantID, ClaimID: claimID,
@@ -246,14 +275,19 @@ func (l *Launcher) EnsureLaunched(ctx context.Context, tenantID, claimID, invest
 		return "", false, fmt.Errorf("investigate: launch reconcile: %w", gerr)
 	}
 	// Provider contract: the argument carries the idempotency key and the
-	// requested execution name; conforming providers create-or-return it.
+	// requested execution id; conforming providers create-or-return it.
+	// execution_name stays the BARE id (not `expected`): it is forwarded as
+	// GCW's caller-chosen executionId, and the provider rebuilds the full
+	// resource name from it (PR #105). Passing the full name here would
+	// nest the collection prefix inside the id and break duplicate-start
+	// protection.
 	// The pre-signed expire credential travels opaquely when present.
 	arg := map[string]string{
 		"tenant_id":        tenantID,
 		"claim_id":         claimID,
 		"investigation_id": investigationID,
 		"idempotency_key":  investigationID,
-		"execution_name":   expected,
+		"execution_name":   execID,
 	}
 	if expire.Body != "" && expire.Signature != "" {
 		arg["expire_body"] = expire.Body
