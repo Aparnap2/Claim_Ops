@@ -951,12 +951,19 @@ func TestLiveGCWCrashWindow_Adoption_BlockedByFailedExecution(t *testing.T) {
 	}
 	t.Logf("emulator execution %q observed state %q", minted, state)
 
-	// ASSERTION (R5, measured): if the execution is FAILED, GetExecution
-	// reports a NON-ABSENCE error, which the reconciler reads as an outage.
+	// ASSERTION (R5, measured live per run). GetExecution's third return value
+	// classifies the LOOKUP, never the execution's outcome, so a resolved
+	// execution is one the reconciler adopts whatever its state. Three outcomes
+	// are distinguished below, and only the third is the R5 defect:
+	//
+	//	nil error           -> resolved: R5 does not reproduce, and the
+	//	                       reconciler adopts (APA-42 fixed this)
+	//	ErrExecutionNotFound-> distinguishable typed absence: not R5
+	//	any other error     -> R5 reproduces: reads as an outage, fails closed
 	if state == "FAILED" {
 		_, _, gerr := prov.GetExecution(ctx, minted)
 		if gerr == nil {
-			t.Skip("R5 no longer reproduces: GetExecution returned no error for a FAILED execution, so the reconciler WOULD adopt it. The contract below is now exercised by TestLiveGCWCrashWindow_Adoption_UnqualifiedLocally")
+			t.Skip("R5 no longer reproduces: GetExecution returned a nil error for a FAILED execution — the lookup RESOLVED, so investigate/launch.go would ADOPT it rather than fail closed, and the APA-42 defect is fixed. This records a measured ABSENCE of the defect; it is NOT a pass of the adoption contract. Adoption remains unproven here because R1/R2/R3 still hold against this emulator (it ignores the caller-chosen executionId and never returns 409), so the deterministic execution the reconciler probes does not exist and there is nothing to adopt. TestLiveGCWCrashWindow_Adoption_UnqualifiedLocally therefore still skips on its own capability gate.")
 		}
 		if errors.Is(gerr, workflow.ErrExecutionNotFound) {
 			t.Fatalf("GetExecution(%q) reported typed absence, so it is distinguishable from an outage and R5 does not reproduce: %v", minted, gerr)
@@ -965,9 +972,20 @@ func TestLiveGCWCrashWindow_Adoption_BlockedByFailedExecution(t *testing.T) {
 		t.Logf("R5 CONSEQUENCE: investigate/launch.go:261-276 classifies this as a lookup outage and fails closed — it neither adopts nor launches, and records nothing, so the durable row is never repaired and every redelivery retries the start.")
 	}
 
-	// CONTRACT (not satisfied today; encoded so it flips when fixed).
-	// A probe that resolves a real execution must be distinguishable from a
-	// failed lookup, otherwise the crash window cannot be closed for any
-	// execution that reached a terminal state before redelivery.
+	// The branch above is only conclusive for a FAILED execution. A
+	// non-FAILED state never entered it, so it says why rather than borrowing
+	// the FAILED-execution wording below, which would report a condition this
+	// run did not measure.
+	if state != "FAILED" {
+		t.Skipf("R5 not exercised this run: the emulator execution %q is in state %q, not FAILED, so the resolved-but-FAILED branch above did not run. R5 is a claim about how a FAILED execution is classified, and nothing was measured about it here. The emulator's terminal state is not forced by this test; if it ever settles somewhere other than FAILED, R5 must be re-measured against that state rather than inherited from this branch.", minted, state)
+	}
+
+	// CONTRACT (not satisfied on the path that reached here; encoded so it
+	// flips when fixed). Reaching this point with a FAILED execution means the
+	// branch above did NOT observe a nil lookup error for it, which is exactly
+	// R5 reproducing: a probe that resolves a real execution must be
+	// distinguishable from a failed lookup, otherwise the crash window cannot
+	// be closed for any execution that reached a terminal state before
+	// redelivery.
 	t.Skipf("contract not satisfied today, and not worked around here (frozen code, test-only slice): a probe that RESOLVES a real execution must not be reported as a lookup failure. MEASURED against the live emulator: execution %q is in state %q, it is present in the emulator's execution collection, and GCWProvider.GetExecution returns a non-nil error that does NOT wrap workflow.ErrExecutionNotFound. The reconciler therefore fails closed instead of adopting, so the crash window stays open for any execution that terminated before redelivery. Fix belongs in GCWProvider.GetExecution (distinguish resolved-but-failed from lookup failure) or in the reconciler's classify step.", minted, state)
 }
