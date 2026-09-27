@@ -108,8 +108,25 @@ func (g *GCWProvider) DeployWorkflow(ctx context.Context, workflowID string, sou
 
 // StartExecution starts a workflow execution.
 //
-// POST /v1/projects/{project}/locations/{location}/workflows/{id}/executions
+// POST /v1/projects/{project}/locations/{location}/workflows/{id}/executions[?executionId={id}]
 // Body: {"argument": "<json string>"}
+//
+// CREATE-OR-RETURN (the launch/idempotency contract, investigate/launch.go)
+// When the argument map carries a non-empty "execution_name", that value is
+// forwarded as Cloud Workflows' executionId — the request's caller-chosen
+// execution identifier — so the call is create-or-return rather than
+// create-always: a repeat with the same execution_name addresses the SAME
+// execution. That is what makes the crash window between StartExecution and
+// RecordLaunch recoverable by reconciliation instead of a duplicate start.
+//
+// Two mechanisms implement it, and both are needed against a provider that
+// enforces the identifier:
+//   - forward executionId on create, and
+//   - map a create-409 (identifier already exists) onto returning the
+//     existing execution instead of failing the launch.
+//
+// When the argument carries no execution_name the behaviour is unchanged:
+// a plain create, and 409 remains an error. No identifier is invented.
 func (g *GCWProvider) StartExecution(ctx context.Context, workflowID string, argument any) (string, error) {
 	if workflowID == "" {
 		return "", fmt.Errorf("workflowID must not be empty")
@@ -120,6 +137,14 @@ func (g *GCWProvider) StartExecution(ctx context.Context, workflowID string, arg
 		url.PathEscape(g.location),
 		url.PathEscape(workflowID),
 	)
+
+	// requestedExecutionID extracts the caller-chosen execution id from
+	// the launch argument. Returns "" when the argument is not a map, has
+	// no execution_name, or carries a blank one — never invents a value.
+	requested := requestedExecutionID(argument)
+	if requested != "" {
+		endpoint += "?executionId=" + url.QueryEscape(requested)
+	}
 
 	var argStr string
 	if argument != nil {
@@ -132,6 +157,9 @@ func (g *GCWProvider) StartExecution(ctx context.Context, workflowID string, arg
 
 	payload := map[string]string{
 		"argument": argStr,
+	}
+	if requested != "" {
+		payload["executionId"] = requested
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -151,6 +179,12 @@ func (g *GCWProvider) StartExecution(ctx context.Context, workflowID string, arg
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	// create-409 with a requested identifier means the execution already
+	// exists: that is the create-or-return outcome, not a failure. Return
+	// the existing execution's resource name so the launch converges.
+	if resp.StatusCode == http.StatusConflict && requested != "" {
+		return g.ExecutionResourceName(workflowID, requested), nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("start execution %q failed: status %d: %s", workflowID, resp.StatusCode, string(respBody))
 	}
@@ -175,6 +209,31 @@ func (g *GCWProvider) StartExecution(ctx context.Context, workflowID string, arg
 		return "", fmt.Errorf("execution response missing name: %s", string(respBody))
 	}
 	return out.Name, nil
+}
+
+// requestedExecutionID pulls the caller-chosen execution identifier out of
+// a launch argument map. Returns "" (not an error) when the argument is
+// absent, is not a map, or carries no usable execution_name: an argument
+// without an identifier is a plain create, not a malformed one.
+func requestedExecutionID(argument any) string {
+	m, ok := argument.(map[string]string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(m["execution_name"])
+}
+
+// ExecutionResourceName returns the fully-qualified Cloud Workflows
+// resource name for an execution: the "name" field of an Execution
+// resource, of the form
+//
+//	projects/{project}/locations/{location}/workflows/{workflowID}/executions/{executionID}
+//
+// It is the form GetExecution accepts. A bare execution id is NOT a valid
+// input to GetExecution: the REST path needs the full collection prefix.
+func (g *GCWProvider) ExecutionResourceName(workflowID, executionID string) string {
+	return fmt.Sprintf("projects/%s/locations/%s/workflows/%s/executions/%s",
+		g.project, g.location, workflowID, executionID)
 }
 
 // GetExecution fetches execution state.
