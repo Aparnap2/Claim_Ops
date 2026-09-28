@@ -93,7 +93,7 @@ func TestDispatcher_Success(t *testing.T) {
 	d := outbox.New(store, func(_ context.Context, e postgres.OutboxEvent) error {
 		published = append(published, e.EventID)
 		return nil
-	}, 10, 3, time.Minute)
+	}, 10, 3, time.Minute, 0)
 
 	n, dead, err := d.RunOnce(ctx)
 	if err != nil {
@@ -127,7 +127,7 @@ func TestDispatcher_RetryThenSuccess(t *testing.T) {
 			return errors.New("transport boom")
 		}
 		return nil
-	}, 10, 3, 0)
+	}, 10, 3, 0, 0)
 
 	n, dead, err := d.RunOnce(ctx)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestDispatcher_PoisonGoesDead(t *testing.T) {
 	store := newFakeStore([]postgres.OutboxEvent{testEvent("e-poison")})
 	d := outbox.New(store, func(_ context.Context, _ postgres.OutboxEvent) error {
 		return errors.New("always fails")
-	}, 10, 3, 0)
+	}, 10, 3, 0, 0)
 
 	for i := 1; i <= 2; i++ {
 		n, dead, err := d.RunOnce(ctx)
@@ -195,7 +195,7 @@ func TestDispatcher_CrashAfterPublishReattempts(t *testing.T) {
 	d := outbox.New(store, func(_ context.Context, _ postgres.OutboxEvent) error {
 		calls++
 		return nil
-	}, 10, 3, 0)
+	}, 10, 3, 0, 0)
 
 	_, _, err := d.RunOnce(ctx)
 	if err == nil {

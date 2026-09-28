@@ -45,35 +45,52 @@ type Store interface {
 // a day, pending DLQ / retention handling.
 const deadQuarantine = 24 * time.Hour
 
+// defaultPublishTimeout bounds one publish attempt when the dispatcher is
+// constructed without an explicit timeout. It is a ceiling on a single
+// attempt, not on the batch: a stalled record costs at most this long and the
+// loop then moves to the next record.
+const defaultPublishTimeout = 30 * time.Second
+
 // Dispatcher claims due outbox rows and publishes them one by one.
 type Dispatcher struct {
-	store       Store
-	publish     PublishFunc
-	batchSize   int
-	maxAttempts int
-	retryBase   time.Duration
-	attempts    map[string]int
+	store          Store
+	publish        PublishFunc
+	batchSize      int
+	maxAttempts    int
+	retryBase      time.Duration
+	publishTimeout time.Duration
+	attempts       map[string]int
 }
 
 // New builds a Dispatcher. Non-positive batch defaults to 10;
 // non-positive maxAttempts defaults to 5. retryBase <= 0 means immediate
-// retry (no backoff). attempts tracks per-event consecutive failures
-// observed by this process (the OutboxEvent shape carries no attempt
+// retry (no backoff). Non-positive publishTimeout means one publish attempt
+// may run for defaultPublishTimeout. attempts tracks per-event consecutive
+// failures observed by this process (the OutboxEvent shape carries no attempt
 // count, so the dispatcher counts what it has seen).
-func New(store Store, publish PublishFunc, batch, maxAttempts int, retryBase time.Duration) *Dispatcher {
+//
+// publishTimeout exists so a single publish attempt can never inherit an
+// effectively immortal caller context: production passes the server-lifetime
+// context into RunOnce, and a dead transport would otherwise block the whole
+// dispatch loop (see RunOnce).
+func New(store Store, publish PublishFunc, batch, maxAttempts int, retryBase, publishTimeout time.Duration) *Dispatcher {
 	if batch <= 0 {
 		batch = 10
 	}
 	if maxAttempts <= 0 {
 		maxAttempts = 5
 	}
+	if publishTimeout <= 0 {
+		publishTimeout = defaultPublishTimeout
+	}
 	return &Dispatcher{
-		store:       store,
-		publish:     publish,
-		batchSize:   batch,
-		maxAttempts: maxAttempts,
-		retryBase:   retryBase,
-		attempts:    make(map[string]int),
+		store:          store,
+		publish:        publish,
+		batchSize:      batch,
+		maxAttempts:    maxAttempts,
+		retryBase:      retryBase,
+		publishTimeout: publishTimeout,
+		attempts:       make(map[string]int),
 	}
 }
 
@@ -93,13 +110,27 @@ func (d *Dispatcher) backoff(failCount int) time.Duration {
 // next = now()+retryBase*2^(n-1). A Mark* error aborts the run and is
 // returned. Crash-after-publish (MarkPublished never commits) leaves the
 // row unpublished, so the next RunOnce re-claims and re-publishes it.
+//
+// Each publish attempt runs under a context bounded by publishTimeout and
+// derived from ctx, so one attempt can never outlive its own deadline or
+// inherit an effectively immortal caller context (APA-44: production passes
+// the server-lifetime context here, and a dead Pub/Sub otherwise blocked the
+// loop inside result.Get). An attempt that hits the deadline is an ordinary
+// transient failure: it takes the same MarkFailed/backoff path as any other
+// publish error, so the transient/terminal distinction is unchanged. Caller
+// cancellation still propagates, since the bound is derived from ctx. Only
+// the publish call is bounded; the Mark* bookkeeping deliberately keeps the
+// caller's ctx so a completed run can always record its outcome.
 func (d *Dispatcher) RunOnce(ctx context.Context) (published, dead int, err error) {
 	events, err := d.store.ClaimUnpublished(ctx, d.batchSize)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, e := range events {
-		if err := d.publish(ctx, e); err != nil {
+		publishCtx, cancel := context.WithTimeout(ctx, d.publishTimeout)
+		err := d.publish(publishCtx, e)
+		cancel()
+		if err != nil {
 			n := d.attempts[e.EventID] + 1
 			d.attempts[e.EventID] = n
 			if n >= d.maxAttempts {
