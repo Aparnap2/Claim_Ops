@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -54,6 +55,16 @@ func NewExecRunner(pythonBin, shimPath string, timeout time.Duration) *ExecRunne
 
 // Run implements Runner.
 func (r *ExecRunner) Run(ctx context.Context, pdfPath string) ([]byte, error) {
+	// Pre-flight the shim. A shim that is not in the image is a misbuilt
+	// artifact, not a bad document: without this the interpreter starts,
+	// exits 2 with "can't open file" on stderr, and mapExitError files it
+	// as a document fault. Checking first keeps the runtime class explicit
+	// and avoids paying for a subprocess that cannot succeed.
+	if _, err := os.Stat(r.shimPath); err != nil {
+		return nil, fmt.Errorf("%w: liteparse shim not readable at %q: %v",
+			ErrRuntimeUnavailable, r.shimPath, err)
+	}
+
 	runCtx := ctx
 	cancel := context.CancelFunc(func() {})
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -70,7 +81,7 @@ func (r *ExecRunner) Run(ctx context.Context, pdfPath string) ([]byte, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return nil, wrapExec("start", err, nil, ctx)
+		return nil, wrapSpawn(err, ctx)
 	}
 	// Bound stdout: read at most MaxStdoutBytes+1 to detect overflow.
 	limited := io.LimitReader(stdout, MaxStdoutBytes+1)

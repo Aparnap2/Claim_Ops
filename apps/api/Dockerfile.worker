@@ -1,23 +1,74 @@
 # ClaimOps Worker — production image (Cloud Run contract).
 # Serves POST /events/document-ingested for Pub/Sub push delivery.
-# Build from the module root: docker build -f Dockerfile.worker .
-# Alpine-only, squeezed: static binary on minimal Alpine, non-root,
-# ca-certificates for TLS. No shell tools in the final layer.
+#
+# Build from the REPO ROOT (context changed in APA-48):
+#   docker build -f apps/api/Dockerfile.worker -t claimops-worker .
+#
+# The context is the repo root, not the module root, because the deployed
+# worker needs two things that live outside apps/api:
+#   1. tools/parsers/liteparse/shim.py — the parse shim, which
+#      internal/parser/liteparse resolves as DefaultShimPath relative to
+#      WORKDIR, i.e. /app/tools/parsers/liteparse/shim.py, and
+#   2. pyproject.toml + uv.lock — the pinned LiteParse dependency source.
+# Everything the Go stage needs is still scoped to apps/api/, so the Go
+# build is byte-for-byte the same as before.
+#
+# APA-48: the image previously shipped the static Go binary on bare Alpine
+# with no interpreter and no tools/, so internal/parser/liteparse
+# client.go exec of "python3 tools/parsers/liteparse/shim.py" failed at
+# cmd.Start() and EVERY ingested document died terminal-FAILED at parse.
+# The parse runtime is now part of the artifact, and the container smoke
+# (tools/parsers/liteparse/container_smoke.sh) gates it inside this image.
+
+# ---------- Stage 1: static Go binary ----------
 FROM golang:1.27-alpine AS build
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY apps/api/go.mod apps/api/go.sum ./
 RUN go mod download
-COPY . .
+COPY apps/api/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker \
  && ls -la /out/worker
 
+# ---------- Stage 2: pinned LiteParse runtime ----------
+# Isolated so no pip cache, no build tooling, and no other project
+# dependency lands in the final image. Only the one wheel the parse shim
+# imports is installed: the shim needs liteparse and nothing else, and the
+# worker image stays "minimum" as the header requires.
+FROM alpine:3.21 AS pybuild
+RUN apk add --no-cache python3 py3-pip
+COPY pyproject.toml uv.lock /src/
+# Resolve the wheel straight out of uv.lock instead of re-typing a URL or
+# version here, so uv.lock stays the single source of truth and cannot
+# drift from the image. musllinux is the Alpine (musl) build; cp310-abi3
+# is satisfied by Alpine's Python 3.12.
+RUN python3 - <<'PY'
+import pathlib, tomllib
+lock = tomllib.loads(pathlib.Path("/src/uv.lock").read_text())
+wheels = [w for pkg in lock["package"] if pkg["name"] == "liteparse" for w in pkg["wheels"]]
+match = [w for w in wheels if "musllinux_1_2_x86_64" in w["url"]]
+if len(match) != 1:
+    raise SystemExit(f"uv.lock: expected exactly 1 musllinux liteparse wheel, found {len(match)}")
+w = match[0]
+pathlib.Path("/tmp/req.txt").write_text(f"{w['url']}#sha256={w['hash'].split(':', 1)[1]}\n")
+print("locked:", w["url"].rsplit('/', 1)[-1], w["hash"])
+PY
+RUN pip install --no-cache-dir --break-system-packages --target=/opt/lp -r /tmp/req.txt \
+ && PYTHONPATH=/opt/lp python3 -c "import liteparse; print('build-stage liteparse import OK')"
+
+# ---------- Stage 3: the deployed artifact ----------
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates python3 \
  && adduser -D -H -u 10001 apprunner \
  && rm -rf /var/cache/apk/*
 WORKDIR /app
 COPY --from=build /out/worker /app/worker
+# Python site-packages only — the stdlib comes from the apk python3 package
+# already installed above, so nothing from pybuild but the wheel is copied.
+COPY --from=pybuild /opt/lp/ /usr/lib/python3.12/site-packages/
+# The shim at the exact path DefaultShimPath resolves to from WORKDIR /app.
+# Copied from repo source so the image can never run a stale shim.
+COPY tools/parsers/liteparse/shim.py /app/tools/parsers/liteparse/shim.py
 ENV PORT=8080 APP_ENV=prod PUSH_AUTH_MODE=oidc
 EXPOSE 8080
 USER apprunner

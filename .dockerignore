@@ -1,0 +1,44 @@
+# Docker build context hygiene for the repo-root worker build.
+#
+# The worker image builds from the REPO ROOT (see apps/api/Dockerfile.worker):
+# the Go module is apps/api, but the parse runtime needs the repo-root shim
+# (tools/) and the pinned Python dependency source (pyproject.toml, uv.lock).
+#
+# Everything below is excluded so the build context stays small, secret-free
+# and reproducible. The negative-pattern intent is deny-by-default: only what
+# the worker image actually needs may enter the context.
+
+# VCS + local state
+.git
+.gitignore
+.github
+
+# Secrets and environments. .env must never reach a build layer.
+.env
+.env.*
+.venv
+venv
+
+# Tooling caches
+.mypy_cache
+.ruff_cache
+.pytest_cache
+**/__pycache__
+**/*.pyc
+
+# Test + evaluation material. The container smoke MOUNTS the corpus
+# read-only at run time; fixtures are never baked into the production image.
+fixtures
+tests
+eval
+mocks
+docs
+workflows
+infra
+
+# Docs and non-build root files
+prd.md
+README.md
+AGENTS.md
+skills-lock.json
+Makefile

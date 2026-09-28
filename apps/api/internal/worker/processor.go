@@ -51,6 +51,7 @@ import (
 	"claimops-api/internal/metrics"
 	"claimops-api/internal/observability"
 	"claimops-api/internal/parser"
+	"claimops-api/internal/parser/liteparse"
 	"claimops-api/internal/ports"
 	"claimops-api/internal/sufficiency"
 	"claimops-api/internal/verify"
@@ -284,8 +285,22 @@ type documentIngestedEvent struct {
 // (ErrCorruptedBlob / ErrBlobTooLarge from the #16B integrity boundary).
 // errors.As/Is is the seam: fetch adapters alias and wrap these sentinels,
 // so detection survives the ContentFetcher interface boundary.
+// isPermanent reports whether a fetch failure is a permanent integrity fault
+// (TERMINAL) rather than a transport fault worth redelivery (TRANSIENT).
 func isPermanent(err error) bool {
 	return errors.Is(err, ErrCorruptedBlob) || errors.Is(err, ErrBlobTooLarge)
+}
+
+// isParserRuntimeErr reports whether a parse failure is a broken parser
+// EXECUTION ENVIRONMENT (APA-48) rather than a defect in the document: a
+// missing interpreter, a missing shim, or an uninstallable vendor
+// dependency. These are our fault, not the customer's, and the document
+// stays unproven — so the caller must NOT failTerminal (which acknowledges
+// the delivery and persists a FAILED document row). It routes to the
+// existing OutcomeTransient so redelivery can heal it once the artifact is
+// rebuilt. Sibling of isPermanent: same shape, opposite verdict.
+func isParserRuntimeErr(err error) bool {
+	return errors.Is(err, liteparse.ErrRuntimeUnavailable)
 }
 
 // retryableStoreErr reports whether a store/dependency error merits another
@@ -820,6 +835,23 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return Outcome{DocumentID: docID, Status: documents.StFailed, Extraction: documents.ExtractionNotAttempted, Kind: OutcomeTransient, Attempts: 1, Err: err}, effective
+		}
+		// APA-48: the parser's execution environment is broken (interpreter
+		// or shim missing, vendor dependency not importable). The document
+		// is unproven, not bad. Reuse the existing OutcomeTransient signal —
+		// non-2xx/Nack, so redelivery may heal it — instead of failTerminal,
+		// which would acknowledge the message AND persist a FAILED document
+		// row, durably blaming the customer's file for our misbuilt image.
+		// Fails closed: no extraction, no evidence, no SUCCESS.
+		if isParserRuntimeErr(err) {
+			return Outcome{
+				DocumentID: docID,
+				Status:     documents.StFailed,
+				Extraction: documents.ExtractionNotAttempted,
+				Kind:       OutcomeTransient,
+				Attempts:   1,
+				Err:        fmt.Errorf("worker: parse document: %w", err),
+			}, effective
 		}
 		return failTerminal(documents.DocType(effective), fmt.Errorf("worker: parse document: %w", err))
 	}
