@@ -11,7 +11,7 @@ Deterministic systems first; LLM only where semantic reasoning is required.
    provider-neutral ModelClient). Python is spec artifacts + bounded future
    service per ADR-001.
  - Agent count: 1 Investigation Agent (bounded, provider-neutral). No APPROVE/DENY/PAY by AI, ever.
- - LLM provider: Groq (`llama-3.1-8b-instant`, code default) contracted per ADR-002, wiring
+ - LLM provider: Groq (`qwen/qwen3.8-27b`, code default) contracted per ADR-002, wiring
    deferred behind ModelClient (stub/FakeModelClient until key); no Ollama.
 
 ## Prerequisites
