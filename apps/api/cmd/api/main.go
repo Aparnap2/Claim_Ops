@@ -30,6 +30,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// outboxPublishTimeout bounds a single outbox publish attempt. The dispatcher
+// loop is given the server-lifetime context, so without this bound one dead
+// Pub/Sub would block the whole loop inside the client's retry path instead of
+// degrading to a transient failure (APA-44). It is per attempt, not per batch.
+const outboxPublishTimeout = 30 * time.Second
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -129,7 +135,7 @@ func startTransportPlane(ctx context.Context, cfg config.Config, svc *ingest.Ser
 			})
 			return err
 		},
-		10, 5, 5*time.Second,
+		10, 5, 5*time.Second, outboxPublishTimeout,
 	)
 	go runDispatcher(ctx, disp, cfg.OutboxPollMS)
 
