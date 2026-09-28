@@ -51,10 +51,11 @@ import (
 
 const (
 	// canonicalGroqModel is the ADR-002 adjudicated canonical model string
-	// (Option A, 2026-09-26). It must equal the code default in
+	// (Option A, 2026-09-26; re-adjudicated to a servable production model
+	// in APA-47, 2026-09-28). It must equal the code default in
 	// groq_model.go and the README line; groq_env_contract_test.go pins
 	// that three-way agreement so the three cannot drift apart silently.
-	canonicalGroqModel = "llama-3.1-8b-instant"
+	canonicalGroqModel = "qwen/qwen3.8-27b"
 
 	// sentinelGroqKey is a fake key material. It exists so the no-leak
 	// assertions have something specific to hunt for. It is not a real

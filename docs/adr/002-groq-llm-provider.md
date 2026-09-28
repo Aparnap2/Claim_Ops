@@ -19,12 +19,23 @@ outcome is recorded here.
 
 ## Decision
 
-- Provider: Groq. Model: `llama-3.1-8b-instant` (code default in
+- Provider: Groq. Model: `qwen/qwen3.8-27b` (code default in
   `groq_model.go`; canonical string for the Groq qualification run).
 - Adjudication 2026-09-26 (Option A): the ADR originally contracted
-  `openai/gpt-oss-20b`, but the shipped code default is
+  `openai/gpt-oss-20b`, but the shipped code default was
   `llama-3.1-8b-instant` and working code is not changed to satisfy a
   stale ADR. ADR and README amended to the code default instead.
+- Re-adjudication 2026-09-28 (APA-47): `llama-3.1-8b-instant` has since
+  been retired from Groq and answers HTTP 404 `model_not_found`, so the
+  config contracted above would have failed every inference call. Model
+  re-adjudicated to `qwen/qwen3.8-27b`, confirmed servable live against
+  the configured provider (HTTP 200, non-empty
+  `choices[0].message.content`) under the existing client wire format
+  (`max_tokens`, `temperature: 0`, `stream: false`). This is a config and
+  documentation change only: no `response_format`/JSON mode, no reasoning
+  parameter, no prompt change, and no model-specific response parsing were
+  added, and the model remains untrusted input behind the unchanged
+  deterministic validation/grounding boundary.
 - Client pattern: OpenAI-compatible (`base_url` + env key). Works with
   `openai.OpenAI`, LangChain `ChatOpenAI`, LangGraph nodes unchanged.
 - Ollama is out of scope. localgcp Vertex proxy is reserved for

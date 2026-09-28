@@ -35,10 +35,11 @@ import (
 
 const (
 	// canonicalModelString is the ADR-002 adjudicated canonical model
-	// string (Option A, 2026-09-26). It is duplicated here as a literal on
+	// string (Option A, 2026-09-26; re-adjudicated to a servable production
+	// model in APA-47, 2026-09-28). It is duplicated here as a literal on
 	// purpose: if the code default ever changes, this test fails and forces
 	// an explicit decision rather than letting code and docs drift.
-	canonicalModelString = "llama-3.1-8b-instant"
+	canonicalModelString = "qwen/qwen3.8-27b"
 
 	// sentinelKey is fake key material used as a leak canary. It is not a
 	// real credential and must never be committed as one.

@@ -15,8 +15,16 @@ import (
 )
 
 // Groq defaults.
+//
+// defaultGroqModel is the ADR-002 adjudicated canonical model, re-adjudicated
+// to a currently servable production model in APA-47 (2026-09-28). The prior
+// value, llama-3.1-8b-instant, was retired from Groq and answers HTTP 404
+// model_not_found, so it cannot serve production traffic. Re-verified live the
+// same day: HTTP 200 with non-empty choices[0].message.content under this
+// client's existing wire format. Provider-neutral seam and client contract are
+// unchanged; only the model identity moved.
 const (
-	defaultGroqModel   = "llama-3.1-8b-instant"
+	defaultGroqModel   = "qwen/qwen3.8-27b"
 	defaultGroqBaseURL = "https://api.groq.com/openai/v1"
 	groqTimeout        = 30 * time.Second
 )
