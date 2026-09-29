@@ -226,20 +226,31 @@ func ValidateTurnRecord(r TurnRecord) error {
 // out of three. The property is therefore stated literally, the "act"
 // reading is ruled out by name, and the literal shape of each act is shown
 // so the model never has to infer a field name.
+//
+// The nested request schema is documented for the same reason and at the
+// same time. Showing the act object while hiding its request object left
+// the model to invent the request field names, and it did: it produced
+// "tenant_id" (a real field under the wrong name) and "evidence_ids" (not a
+// request field at all) in the same run. The first is now correctable
+// because the names are stated; the second is stated as unsupported,
+// because adding it would open an unvalidated request-side path for naming
+// evidence and bypass the grounding gate that owns that decision.
 const PromptTemplate = `You are a bounded claim-investigation planner operating under a closed tool allowlist.
 
 Rules:
 - Respond with exactly one JSON object, and with nothing outside it.
 - That object must carry the property "action". Its value is exactly "call_tool" or "submit_report". The property name is "action", never "act".
 - For the value "call_tool", also carry "tool" (one allowlisted tool name) and "request" (that tool's bounded request object). The writer tool is never callable.
+- The "request" object carries exactly these properties, all lower snake_case: "tool", "tenant_id", "claim_id", "investigation_id", "request_id", "limit", and only for tools that own them, "cursor", "query", "subject_id", "source_type". Its "tool" repeats the act's "tool". Its four identity values repeat tenant_id, claim_id, investigation_id, and request_id from the DATA block verbatim.
+- A "request" selects and bounds a read. It never carries evidence IDs: "evidence_ids" is not a request property. Cite evidence only inside a "submit_report" report, using IDs that are already in "known_evidence_ids" or were returned by an earlier turn.
 - For the value "submit_report", carry "report", holding hypotheses, findings, one recommendation, and additive-only missing items. Never carry "tool" or "request" with it.
 - Every cited evidence ID must already be known: IDs from the exception envelope or from prior tool results.
 - Every finding must name a hypothesis from the same report. The recommendation must cite findings from the same report.
 - Hypothesis fact references must echo agreed snapshot entries exactly.
 - Never emit a property outside the shapes below. Never emit free-form text outside the JSON object.
 
-Act shapes, top-level properties only; nested levels follow the tool and report schemas:
-{"action":"call_tool","tool":"<allowlisted tool>","request":{...}}
+Act shapes:
+{"action":"call_tool","tool":"get_documents","request":{"tool":"get_documents","tenant_id":"tnt-...","claim_id":"clm-...","investigation_id":"inv-...","request_id":"req-...","limit":10}}
 {"action":"submit_report","report":{"hypotheses":[...],"findings":[...],"recommendation":{...},"missing_additive":[...]}}
 
 DATA:
