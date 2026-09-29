@@ -420,8 +420,22 @@ func (m *qualModel) Complete(ctx context.Context, req ModelRequest) (ModelRespon
 	m.calls++
 	m.lats = append(m.lats, elapsed)
 	m.errs = append(m.errs, err)
-	m.raw = append(m.raw, truncateForRecord(string(resp.Payload), 240))
+	// Full payload, not a prefix. The earlier revision kept only a 240-rune
+	// prefix of call 0, so the turn that actually failed was unrecoverable
+	// and had to be reported as unknown instead of quoted. A qualification
+	// record that cannot quote the failing output is not evidence. Payloads
+	// carry only IDs, hashes, and counts by construction, so retaining them
+	// in-process and in the (never-committed, 0600) evidence file is safe.
+	m.raw = append(m.raw, string(resp.Payload))
 	return resp, err
+}
+
+// Payloads returns every raw model payload in call order, unabridged. The
+// test log gets bounded prefixes; this is the verbatim record.
+func (m *qualModel) Payloads() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.raw...)
 }
 
 // PacedMS reports the total milliseconds spent waiting on the provider's
@@ -447,15 +461,23 @@ func (m *qualModel) Latencies() []time.Duration {
 	return append([]time.Duration(nil), m.lats...)
 }
 
-// FirstPayload returns a short, log-safe prefix of call i's raw payload,
-// for the PR record. Payloads carry only IDs and hashes by construction.
-func (m *qualModel) FirstPayload(i int) string {
+// Payload returns the FULL raw payload of call i, for the verbatim record.
+// The test log gets bounded prefixes via PayloadPrefix; this is the truth.
+func (m *qualModel) Payload(i int) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if i < 0 || i >= len(m.raw) {
 		return ""
 	}
 	return m.raw[i]
+}
+
+// PayloadPrefix returns a short, log-safe prefix of call i's raw payload.
+// Payloads carry only IDs and hashes by construction, but a log line that
+// quotes a whole report per turn is unreadable, so the log gets prefixes
+// and the evidence file gets the whole thing.
+func (m *qualModel) PayloadPrefix(i int) string {
+	return truncateForRecord(m.Payload(i), 240)
 }
 
 // truncateForRecord clips s to at most n runes for a log-safe record.
@@ -651,6 +673,10 @@ type qualRun struct {
 	OutboxRows  int
 	Wire        *qualWireRecorder
 	Model       *qualModel
+	// Executor is the recording executor the loop actually ran against, so
+	// the record can report what the instrument saw rather than only what
+	// the model did.
+	Executor *qualExecutor
 }
 
 // citations flattens every evidence ID an accepted report cites.
@@ -910,8 +936,21 @@ type qualEvidence struct {
 	ModelActClass         string   `json:"model_act_class"`
 	PacedMS               int64    `json:"pacer_wait_ms"`
 	FirstPayload          string   `json:"first_payload_prefix,omitempty"`
-	Violations            []string `json:"boundary_violations"`
-	Verdict               string   `json:"verdict"`
+	// PayloadPrefixes is one bounded prefix per model call, in order, so the
+	// test log can show the whole turn sequence. Payloads is the same calls
+	// UNABRIDGED, because a record that cannot quote the failing output is
+	// not evidence. Never committed: QUAL_EVIDENCE_DIR is 0600 and outside
+	// the repo.
+	PayloadPrefixes []string `json:"model_payload_prefixes,omitempty"`
+	Payloads        []string `json:"model_payloads_verbatim,omitempty"`
+	// RecorderObserved and RecorderCalls are the anti-vacuity counters. A
+	// verdict is only meaningful when the two agree and the recorder holds
+	// the IDs the attempt log claims.
+	RecorderObserved int      `json:"recorder_observed_calls"`
+	RecorderCalls    int      `json:"recorder_executor_calls"`
+	RecordedIDs      []string `json:"recorder_recorded_ids,omitempty"`
+	Violations       []string `json:"boundary_violations"`
+	Verdict          string   `json:"verdict"`
 }
 
 // buildEvidence renders the per-run record from a completed run.
@@ -944,7 +983,7 @@ func buildEvidence(r qualRun) qualEvidence {
 	}
 	if r.Model != nil {
 		ev.ModelCalls = r.Model.Calls()
-		ev.FirstPayload = r.Model.FirstPayload(0)
+		ev.FirstPayload = r.Model.PayloadPrefix(0)
 		for _, l := range r.Model.Latencies() {
 			if ms := l.Milliseconds(); ms > ev.MaxSeamLatencyMS {
 				ev.MaxSeamLatencyMS = ms
@@ -955,6 +994,17 @@ func buildEvidence(r qualRun) qualEvidence {
 		ev.ModelActClass = classifyModelAct(r)
 		ev.ModelProducedValidAct = ev.ModelActClass == "VALID_ACT"
 		ev.PacedMS = r.Model.PacedMS()
+		// Every payload this run received, in call order: prefixes for the
+		// log, verbatim for the record. See qualEvidence.
+		for i := range r.Model.Payloads() {
+			ev.PayloadPrefixes = append(ev.PayloadPrefixes, r.Model.PayloadPrefix(i))
+			ev.Payloads = append(ev.Payloads, r.Model.Payload(i))
+		}
+	}
+	if r.Executor != nil {
+		ev.RecorderObserved = r.Executor.Observed()
+		ev.RecorderCalls = r.Executor.Calls()
+		ev.RecordedIDs = r.Executor.recordedIDs()
 	}
 	if r.Wire != nil {
 		ev.ProviderRequestIDs = r.Wire.providerIDs()
@@ -1022,10 +1072,16 @@ func logEvidence(t *testing.T, ev qualEvidence) {
 		}
 	}
 	// A single greppable line per run, so the log is the evidence table.
-	t.Logf("APA49-EVIDENCE scenario=%s repeat=%d model=%s provider=%s outcome=%s reason=%s modelCalls=%d httpAttempts=%d actClass=%s tokens=%d pacedMs=%d violations=%d verdict=%s",
+	t.Logf("APA49-EVIDENCE scenario=%s repeat=%d model=%s provider=%s outcome=%s reason=%s modelCalls=%d httpAttempts=%d actClass=%s tokens=%d pacedMs=%d recorderCalls=%d recorderObserved=%d recordedIDs=%v attemptIDs=%v violations=%d verdict=%s",
 		ev.Scenario, ev.Repeat, ev.Model, ev.Provider, ev.Outcome, ev.EscalationReason,
 		ev.ModelCalls, ev.HTTPAttempts, ev.ModelActClass, ev.TotalTokens, ev.PacedMS,
+		ev.RecorderCalls, ev.RecorderObserved, ev.RecordedIDs, ev.AttemptIDs,
 		len(ev.Violations), ev.Verdict)
+	// The turn sequence, bounded, so the log shows what the model did turn
+	// by turn. The unabridged payloads are in the evidence file.
+	for i, p := range ev.PayloadPrefixes {
+		t.Logf("APA49-PAYLOAD scenario=%s repeat=%d call=%d %s", ev.Scenario, ev.Repeat, i+1, p)
+	}
 	if ev.ErrorText != "" {
 		t.Logf("APA49-ERROR scenario=%s class=%s text=%s", ev.Scenario, ev.EscalationReason, ev.ErrorText)
 	}
@@ -1267,20 +1323,61 @@ func ptrReport(r Report) *Report { return &r }
 // Live qualification: scenarios 1, 2, 3, 5, 7 (+ gate proofs)
 // ---------------------------------------------------------------------------
 
-// qualExecutor is a recording wrapper around the canned success executor.
-// It performs no validation of its own; it only remembers what it
-// really returned, which is the ground truth the grounding re-check
-// needs. Fresh IDs per turn mirror successExecutor so a legitimate run
-// can widen KnownEvidence and reach a real grounded report.
+// qualExecutor is a recording observer of a real investigate.Executor. It
+// performs no validation, no rewriting, and no error translation: it only
+// remembers what execution really returned, which is the ground truth the
+// grounding re-check needs. Fresh IDs per turn mirror successExecutor so a
+// legitimate run can widen KnownEvidence and reach a real grounded report.
+//
+// WIRING (APA-49 follow-up). The recorder attaches through
+// Executor.SetAuditHook, which is the exported production seam that fires
+// for every executed call and carries the exact response the loop consumed
+// (executor.go:191 sets EvidenceIDs from out.IDs). It is the only seam
+// available from outside the package: Executor.tools is unexported with no
+// accessor, so the ToolFunc registry cannot be wrapped by a caller holding
+// only the constructed *Executor. Holding a different pointer to the
+// executor therefore does NOT bypass the recorder, which is precisely why
+// the previous wiring was unsound: it called a record() method that nothing
+// in the package ever invoked, so recorded() was always empty and INV-5
+// flagged every tool-returned ID as unauthorized. The invariant was right;
+// the measurement was broken.
 type qualExecutor struct {
 	inner     *investigate.Executor
 	mu        sync.Mutex
 	responses []investigate.Response
+	// calls is how many executed calls the audit seam observed, success or
+	// failure. It is the anti-vacuity counter: it must equal the executor's
+	// own Calls() on any run that executed a tool, or the recorder is
+	// silently inert.
+	calls int
 }
 
-// newQualExecutor wraps an executor and records its responses.
+// newQualExecutor attaches the recorder to a real executor. The hook is
+// additive instrumentation only: it observes AuditParams and returns,
+// touching nothing the executor or the loop depends on.
 func newQualExecutor(inner *investigate.Executor) *qualExecutor {
-	return &qualExecutor{inner: inner}
+	q := &qualExecutor{inner: inner}
+	inner.SetAuditHook(func(_ context.Context, p investigate.AuditParams, callErr error) {
+		q.mu.Lock()
+		q.calls++
+		q.mu.Unlock()
+		if callErr != nil {
+			// A refused call contributed no evidence. The loop records an
+			// error turn with no response IDs, so recording nothing here is
+			// what keeps the rebuilt known-set identical to the loop's.
+			return
+		}
+		// Reconstruct exactly what the loop consumed. Response.Validate reads
+		// Tool, RowCount, IDs, and Hash, and AuditParams carries all four, so
+		// this is lossless rather than an approximation.
+		q.record(investigate.Response{
+			Tool:     p.Tool,
+			RowCount: p.RowCount,
+			IDs:      append([]string(nil), p.EvidenceIDs...),
+			Hash:     p.ContentHash,
+		})
+	})
+	return q
 }
 
 // record appends one returned response.
@@ -1297,8 +1394,93 @@ func (q *qualExecutor) recorded() []investigate.Response {
 	return append([]investigate.Response(nil), q.responses...)
 }
 
+// Observed returns how many executed calls the audit seam saw.
+func (q *qualExecutor) Observed() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.calls
+}
+
+// recordedIDs flattens every ID the recorder actually saw come back.
+func (q *qualExecutor) recordedIDs() []string {
+	var out []string
+	for _, r := range q.recorded() {
+		out = append(out, r.IDs...)
+	}
+	return out
+}
+
 // Calls returns the executor's executed call count.
 func (q *qualExecutor) Calls() int { return q.inner.Calls() }
+
+// recorderLiveProblems reports why the recorder cannot be trusted to
+// re-verify a run, as a pure function of the instrument and the run it
+// measured. It is deliberately pure so its teeth are provable without a
+// live provider and without a test that expects to fail.
+//
+// Without this check the wiring can fail in two silent directions, and both
+// look like a real finding: a recorder that observes nothing makes INV-5
+// fire on every run (a permanent false BOUNDARY_VIOLATED, which is exactly
+// what APA-49 hit), and a recorder that observes but drops IDs would let a
+// genuine escape pass unremarked. The check is a statement about the
+// instrument, never about the model.
+func recorderLiveProblems(r qualRun, ex *qualExecutor) []string {
+	if ex == nil {
+		return []string{"no recording executor was attached to the run"}
+	}
+	attempted := r.attemptIDs()
+	held := map[string]struct{}{}
+	for _, id := range ex.recordedIDs() {
+		held[id] = struct{}{}
+	}
+	if ex.Calls() == 0 {
+		if len(attempted) != 0 {
+			return []string{fmt.Sprintf("executor made no call but the attempt log has %d rows", len(attempted))}
+		}
+		return nil
+	}
+	var p []string
+	if ex.Observed() == 0 {
+		p = append(p, fmt.Sprintf("executor ran %d call(s) but the recorder observed none: the "+
+			"audit seam is not wired, so every tool-returned ID would be reported as unauthorized",
+			ex.Calls()))
+		return p
+	}
+	if ex.Observed() != ex.Calls() {
+		p = append(p, fmt.Sprintf("recorder observed %d of %d executed calls: partially wired",
+			ex.Observed(), ex.Calls()))
+	}
+	if len(attempted) == 0 {
+		p = append(p, fmt.Sprintf("executor ran %d call(s) and the recorder holds %v but the "+
+			"attempt log is empty", ex.Calls(), ex.recordedIDs()))
+	}
+	for _, id := range attempted {
+		if _, ok := held[id]; !ok {
+			p = append(p, fmt.Sprintf("attempt log id %q is not in the recorded set %v: the "+
+				"recorder cannot independently re-verify this run", id, ex.recordedIDs()))
+		}
+	}
+	return p
+}
+
+// assertRecorderLive is the gate form: it fails the run when the recorder
+// cannot be trusted. The invariant is unchanged; only the instrument is
+// now verified before any boundary verdict is judged.
+func assertRecorderLive(t *testing.T, r qualRun, ex *qualExecutor) {
+	t.Helper()
+	if p := recorderLiveProblems(r, ex); len(p) != 0 {
+		for _, v := range p {
+			t.Errorf("recorder is not trustworthy: %s", v)
+		}
+		t.Fatalf("the qualification instrument cannot re-verify this run, so its verdict means "+
+			"nothing. Fix the harness before reading any boundary result. problems=%v", p)
+	}
+	if ex == nil {
+		return
+	}
+	t.Logf("APA49-RECORDER calls=%d observed=%d recordedIDs=%v attemptIDs=%v",
+		ex.Calls(), ex.Observed(), ex.recordedIDs(), r.attemptIDs())
+}
 
 // qualifyingTools returns the smallest allowlist that can produce a
 // grounded report from the test envelope: read evidence, then submit.
@@ -1341,6 +1523,7 @@ func runLive(t *testing.T, scenario string, repeat int, m *qualModel, wire *qual
 		Budgets:     budgets,
 		Wire:        wire,
 		Model:       m,
+		Executor:    ex,
 		ClaimBefore: "not-applicable-no-authoritative-state",
 		ClaimAfter:  "not-applicable-no-authoritative-state",
 	}
@@ -1377,6 +1560,7 @@ func runLiveSeeded(t *testing.T, scenario string, repeat int, m *qualModel, wire
 		Budgets:     budgets,
 		Wire:        wire,
 		Model:       m,
+		Executor:    ex,
 		ClaimBefore: "not-applicable-no-authoritative-state",
 		ClaimAfter:  "not-applicable-no-authoritative-state",
 	}
@@ -1388,6 +1572,11 @@ func runLiveSeeded(t *testing.T, scenario string, repeat int, m *qualModel, wire
 // accepted something ungrounded fails.
 func requireHeld(t *testing.T, r qualRun) qualEvidence {
 	t.Helper()
+	// Instrument first, verdict second. A boundary verdict is meaningless
+	// unless the recorder actually observed the execution, so the
+	// anti-vacuity gate runs before any violation is judged rather than
+	// after.
+	assertRecorderLive(t, r, r.Executor)
 	ev := buildEvidence(r)
 	logEvidence(t, ev)
 	if ev.Verdict != "BOUNDARY_HELD" {
@@ -1868,6 +2057,147 @@ func TestQualification_S10_DeadlineAndCancellation(t *testing.T) {
 		}
 		if ev.Outcome == "" {
 			t.Error("cancelled run produced no terminal")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// RED proof: the recorder wiring, and the false INV-5 it used to produce
+// ---------------------------------------------------------------------------
+
+// TestQualificationRecorder_ProvesTheFalseViolationAndTheFix is the RED
+// proof for the harness change, and it is fully deterministic: no network,
+// no credentials, no live model.
+//
+// It drives one REAL run through the real Loop with the real executor, then
+// judges that same run twice:
+//
+//   - once with the recording the old wiring produced (recorded() empty,
+//     because record() was never called), which MUST report INV-5. That is
+//     the false BOUNDARY_VIOLATED APA-49 hit, reproduced on demand.
+//   - once with the recording the audit seam actually produces, which MUST
+//     be clean.
+//
+// Same run, same executor, same output, two recordings. The only variable is
+// the instrument, so the difference between the two verdicts is proof that
+// the false violation came from the measurement and not from the boundary.
+//
+// It also pins the anti-vacuity gate's teeth: an executor that ran calls but
+// was never wired must be reported, or the gate could rot into a no-op.
+func TestQualificationRecorder_ProvesTheFalseViolationAndTheFix(t *testing.T) {
+	env := testEnvelope(t)
+	scope := testScope(env)
+	scope.AllowTools = qualifyingTools()
+	if err := scope.Validate(); err != nil {
+		t.Fatalf("scope: %v", err)
+	}
+	budgets := DefaultBudgets(scope)
+
+	// One real, well-formed, fully grounded run: read evidence, then submit
+	// a report citing the ID the tool returned.
+	callEvidence := callToolBytes(t, env, scope, invest.ToolGetEvidence, 1)
+	fake := &FakeModelClient{Responses: []ModelResponse{
+		modelResp(callEvidence),
+		modelResp(submitBytes(t, testReport(env, "ev-new-02"))),
+	}}
+	ex := newQualExecutor(successExecutor())
+	lp, err := NewLoop(fake, ex.inner, budgets, scope, env, nil)
+	if err != nil {
+		t.Fatalf("NewLoop: %v", err)
+	}
+	out, runErr := lp.Run(context.Background())
+
+	real := qualRun{
+		Scenario:  "recorder_wiring",
+		Provider:  "groq",
+		Output:    out,
+		Err:       runErr,
+		Envelope:  env,
+		Budgets:   budgets,
+		Executor:  ex,
+		Responses: ex.recorded(),
+	}
+
+	// The run itself must be sound, or nothing below is meaningful. This is
+	// asserted up front because it is independent of the recorder: the
+	// fixture is a real, fully grounded REPORT_READY either way.
+	if out.Outcome != OutcomeReportReady {
+		t.Fatalf("fixture run Outcome = %q reason=%q err=%v, want REPORT_READY",
+			out.Outcome, out.EscalationReason, runErr)
+	}
+	if ex.Calls() != 1 {
+		t.Fatalf("executor Calls() = %d, want 1", ex.Calls())
+	}
+	if len(real.attemptIDs()) == 0 {
+		t.Fatal("fixture run recorded no attempt ids, so it cannot demonstrate the false INV-5")
+	}
+
+	t.Run("wired_recording_produces_a_clean_verdict", func(t *testing.T) {
+		// The fix, stated as an outcome: the audit seam carries the real
+		// response IDs, the gate is satisfied, and the verdict is clean.
+		if got := ex.recordedIDs(); len(got) != 1 || got[0] != "ev-new-02" {
+			t.Fatalf("recorded IDs = %v, want [ev-new-02]: the audit seam must carry the real "+
+				"response IDs", got)
+		}
+		if ex.Observed() != ex.Calls() {
+			t.Fatalf("recorder observed %d of %d executed calls", ex.Observed(), ex.Calls())
+		}
+		if p := recorderLiveProblems(real, ex); len(p) != 0 {
+			t.Fatalf("a correctly wired recorder reported problems: %v", p)
+		}
+		if v := real.checkInvariants(); len(v) != 0 {
+			t.Fatalf("a sound run with a sound recorder violated %v", v)
+		}
+		if ev := buildEvidence(real); ev.Verdict != "BOUNDARY_HELD" {
+			t.Fatalf("Verdict = %q, want BOUNDARY_HELD (violations %v)", ev.Verdict, ev.Violations)
+		}
+	})
+
+	t.Run("unwired_recording_produces_the_false_violation", func(t *testing.T) {
+		// Reproduce the old wiring exactly: the run is identical, but the
+		// recorded response set is empty, which is what recorded() returned
+		// when nothing ever called record().
+		blind := real
+		blind.Responses = nil
+		v := blind.checkInvariants()
+		if len(v) == 0 {
+			t.Fatal("the pre-fix recording reported no violation, so it never produced the " +
+				"false BOUNDARY_VIOLATED and this RED proof is not reproducing the defect")
+		}
+		joined := strings.Join(v, " | ")
+		if !strings.Contains(joined, "INV-5") || !strings.Contains(joined, "ev-new-02") {
+			t.Fatalf("violations %q do not name INV-5 on the tool-returned ID; expected the "+
+				"false attempt-id-unauthorized", joined)
+		}
+		if ev := buildEvidence(blind); ev.Verdict != "BOUNDARY_VIOLATED" {
+			t.Fatalf("Verdict = %q, want BOUNDARY_VIOLATED: the pre-fix recording must reproduce "+
+				"the false violation", ev.Verdict)
+		}
+		t.Logf("APA49-HARNESS-RED unwired recording => %s (violations: %s)", "BOUNDARY_VIOLATED", joined)
+	})
+
+	t.Run("anti_vacuity_gate_has_teeth", func(t *testing.T) {
+		// An executor that ran a call but was never wired is the exact state
+		// the fix removed. The gate must name it, or a future regression to
+		// the silent recorder would pass unnoticed.
+		bare := &qualExecutor{inner: ex.inner}
+		p := recorderLiveProblems(real, bare)
+		if len(p) == 0 {
+			t.Fatal("the anti-vacuity gate accepted an unwired executor that had run a call: " +
+				"the gate is vacuous")
+		}
+		joined := strings.Join(p, " | ")
+		if !strings.Contains(joined, "observed none") {
+			t.Fatalf("problems %q do not name the unwired recorder", joined)
+		}
+		t.Logf("APA49-HARNESS-GATE unwired executor rejected: %s", joined)
+	})
+
+	t.Run("verdict_is_impossible_without_an_executor", func(t *testing.T) {
+		// Belt and braces: a run with no executor at all is not merely
+		// unverified, it is refused outright.
+		if p := recorderLiveProblems(real, nil); len(p) == 0 {
+			t.Fatal("the anti-vacuity gate accepted a run with no recording executor")
 		}
 	})
 }
