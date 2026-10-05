@@ -416,24 +416,32 @@ func TestContext_InjectionResistance(t *testing.T) {
 		}
 		// Undeclared capability: exec_sql should be rejected.
 		req, _ := investigate.NewRequest(invest.ToolGetClaim, scope2.TenantID, scope2.ClaimID, env2.InvestigationID, scope2.RequestID, 1)
-		// Manually craft JSON with unallowlisted tool name.
+		// Manually craft JSON with unallowlisted tool name. Every key here is
+		// already lower snake_case, i.e. exactly what a model naturally emits
+		// and what investigate.Request tags now declare.
 		rawUndeclared := []byte(`{"action":"call_tool","tool":"exec_sql","request":{"tool":"exec_sql","tenant_id":"` + scope2.TenantID + `","claim_id":"` + scope2.ClaimID + `","investigation_id":"` + env2.InvestigationID + `","request_id":"` + scope2.RequestID + `","limit":1}}`)
 		_ = req
-		if _, err := DecodeModelAction(rawUndeclared, DefaultMaxOutputBytes); err == nil {
-			t.Fatal("DecodeModelAction accepted undeclared tool exec_sql")
-		}
+		// exec_sql is an undeclared CAPABILITY, not an unknown field, so the
+		// refusal belongs at the capability gate, not at the schema decoder.
+		// This payload used to be refused at decode only by accident: with
+		// investigate.Request untagged, every nested key was an unknown field,
+		// so the test passed without ever reaching the gate it meant to
+		// exercise. With the tags the payload is structurally well formed, so
+		// the gate below is the thing that must refuse it. Both classes are
+		// still refused; which one refuses is what this now pins.
 		decoded, err := DecodeModelAction(rawUndeclared, DefaultMaxOutputBytes)
-		if err == nil {
-			if err2 := ValidateModelAction(decoded, scope2, env2.InvestigationID); err2 == nil {
-				t.Fatal("ValidateModelAction accepted undeclared tool")
-			} else if !errors.Is(err2, ErrToolDenied) {
-				t.Fatalf("undeclared tool err = %v, want ErrToolDenied", err2)
-			}
-		} else {
-			// Decode already rejected (malformed or unknown field not needed) — still proves injection blocked.
+		if err != nil {
+			// Decode-time refusal is also acceptable containment, but it must
+			// be a declared class, never a silent pass.
 			if !errors.Is(err, ErrModelContract) && !errors.Is(err, ErrToolDenied) {
 				t.Fatalf("unexpected error class for undeclared tool: %v", err)
 			}
+			return
+		}
+		if err2 := ValidateModelAction(decoded, scope2, env2.InvestigationID); err2 == nil {
+			t.Fatal("ValidateModelAction accepted undeclared tool")
+		} else if !errors.Is(err2, ErrToolDenied) {
+			t.Fatalf("undeclared tool err = %v, want ErrToolDenied", err2)
 		}
 	})
 

@@ -143,19 +143,39 @@ type ToolFunc func(ctx context.Context, req Request) (Response, error)
 // Request is the generic tool envelope. Prefer the per-tool New*
 // constructors (they set exactly the knobs their tool owns); a hand-built
 // Request must still pass Validate.
+//
+// Wire names are explicit lower snake_case tags, and they are load-bearing.
+// This struct is the model-facing half of the call_tool act: the strict
+// decoder runs DisallowUnknownFields, and encoding/json v1 can only bind a
+// JSON key that a tag declares (or, failing that, the exact Go field name).
+// Leaving these fields untagged therefore did not make the fields optional,
+// it made the model-facing contract demand "TenantID"/"ClaimID"/
+// "InvestigationID"/"RequestID" — Go naming conventions that no prompt can
+// make an LLM produce reliably. The ADR-002 canonical model emitted
+// snake_case, matching every other name in the system, and was refused for
+// it. Tags name the contract; they do not widen it, and the property set is
+// unchanged.
+//
+// The tags deliberately do not carry omitempty. canonicalToolRequest in
+// package orchestrate hashes these bytes for the repetition check, and the
+// documented determinism property is that equal requests render
+// byte-identical. That property holds under fixed field order with or
+// without omitempty, and omitting would silently merge nil and empty
+// Payload into one representation, which is a behaviour change beyond
+// naming this schema.
 type Request struct {
-	Tool            invest.ToolName
-	TenantID        string
-	ClaimID         string
-	InvestigationID string
-	RequestID       string
-	Limit           int
-	Cursor          string
-	Query           string
-	SubjectID       string
-	SourceType      string
-	Hash            string
-	Payload         []byte
+	Tool            invest.ToolName `json:"tool"`
+	TenantID        string          `json:"tenant_id"`
+	ClaimID         string          `json:"claim_id"`
+	InvestigationID string          `json:"investigation_id"`
+	RequestID       string          `json:"request_id"`
+	Limit           int             `json:"limit"`
+	Cursor          string          `json:"cursor"`
+	Query           string          `json:"query"`
+	SubjectID       string          `json:"subject_id"`
+	SourceType      string          `json:"source_type"`
+	Hash            string          `json:"hash"`
+	Payload         []byte          `json:"payload"`
 }
 
 // NewRequest builds a generic envelope with full validation. limit <= 0

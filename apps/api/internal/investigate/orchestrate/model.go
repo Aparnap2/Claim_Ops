@@ -215,16 +215,56 @@ func ValidateTurnRecord(r TurnRecord) error {
 // PromptTemplate is the code-constant prompt: fixed instructions plus one
 // DATA block. Defense in depth only; the real boundary is validation, so
 // injection inside envelope fields cannot widen what the loop accepts.
+//
+// The discriminator rule below is normative prompt text, not decoration.
+// ModelAction tags the discriminator `json:"action"` and DecodeModelAction
+// runs with DisallowUnknownFields, so an object keyed "act" is an unknown
+// field, classifies I1-malformed, and escalates INVALID_OUTPUT. Naming the
+// natural-language verb "act" instead of the JSON property is exactly what
+// produced the APA-49 production failure: the ADR-002 canonical model
+// complied with the prose and emitted {"act":"call_tool",...} three times
+// out of three. The property is therefore stated literally, the "act"
+// reading is ruled out by name, and the literal shape of each act is shown
+// so the model never has to infer a field name.
+//
+// The nested request and report schemas are documented for the same reason
+// and at the same time. Showing the act object while hiding what it contains
+// leaves the model to invent the property names, and it does so reliably and
+// wrongly: "tenant_id" (a real field under the wrong name), "evidence_ids"
+// (not a request field at all), then, once the request bound, a report object
+// invented twelve times out of twelve with "value" for "agreed", "description"
+// for "summary", "reason" for "rationale", and "manual_review" for an action
+// outside the closed enum. The names are therefore stated literally, the
+// wrong readings are ruled out by name, and each act carries one complete
+// parseable example, so the model copies structure instead of inventing it.
+//
+// What is deliberately NOT here: Go struct definitions, and any second name
+// for the agreed value. The authoritative types already carry correct
+// snake_case tags, and grounding compares a fact reference's "agreed" byte for
+// byte against the agreed snapshot, so "value" must stay a wrong answer rather
+// than become an accepted synonym.
 const PromptTemplate = `You are a bounded claim-investigation planner operating under a closed tool allowlist.
 
 Rules:
-- Respond with exactly one JSON object: either a call_tool act or a submit_report act.
-- call_tool names one allowlisted tool and its bounded request. The writer tool is never callable.
-- submit_report carries hypotheses, findings, one recommendation, and additive-only missing items.
+- Respond with exactly one JSON object, and with nothing outside it.
+- That object must carry the property "action". Its value is exactly "call_tool" or "submit_report". The property name is "action", never "act".
+- For the value "call_tool", also carry "tool" (one allowlisted tool name) and "request" (that tool's bounded request object). The writer tool is never callable.
+- The "request" object carries exactly these properties, all lower snake_case: "tool", "tenant_id", "claim_id", "investigation_id", "request_id", "limit", and only for tools that own them, "cursor", "query", "subject_id", "source_type". Its "tool" repeats the act's "tool". Its four identity values repeat tenant_id, claim_id, investigation_id, and request_id from the DATA block verbatim.
+- A "request" selects and bounds a read. It never carries evidence IDs: "evidence_ids" is not a request property. Cite evidence only inside a "submit_report" report, using IDs that are already in "known_evidence_ids" or were returned by an earlier turn.
+- For the value "submit_report", carry "report" with "hypotheses" (at least one), "findings" (at least one), "recommendation", and "missing_additive" (optional: omit it or send []).
+- A hypothesis carries "id", "statement", "falsifier", "status", "fact_refs", and "evidence_ids". "falsifier" is required and states what cited evidence would refute the hypothesis; never substitute a confidence. "status" is exactly one of "OPEN", "SUPPORTED", "REFUTED". Sort every "evidence_ids" list.
+- A fact reference inside "fact_refs" carries exactly "key", "agreed", "evidence_id", all required. "agreed" copies the agreed snapshot value verbatim and "evidence_id" is one of that key's evidence rows. The property is "agreed": there is no "value" property in a fact reference.
+- A finding carries "id", "hypothesis_id", "summary", "evidence_ids". The property is "summary", never "description".
+- "recommendation" carries "action", "rationale", "finding_ids". "action" is exactly one of "REQUEST_EVIDENCE", "CONFIRM_EXCEPTION", "REFER_HUMAN", "REVERIFY"; there is no "manual_review". The property is "rationale", never "reason".
+- A "missing_additive" entry carries "kind", "key", "detail", with "kind" exactly one of "required_document", "field", "external"; keep the array sorted.
+- Cite only the agreed snapshot and evidence you were given. Never invent, rename, or reinterpret an evidence ID or an agreed value.
 - Every cited evidence ID must already be known: IDs from the exception envelope or from prior tool results.
 - Every finding must name a hypothesis from the same report. The recommendation must cite findings from the same report.
-- Hypothesis fact references must echo agreed snapshot entries exactly.
-- Never emit unknown fields. Never emit free-form text outside the JSON object.
+- Never emit a property outside the shapes below. Never emit free-form text outside the JSON object.
+
+Canonical act examples. Copy their structure; substitute only the text and the IDs you were given:
+{"action":"call_tool","tool":"get_documents","request":{"tool":"get_documents","tenant_id":"tnt-...","claim_id":"clm-...","investigation_id":"inv-...","request_id":"req-...","limit":10}}
+{"action":"submit_report","report":{"hypotheses":[{"id":"h-01","statement":"The policy number conflict stems from transcription variance.","falsifier":"A pinned policy record showing the claimed number as active.","status":"OPEN","fact_refs":[{"key":"hospital_name","agreed":"City Hospital","evidence_id":"ev-doc-02"}],"evidence_ids":["ev-doc-01","ev-doc-02"]}],"findings":[{"id":"f-01","hypothesis_id":"h-01","summary":"The claim form and the policy schedule state different policy numbers.","evidence_ids":["ev-doc-01","ev-doc-02"]}],"recommendation":{"action":"REFER_HUMAN","rationale":"A human must determine which policy number is authoritative.","finding_ids":["f-01"]},"missing_additive":[]}}
 
 DATA:
 %s`
