@@ -5,9 +5,19 @@
 # live database: integration-gated tests skip gracefully when Postgres or
 # Mockoon are absent (exit 0 with a printed skip reason).
 #
+# ONE CARVE-OUT (APA-53): `qualify` is the sole target that starts a
+# container. It exists precisely because the rules above make qualification
+# impossible: `test`/`integration` gate on a LONG-LIVED Postgres whose volume
+# accumulates rows across runs, so several PG-gated tests assert over whatever
+# a tenant-scoped query returns and their verdicts depend on the volume's
+# history. `qualify` does not make any existing target depend on a container;
+# it provisions its OWN throwaway Postgres on a different port, migrates it,
+# runs the suite, and tears it down on the way out (success or failure). It
+# never touches `claimops-postgres` — see infra/postgres/qualify.sh.
+#
 # Every target echoes the command(s) it runs before running them.
 
-.PHONY: setup test lint format typecheck integration local check
+.PHONY: setup test lint format typecheck integration local check qualify
 
 # Extra tool groups needed for Python lint/type/test commands.
 UV_RUN := uv run --group dev
@@ -105,3 +115,20 @@ localgcp-test:
 
 check: format lint typecheck test
 	@echo "check: format + lint + typecheck + unit tests all passed"
+
+# APA-53 — qualification gate. Runs the WHOLE PG-gated suite against a
+# genuinely fresh, ephemeral database (own container, own port, no volume),
+# then tears the container down deterministically. Leaves `claimops-postgres`
+# and its volume untouched.
+#
+# Unlike `integration`, this target FAILS rather than skipping when Postgres
+# cannot provide a real, empty, migrated database, and it fails if every
+# PG-backed test self-skipped — green-by-skipping is not a qualification.
+#
+# Overridable: QUAL_PG_PORT (default 55432), QUAL_PG_IMAGE, QUAL_GO_DIR,
+# GO_TEST_FLAGS, QUAL_PG_KEEP=1 (leave the container up for triage).
+qualify:
+	@echo "qualify: ephemeral Postgres (docker run, no compose) + migrations + full PG-gated suite"
+	@echo "qualify: the shared claimops-postgres volume is never read, written, or stopped"
+	infra/postgres/qualify.sh
+	@echo "qualify: done — suite green against a genuinely fresh database"
