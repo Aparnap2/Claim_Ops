@@ -238,6 +238,32 @@ func ValidateTurnRecord(r TurnRecord) error {
 // wrong readings are ruled out by name, and each act carries one complete
 // parseable example, so the model copies structure instead of inventing it.
 //
+// The behavioural policy below is normative prompt text for the same reason
+// the schema text is. Once layers 1/2/3 were fixed, every act the real model
+// emitted decoded cleanly and 0 invalid-output classes fired, so the schema
+// contract was QUALIFIED — and the run still ended 0/3 REPORT_READY: the
+// model emitted a byte-identical call_tool act on all 6 loop turns across 3
+// repetitions and the deterministic repetition guard escalated REPETITION.
+// The guard was right; the prompt had never told the model that repeating an
+// act observes nothing, nor when to leave the act it was shown first. A
+// prompt that enumerates two acts and their shapes without ever stating the
+// transition between them teaches a shape, not a decision.
+//
+// So the state policy is stated explicitly, and it is stated BEFORE the
+// canonical examples. That placement is load-bearing rather than stylistic:
+// the examples were the only act-shaped content in the prompt, so a rule
+// printed after them reads as commentary on them, and the model anchors on
+// the nearest template. The examples are still here and still teach
+// structure — they are demoted from decision to illustration, which is what
+// the replacement lead-in says in as many words.
+//
+// The policy is deliberately general. It is conditioned on whether the
+// evidence is sufficient and whether an allowed tool can close the gap, never
+// on which tool was called or on which turn it is, so it states a decision
+// procedure instead of a script for one scenario. Naming a tool-to-act
+// sequence would have been overfitting: it would be false for every other
+// envelope and would turn a policy into a lookup table.
+//
 // What is deliberately NOT here: Go struct definitions, and any second name
 // for the agreed value. The authoritative types already carry correct
 // snake_case tags, and grounding compares a fact reference's "agreed" byte for
@@ -262,7 +288,17 @@ Rules:
 - Every finding must name a hypothesis from the same report. The recommendation must cite findings from the same report.
 - Never emit a property outside the shapes below. Never emit free-form text outside the JSON object.
 
-Canonical act examples. Copy their structure; substitute only the text and the IDs you were given:
+State policy. Observe, decide, then act; the decision comes before the act:
+- Observe: the exception, the turn number, the history of executed calls, and the evidence IDs you already know.
+- Decide, then act on the decision. Every turn is exactly one of these three:
+  - The grounded evidence is sufficient for every required report field: act submit_report.
+  - The evidence is insufficient and an allowed tool can resolve the gap: call that tool, once.
+  - The evidence is insufficient and no allowed tool can resolve the gap: act submit_report and name what is missing in "missing_additive". That is the answer, not a failure, and it ends the investigation.
+- Call another tool only when the evidence you already have is insufficient for a required report field, or an allowed next-step tool is genuinely needed to close the gap. A read you did not need is not progress.
+- After a tool result, never repeat an identical tool call: its "tool" name and "request_hash" fingerprint already appear in your history, so a second identical read observes nothing.
+- Never repeat an identical action/request pair, matching on that same "tool" and "request_hash". If you are about to reissue an act already in your history, you are about to loop: decide again under this policy instead.
+
+Canonical act examples. They illustrate the structure only; which of the two you emit is decided by the state policy above, never by the example that looks closest. Substitute the text and the IDs you were given:
 {"action":"call_tool","tool":"get_documents","request":{"tool":"get_documents","tenant_id":"tnt-...","claim_id":"clm-...","investigation_id":"inv-...","request_id":"req-...","limit":10}}
 {"action":"submit_report","report":{"hypotheses":[{"id":"h-01","statement":"The policy number conflict stems from transcription variance.","falsifier":"A pinned policy record showing the claimed number as active.","status":"OPEN","fact_refs":[{"key":"hospital_name","agreed":"City Hospital","evidence_id":"ev-doc-02"}],"evidence_ids":["ev-doc-01","ev-doc-02"]}],"findings":[{"id":"f-01","hypothesis_id":"h-01","summary":"The claim form and the policy schedule state different policy numbers.","evidence_ids":["ev-doc-01","ev-doc-02"]}],"recommendation":{"action":"REFER_HUMAN","rationale":"A human must determine which policy number is authoritative.","finding_ids":["f-01"]},"missing_additive":[]}}
 
