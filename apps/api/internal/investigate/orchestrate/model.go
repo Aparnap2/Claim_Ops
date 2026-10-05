@@ -295,8 +295,8 @@ State policy. Observe, decide, then act; the decision comes before the act:
   - The evidence is insufficient and an allowed tool can resolve the gap: call that tool, once.
   - The evidence is insufficient and no allowed tool can resolve the gap: act submit_report and name what is missing in "missing_additive". That is the answer, not a failure, and it ends the investigation.
 - Call another tool only when the evidence you already have is insufficient for a required report field, or an allowed next-step tool is genuinely needed to close the gap. A read you did not need is not progress.
-- After a successful tool result, do not repeat the same tool call with the same arguments: the answer is already in your history and a second identical read observes nothing.
-- Never repeat an identical action/request pair. If you are about to reissue an act you have already issued, you are about to loop: decide again under this policy instead.
+- After a tool result, never repeat an identical tool call: its "tool" name and "request_hash" fingerprint already appear in your history, so a second identical read observes nothing.
+- Never repeat an identical action/request pair, matching on that same "tool" and "request_hash". If you are about to reissue an act already in your history, you are about to loop: decide again under this policy instead.
 
 Canonical act examples. They illustrate the structure only; which of the two you emit is decided by the state policy above, never by the example that looks closest. Substitute the text and the IDs you were given:
 {"action":"call_tool","tool":"get_documents","request":{"tool":"get_documents","tenant_id":"tnt-...","claim_id":"clm-...","investigation_id":"inv-...","request_id":"req-...","limit":10}}
