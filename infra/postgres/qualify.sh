@@ -36,6 +36,16 @@
 #   5. Anti-fake-green: after the suite, this script verifies PG-backed tests
 #      actually RAN. A run where every PG test self-skipped is reported as a
 #      FAILURE, because green-by-skipping is not a qualification result.
+#   6. Anti-fake-green, LLM side (APA-57): the PG gate cannot see a live
+#      matrix. A run in which every LLM case self-skipped on provider 429
+#      recorded zero model measurements and still reported QUALIFIED with
+#      exit 0. Setting QUAL_LLM_SCENARIOS declares the expected matrix, and
+#      then a run that does not measure all of it FAILS:
+#        requested LLM cases > 0 AND measured == 0  -> INFRA_BLOCKED, exit != 0
+#        0 < measured < expected                   -> INCOMPLETE,   exit != 0
+#        measured == expected                      -> eligible for a verdict
+#      A 429, skip, discard, or fatal is never a measurement. Declaring no
+#      scenarios leaves the PG-only path byte-for-byte unchanged.
 #
 # ROLE TOPOLOGY
 #   Mirrors .github/workflows/integration.yml exactly, for the same reason:
@@ -49,6 +59,13 @@
 #   QUAL_PG_PORT=55433 infra/postgres/qualify.sh
 #   QUAL_PG_KEEP=1 infra/postgres/qualify.sh   # leave the container for triage
 #   GO_TEST_FLAGS='-run TestOutbox -v' infra/postgres/qualify.sh
+#
+#   # an LLM qualification that must measure all six APA-55 live cases:
+#   QUAL_LLM_SCENARIOS='apa55_a1_control apa55_a2_insufficient \
+#     apa55_a4_fabricated_in_data apa55_a5_cross_tenant apa55_a7_stale \
+#     apa55_b1_valid_tool' \
+#   GROQ_MODEL=qwen/qwen3.8-27b GO_TEST_FLAGS='-v -run TestAPA55' \
+#     infra/postgres/qualify.sh
 
 set -Eeuo pipefail
 
@@ -287,12 +304,18 @@ main() {
 
   log "go test ${GO_TEST_FLAGS:--count=1} ./... (GO_TEST_FLAGS='${GO_TEST_FLAGS:-}')"
   local go_status=0
+  # The verbose output is TEED, not discarded: the LLM anti-fake-green gate
+  # below accounts against the per-run evidence records the harness emits, and
+  # a record that is never captured cannot be counted. With pipefail the
+  # subshell still reports go test's own exit status.
+  local out_file
+  out_file="$(mktemp)"
   (
     cd "${GO_DIR}"
     # GO_TEST_FLAGS goes LAST so a caller can override any default here (a
     # trailing -count=30 would otherwise lose to a hardcoded -count=1).
     # shellcheck disable=SC2086
-    go test ${GO_TEST_FLAGS:--count=1} ./...
+    go test ${GO_TEST_FLAGS:--count=1} ./... 2>&1 | tee "${out_file}"
   ) || go_status=$?
 
   # ---- anti-fake-green ----------------------------------------------------
@@ -309,10 +332,72 @@ main() {
 
   if [ "${go_status}" -ne 0 ]; then
     log "SUITE FAILED (go test exit ${go_status}) — see output above; this is a real result, not to be retried into green"
+    rm -f "${out_file}"
     return "${go_status}"
   fi
 
-  log "QUALIFIED: full suite green against a genuinely fresh, ephemeral database"
+  # ---- anti-fake-green: LLM-backed matrix (APA-57) -------------------------
+  # The PG gate above proves PG-backed tests RAN. It says nothing about an
+  # LLM-backed matrix, and that gap was load-bearing: a run in which every
+  # live case self-skipped on provider 429 recorded ZERO model measurements
+  # and still printed QUALIFIED with exit 0. Green-by-skipping was
+  # indistinguishable from a real qualification.
+  #
+  # Declaring QUAL_LLM_SCENARIOS is what makes this run an LLM qualification.
+  # Empty (the default) means PG-only, which stays independently valid — the
+  # existing behaviour is untouched for every run that does not ask for a
+  # model measurement.
+  #
+  # A scenario counts as MEASURED only if the harness emitted at least one
+  # APA49-EVIDENCE record for it. A 429, a skip, a discard, or a fatal is
+  # never a measurement: those are exactly the outcomes that previously
+  # produced a green verdict with nothing behind it.
+  local llm_gate=0
+  if [ -n "${QUAL_LLM_SCENARIOS:-}" ]; then
+    local expected measured=0 missing="" s
+    # shellcheck disable=SC2206
+    local -a want=(${QUAL_LLM_SCENARIOS})
+    expected="${#want[@]}"
+    log "verifying LLM-backed matrix actually measured (declared ${expected} scenario(s))"
+
+    for s in "${want[@]}"; do
+      if grep -q "APA49-EVIDENCE scenario=${s} " "${out_file}"; then
+        measured=$(( measured + 1 ))
+      else
+        missing="${missing} ${s}"
+      fi
+    done
+
+    local skipped
+    skipped="$( grep -c -- '--- SKIP:' "${out_file}" || true )"
+
+    log "LLM cases measured: ${measured}/${expected}; skipped subtests: ${skipped}"
+    if [ "${measured}" -lt "${expected}" ]; then
+      log "LLM cases NOT measured:${missing}"
+    fi
+
+    # The headline invariant: a requested matrix that measured nothing must
+    # never be reported as qualified, whatever the rest of the suite did.
+    if [ "${measured}" -eq 0 ]; then
+      llm_gate=1
+      log "LLM QUALIFICATION INFRA_BLOCKED: ${expected} case(s) requested, 0 measurements recorded"
+    elif [ "${measured}" -lt "${expected}" ]; then
+      llm_gate=1
+      log "LLM QUALIFICATION INCOMPLETE: ${measured}/${expected} measured; the remainder were provider/infrastructure non-measurements, not results"
+    fi
+  fi
+
+  rm -f "${out_file}"
+
+  if [ "${llm_gate}" -ne 0 ]; then
+    die "LLM-backed qualification did not measure its full declared matrix — this is NOT a qualification pass"
+  fi
+
+  if [ -n "${QUAL_LLM_SCENARIOS:-}" ]; then
+    log "QUALIFIED: full suite green against a genuinely fresh, ephemeral database, with the declared LLM matrix fully measured"
+  else
+    log "QUALIFIED: full suite green against a genuinely fresh, ephemeral database (PG-only; no LLM matrix was declared)"
+  fi
 }
 
 main "$@"
