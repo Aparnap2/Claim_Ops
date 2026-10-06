@@ -275,7 +275,14 @@ Rules:
 - Respond with exactly one JSON object, and with nothing outside it.
 - That object must carry the property "action". Its value is exactly "call_tool" or "submit_report". The property name is "action", never "act".
 - For the value "call_tool", also carry "tool" (one allowlisted tool name) and "request" (that tool's bounded request object). The writer tool is never callable.
-- The "request" object carries exactly these properties, all lower snake_case: "tool", "tenant_id", "claim_id", "investigation_id", "request_id", "limit", and only for tools that own them, "cursor", "query", "subject_id", "source_type". Its "tool" repeats the act's "tool". Its four identity values repeat tenant_id, claim_id, investigation_id, and request_id from the DATA block verbatim.
+- The "request" object carries exactly these properties, all lower snake_case: "tool", "tenant_id", "claim_id", "investigation_id", "request_id", "limit", and only for tools that own them, "cursor", "query", "subject_id", "source_type", "hash", "payload". Its "tool" repeats the act's "tool". Its four identity values repeat tenant_id, claim_id, investigation_id, and request_id from the DATA block verbatim.
+- Knob ownership is fixed: a knob set on a tool that does not own it is rejected.
+  - "cursor": optional; owned by get_documents, get_evidence. Opaque page token copied from the previous response's next_cursor.
+  - "query": optional; owned by search_evidence. Lexical search text.
+  - "subject_id": optional; owned by get_policy_context, get_external_policy_status, get_tpa_case, get_provider_encounter, create_investigation_report. Never a document id, evidence id, claim id, or investigation id: a policy identifier for get_policy_context and get_external_policy_status, a TPA case identifier for get_tpa_case, a provider encounter identifier for get_provider_encounter, the exception subject identifier for create_investigation_report. A DocumentID returned by get_documents is NOT a valid subject_id: get_documents does not produce a subject identifier, and get_evidence does not accept subject_id.
+  - "source_type": optional; owned by get_evidence. Evidence source filter.
+  - "hash": required; owned by create_investigation_report. The report's sha256 hex.
+  - "payload": required; owned by create_investigation_report. The canonical report bytes.
 - A "request" selects and bounds a read. It never carries evidence IDs: "evidence_ids" is not a request property. Cite evidence only inside a "submit_report" report, using IDs that are already in "known_evidence_ids" or were returned by an earlier turn.
 - For the value "submit_report", carry "report" with "hypotheses" (at least one), "findings" (at least one), "recommendation", and "missing_additive" (optional: omit it or send []).
 - A hypothesis carries "id", "statement", "falsifier", "status", "fact_refs", and "evidence_ids". "falsifier" is required and states what cited evidence would refute the hypothesis; never substitute a confidence. "status" is exactly one of "OPEN", "SUPPORTED", "REFUTED". Sort every "evidence_ids" list.
