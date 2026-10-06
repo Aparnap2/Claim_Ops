@@ -753,9 +753,21 @@ func buildAgreedSnapshot(
 // re-spelled here).
 var requiredDocs = []string{verify.DocClaimForm, verify.DocDischargeSummary, verify.DocHospitalBill}
 
-// externalSources is the closed external-evidence vocabulary for
+// externalSources is the closed external-vocabulary for
 // MissingExternal keys (the four upstream pin types).
 var externalSources = []string{"policy", "tpa", "provider", "risk"}
+
+// ExternalSourceKeys returns a copy of the closed external-evidence
+// vocabulary for MissingExternal keys.
+//
+// Exported (APA-56) so the model-facing contract is derived from this one
+// authoritative list instead of re-spelling it. That list was previously
+// stated to the model only as a prose example, and Qwen responded by
+// inventing a key outside it. This accessor changes no vocabulary and no
+// behaviour; the copy stops a caller from mutating the authoritative slice.
+func ExternalSourceKeys() []string {
+	return append([]string(nil), externalSources...)
+}
 
 // deriveMissing computes the open questions deterministically:
 // required docs re-derived from DocsPresent (gap G6: messages are
