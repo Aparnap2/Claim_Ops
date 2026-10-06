@@ -55,6 +55,7 @@ import (
 
 	"claimops-api/internal/invest"
 	"claimops-api/internal/investigate"
+	"claimops-api/internal/verify"
 )
 
 // Act discriminators for the 2-act vocabulary.
@@ -289,7 +290,7 @@ Rules:
 - A fact reference inside "fact_refs" carries exactly "key", "agreed", "evidence_id", all required. "agreed" copies the agreed snapshot value verbatim and "evidence_id" is one of that key's evidence rows. The property is "agreed": there is no "value" property in a fact reference.
 - A finding carries "id", "hypothesis_id", "summary", "evidence_ids". The property is "summary", never "description".
 - "recommendation" carries "action", "rationale", "finding_ids". "action" is exactly one of "REQUEST_EVIDENCE", "CONFIRM_EXCEPTION", "REFER_HUMAN", "REVERIFY"; there is no "manual_review". The property is "rationale", never "reason".
-- A "missing_additive" entry carries "kind", "key", "detail", with "kind" exactly one of "required_document", "field", "external"; keep the array sorted.
+%s
 - Cite only the agreed snapshot and evidence you were given. Never invent, rename, or reinterpret an evidence ID or an agreed value.
 - Every cited evidence ID must already be known: IDs from the exception envelope or from prior tool results.
 - Every finding must name a hypothesis from the same report. The recommendation must cite findings from the same report.
@@ -308,9 +309,41 @@ State policy. Observe, decide, then act; the decision comes before the act:
 Canonical act examples. They illustrate the structure only; which of the two you emit is decided by the state policy above, never by the example that looks closest. Substitute the text and the IDs you were given:
 {"action":"call_tool","tool":"get_documents","request":{"tool":"get_documents","tenant_id":"tnt-...","claim_id":"clm-...","investigation_id":"inv-...","request_id":"req-...","limit":10}}
 {"action":"submit_report","report":{"hypotheses":[{"id":"h-01","statement":"The policy number conflict stems from transcription variance.","falsifier":"A pinned policy record showing the claimed number as active.","status":"OPEN","fact_refs":[{"key":"hospital_name","agreed":"City Hospital","evidence_id":"ev-doc-02"}],"evidence_ids":["ev-doc-01","ev-doc-02"]}],"findings":[{"id":"f-01","hypothesis_id":"h-01","summary":"The claim form and the policy schedule state different policy numbers.","evidence_ids":["ev-doc-01","ev-doc-02"]}],"recommendation":{"action":"REFER_HUMAN","rationale":"A human must determine which policy number is authoritative.","finding_ids":["f-01"]},"missing_additive":[]}}
+A non-empty "missing_additive" is shaped the same way, one entry per gap, sorted by "kind" then "key" then "detail". Here a claim field, an upstream source, and an absent required document are three different kinds:
+{"action":"submit_report","report":{"hypotheses":[{"id":"h-01","statement":"The billed total exceeds the policy-schedule allowance.","falsifier":"A pinned policy schedule showing the allowed amount for this admission.","status":"OPEN","fact_refs":[{"key":"hospital_name","agreed":"City Hospital","evidence_id":"ev-doc-02"}],"evidence_ids":["ev-doc-01","ev-doc-02"]}],"findings":[{"id":"f-01","hypothesis_id":"h-01","summary":"The hospital bill total and the policy schedule allowance disagree.","evidence_ids":["ev-doc-01","ev-doc-02"]}],"recommendation":{"action":"REQUEST_EVIDENCE","rationale":"The allowance cannot be confirmed without the pinned policy schedule.","finding_ids":["f-01"]},"missing_additive":[{"kind":"external","key":"policy","detail":"R1: no pinned policy evidence for the claimed policy_number"},{"kind":"field","key":"policy_number","detail":"R1: claimed value conflicts with the policy schedule value"},{"kind":"required_document","key":"HOSPITAL_BILL","detail":"R8: required document absent"}]}}
 
 DATA:
 %s`
+
+// additiveKindKeyClause is the model-facing statement of which vocabulary a
+// "missing_additive" key must be drawn from, given the entry's "kind".
+//
+// APA-56. The prompt previously closed only the "kind" set and left every
+// "key" vocabulary unstated, so Qwen paired the real claim field
+// "policy_number" with kind "external" and the additive validator rejected
+// the report on 17 of 17 live runs, including the sufficient-evidence
+// control. The rule that decides the answer is a real claim field, so its
+// kind is "field"; saying so is what the model was missing.
+//
+// The external vocabulary is read from invest rather than spelled here, so
+// the prompt cannot drift from the authority that rejects unknown keys.
+// TestAPA56_ExternalVocabularyMatchesAuthority pins the two together.
+func additiveKindKeyClause() string {
+	ext := invest.ExternalSourceKeys()
+	quoted := make([]string, len(ext))
+	for i, k := range ext {
+		quoted[i] = `"` + k + `"`
+	}
+	docs := []string{verify.DocClaimForm, verify.DocDischargeSummary, verify.DocHospitalBill}
+	return fmt.Sprintf(`- A "missing_additive" entry carries "kind", "key", "detail". Its "kind" decides which vocabulary the "key" is drawn from, and a key outside the vocabulary for the kind you chose is rejected:
+  - "required_document": the "key" is one of the required document types %s.
+  - "field": the "key" is a claim field key that appears in the DATA block, such as "policy_number".
+  - "external": the "key" is exactly one of %s. These name upstream sources and nothing else.
+- "policy_number" is a claim field, so it is "kind" "field". It is never "kind" "external", which is reserved for the upstream source names above.
+- Carry every entry of the DATA block's "missing_evidence" across into "missing_additive" with its "kind", "key", and "detail" unchanged. The list is additive: you may add an entry, never drop one.
+- Sort the array by "kind", then "key", then "detail".`,
+		strings.Join(docs, ", "), strings.Join(quoted, ", "))
+}
 
 // RenderPrompt renders the template over the canonical request bytes.
 // It reads only validated ModelRequest fields, so no secret can enter.
@@ -319,5 +352,5 @@ func RenderPrompt(r ModelRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf(PromptTemplate, string(raw)), nil
+	return fmt.Sprintf(PromptTemplate, additiveKindKeyClause(), string(raw)), nil
 }
