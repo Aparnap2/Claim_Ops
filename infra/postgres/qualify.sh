@@ -205,6 +205,20 @@ ALTER ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${WORKER_PASSWORD}';
   psql_owner -q -c "${sql}"
 }
 
+# Fail-closed invariant the entire qual run rests on: the app role used for
+# PG-backed tests must be NOSUPERUSER and NO BYPASSRLS, otherwise FORCE RLS
+# is silently inverting every cross-tenant assertion into a false-green
+# (empirically measured: a superuser app role changes 41/41 into a RLS-off
+# suite with no failure signal). Verify AFTER provisioning rather than
+# assuming the CREATE/ALTER took effect.
+assert_app_role_is_rls_respecting() {
+  local attrs
+  attrs="$(psql_owner -tAc \
+    "SELECT rolsuper::text || '/' || rolbypassrls::text FROM pg_roles WHERE rolname='claimops_app'")"
+  [ "${attrs}" = "false/false" ] || die "claimops_app must be NOSUPERUSER and NOBYPASSRLS (got rolsuper/rolbypassrls=${attrs}); cross-tenant test semantics are not meaningful"
+  log "invariant OK: claimops_app is NOSUPERUSER + NOBYPASSRLS (RLS genuinely enforced)"
+}
+
 apply_migrations() {
   # The repo's own mechanism, verbatim in spirit from integration.yml: every
   # file in infra/postgres/migrations, lexicographic order, ON_ERROR_STOP=1 so
@@ -255,6 +269,7 @@ main() {
   start_postgres
   wait_ready
   bootstrap_roles
+  assert_app_role_is_rls_respecting
   apply_migrations
 
   # The suite is wired to the throwaway by default: these exports are the only
