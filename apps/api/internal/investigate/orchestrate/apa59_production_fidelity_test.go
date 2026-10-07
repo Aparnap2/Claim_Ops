@@ -75,31 +75,140 @@ func TestAPA59_ProductionPromptIsTheFrozenMeasuredPrompt(t *testing.T) {
 	}
 }
 
-// TestAPA59_ProductionPromptStatesEveryAuthoritativeBound pins the substance
-// independently of the hash, so that a failure here names what drifted rather
-// than only reporting two digests.
+// apa59BoundsLinePrefix opens the production bounds clause line. Parsing starts
+// from the rendered prompt rather than from the clause function, so the gate
+// reads what the model is actually shown rather than what the renderer would
+// return if asked.
+const apa59BoundsLinePrefix = `- "limit" is bounded per tool`
+
+// apa59StatedBoundsInPrompt parses the per-tool bounds out of a rendered prompt
+// into whole tool-to-integer units.
+func apa59StatedBoundsInPrompt(t *testing.T, prompt string) map[string]int {
+	t.Helper()
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.HasPrefix(line, apa59BoundsLinePrefix) {
+			return apa59StatedBounds(line)
+		}
+	}
+	t.Fatalf("rendered prompt has no line beginning %q; the production bounds clause "+
+		"has drifted or been removed", apa59BoundsLinePrefix)
+	return nil
+}
+
+// boundDefect is one tool whose prompt-stated bound disagrees with the
+// authority that rejects an over-bound request.
+type boundDefect struct {
+	Tool      string
+	Stated    int
+	Authority int
+}
+
+func (d boundDefect) String() string {
+	return fmt.Sprintf("%s: prompt states %d, authority allows %d", d.Tool, d.Stated, d.Authority)
+}
+
+// apa59BoundDefects compares parsed, whole-unit bounds against investigate.MaxRows
+// as exact integers.
 //
-// Bounds are read from investigate.MaxRows, never restated, so this cannot
-// drift from the validator that rejects an over-bound request.
+// This is deliberately integer equality and never a substring or prefix test.
+// The prompt and the authority are rendered as text ("get_claim at most 1"),
+// and "get_claim at most 10" CONTAINS "get_claim at most 1" as a substring, so
+// a Contains-based gate passes exactly the 1 -> 10 defect it exists to reject.
+// That collision is not hypothetical: it is the bug this whole chain was filed
+// against. TestAPA59_BoundGateRejectsThePrefixCollision proves it.
+func apa59BoundDefects(stated map[string]int) []boundDefect {
+	var defects []boundDefect
+	for _, tool := range limitBoundsTools() {
+		name := string(tool)
+		max, err := investigate.MaxRows(tool)
+		if err != nil {
+			defects = append(defects, boundDefect{Tool: name, Stated: -1, Authority: -1})
+			continue
+		}
+		got, ok := stated[name]
+		if !ok {
+			defects = append(defects, boundDefect{Tool: name, Stated: -1, Authority: max})
+			continue
+		}
+		if got != max {
+			defects = append(defects, boundDefect{Tool: name, Stated: got, Authority: max})
+		}
+	}
+	return defects
+}
+
+// TestAPA59_ProductionPromptStatesEveryAuthoritativeBound pins the substance
+// independently of the prompt hash, so that a failure names what drifted rather
+// than only reporting two digests.
 func TestAPA59_ProductionPromptStatesEveryAuthoritativeBound(t *testing.T) {
 	production, err := RenderPrompt(apa59MeasuredRequest(t))
 	if err != nil {
 		t.Fatalf("RenderPrompt: %v", err)
 	}
 
-	for _, tool := range limitBoundsTools() {
-		max, err := investigate.MaxRows(tool)
-		if err != nil {
-			t.Fatalf("MaxRows(%s): %v", tool, err)
+	stated := apa59StatedBoundsInPrompt(t, production)
+	if n, want := len(stated), len(limitBoundsTools()); n != want {
+		t.Errorf("parsed %d bound statements out of the production prompt, want %d; "+
+			"every tool carrying a \"limit\" must be stated or the model guesses", n, want)
+	}
+	for _, d := range apa59BoundDefects(stated) {
+		t.Errorf("BOUND MISMATCH %s; the model would emit a request the validator rejects", d)
+	}
+}
+
+// TestAPA59_BoundGateRejectsThePrefixCollision is the adversarial RED proof for
+// the gate above. It injects the exact historical defect -- get_claim widened
+// from 1 to 10 -- into the rendered production prompt and requires the gate to
+// catch it.
+//
+// Without this test the gate could silently regress to a Contains check and go
+// green on the very defect it was written to reject.
+func TestAPA59_BoundGateRejectsThePrefixCollision(t *testing.T) {
+	production, err := RenderPrompt(apa59MeasuredRequest(t))
+	if err != nil {
+		t.Fatalf("RenderPrompt: %v", err)
+	}
+
+	// Precondition: the real prompt states the authoritative single-row bound.
+	if !strings.Contains(production, "get_claim at most 1") {
+		t.Fatal("precondition changed: production does not state \"get_claim at most 1\"; " +
+			"this proof encodes the 1 -> 10 collision and must be revisited, not weakened")
+	}
+
+	// The trap, stated explicitly: after widening 1 -> 10, the correct string is
+	// still a substring of the prompt. A Contains-based gate cannot see it.
+	faulty := strings.Replace(production, "get_claim at most 1", "get_claim at most 10", 1)
+	if faulty == production {
+		t.Fatal("injection failed: the authoritative bound string was not present to widen")
+	}
+	if !strings.Contains(faulty, "get_claim at most 1") {
+		t.Fatal("precondition changed: expected the widened \"at most 10\" text to still " +
+			"contain \"at most 1\" as a substring; that collision is what makes a " +
+			"substring gate unsound and this proof is no longer testing it")
+	}
+
+	// Drive the real path the model reads: text -> parse -> compare.
+	stated := apa59StatedBoundsInPrompt(t, faulty)
+	if got := stated["get_claim"]; got != 10 {
+		t.Fatalf("parser did not read the injected fault: get_claim parsed as %d, want 10", got)
+	}
+
+	var found bool
+	for _, d := range apa59BoundDefects(stated) {
+		if d.Tool == string(invest.ToolGetClaim) && d.Stated == 10 && d.Authority == 1 {
+			found = true
 		}
-		// Compare whole units, never substrings: "at most 1" is a substring of
-		// "at most 10", and a substring comparison here would reproduce exactly
-		// the defect this whole chain exists to catch.
-		want := fmt.Sprintf("%s at most %d", string(tool), max)
-		if !strings.Contains(production, want) {
-			t.Errorf("production prompt does not state the authoritative bound %q for tool %q; "+
-				"the model would have to guess a legal limit for this tool", want, string(tool))
-		}
+	}
+	if !found {
+		t.Error("GATE IS BROKEN: the prompt states get_claim at most 10 while the authority " +
+			"allows 1, but the gate reported no defect. A substring comparison would have " +
+			"passed this; the gate must compare parsed integers")
+	}
+
+	// The same gate must be clean on the real prompt, or "always reports a
+	// defect" would pass the test above for the wrong reason.
+	if defects := apa59BoundDefects(apa59StatedBoundsInPrompt(t, production)); len(defects) != 0 {
+		t.Errorf("production prompt is not clean under the gate that just proved itself: %v", defects)
 	}
 }
 
