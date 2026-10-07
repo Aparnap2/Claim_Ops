@@ -90,49 +90,11 @@ func (v PromptVariant) String() string {
 // of silently injecting in the wrong place.
 const apa59ClauseAnchor = `- A "request" selects and bounds a read.`
 
-// apa59BoundTools is every tool that carries a "limit", read from the
-// authoritative MaxRows function rather than restated. Rendering from this is
-// what keeps the clause and the validator from drifting apart.
-func apa59BoundTools() []invest.ToolName {
-	return []invest.ToolName{
-		invest.ToolGetClaim,
-		invest.ToolGetPolicyContext,
-		invest.ToolGetDocuments,
-		invest.ToolGetEvidence,
-		invest.ToolSearchEvidence,
-		invest.ToolGetVerificationFindings,
-		invest.ToolGetExternalPolicyStatus,
-		invest.ToolGetTPACase,
-		invest.ToolGetProviderEncounter,
-		invest.ToolGetRiskSignals,
-		invest.ToolCreateInvestigationReport,
-	}
-}
-
-// apa59LimitBoundsClause renders the clause model-facing. Every number comes
-// from investigate.MaxRows, so the prompt can never state a bound the request
-// validator would reject.
-func apa59LimitBoundsClause() string {
-	var b strings.Builder
-	b.WriteString("- ")
-	b.WriteString(`"limit" is bounded per tool, and the bound is not the same for every tool.`)
-	b.WriteString(` Send "limit" no greater than the tool's own maximum: `)
-	tools := apa59BoundTools()
-	parts := make([]string, 0, len(tools))
-	for _, t := range tools {
-		max, err := investigate.MaxRows(t)
-		if err != nil {
-			// Unreachable for the fixed list above; failing loudly beats
-			// rendering a bound nobody can verify.
-			panic("apa59: authoritative bound unavailable: " + err.Error())
-		}
-		parts = append(parts, fmt.Sprintf("%s at most %d", string(t), max))
-	}
-	b.WriteString(strings.Join(parts, ", "))
-	b.WriteString(".")
-	b.WriteString(` A "limit" above a tool's maximum is rejected before the tool runs, so a single-row tool must send "limit" 1.`)
-	return b.String()
-}
+// The APA-59 clause and the bound tool list now live in production
+// (limitBoundsClause, limitBoundsTools) because PR B shipped them. This file
+// deliberately reads those same functions rather than keeping a test copy: two
+// copies of a prompt clause is exactly the drift that would let the recorded
+// measurement describe a prompt production no longer renders.
 
 // renderAPA59Variant returns the model-facing prompt for one arm.
 //
@@ -141,23 +103,30 @@ func apa59LimitBoundsClause() string {
 // point. Everything else about the prompt is untouched, which is what makes
 // the A→B difference attributable to the limit-bound contract alone.
 func renderAPA59Variant(req ModelRequest, v PromptVariant) (string, error) {
-	base, err := RenderPrompt(req)
+	production, err := RenderPrompt(req)
 	if err != nil {
 		return "", err
 	}
-	if v == PromptVariantAPA56 {
-		return base, nil
-	}
-	if v != PromptVariantAPA59 {
+	switch v {
+	case PromptVariantAPA59:
+		// The treatment arm is production, verbatim. It is not reconstructed:
+		// APA-59 is recorded as having been measured on these exact bytes, and
+		// TestAPA59_ProductionPromptIsTheFrozenMeasuredPrompt pins them.
+		return production, nil
+	case PromptVariantAPA56:
+		// The control arm is the historical pre-APA-59 prompt: production with
+		// the one bounds clause removed. Deriving it by subtraction keeps the
+		// A/B contrast exactly one clause wide no matter how often the rest of
+		// the prompt changes.
+		clause := limitBoundsClause()
+		if strings.Count(production, clause) != 1 {
+			return "", fmt.Errorf("apa59: production prompt contains the bounds clause %d times, "+
+				"want exactly 1; cannot derive the pre-APA-59 control", strings.Count(production, clause))
+		}
+		return strings.Replace(production, clause+"\n", "", 1), nil
+	default:
 		return "", fmt.Errorf("apa59: unknown prompt variant %d", int(v))
 	}
-	if strings.Count(base, apa59ClauseAnchor) != 1 {
-		return "", fmt.Errorf("apa59: insertion point is not unique in the rendered prompt "+
-			"(%d occurrences); refusing to inject at an ambiguous location",
-			strings.Count(base, apa59ClauseAnchor))
-	}
-	clause := apa59LimitBoundsClause()
-	return strings.Replace(base, apa59ClauseAnchor, clause+"\n"+apa59ClauseAnchor, 1), nil
 }
 
 // apa59SampleRequest builds the canonical request the A/B renders. One
@@ -178,22 +147,28 @@ func apa59SampleRequest(t *testing.T) ModelRequest {
 // Anti-drift
 // ---------------------------------------------------------------------------
 
-// TestAPA59_ArmAIsExactlyProductionPrompt is the load-bearing anti-drift test.
-// Arm A must BE the production renderer output, not a reconstruction of it.
-func TestAPA59_ArmAIsExactlyProductionPrompt(t *testing.T) {
+// TestAPA59_TreatmentArmIsExactlyProductionPrompt is the load-bearing
+// anti-drift test, and it is deliberately about arm B.
+//
+// The APA-59 evidence is a claim about production behaviour, so the arm that
+// was measured must BE production, byte for byte, not a test-side
+// reconstruction of it. Arm A is the historical control and is derived by
+// removing the one clause; TestAPA59_ArmsDifferOnlyByTheClause pins that
+// derivation.
+func TestAPA59_TreatmentArmIsExactlyProductionPrompt(t *testing.T) {
 	req := apa59SampleRequest(t)
 	production, err := RenderPrompt(req)
 	if err != nil {
 		t.Fatalf("RenderPrompt: %v", err)
 	}
-	armA, err := renderAPA59Variant(req, PromptVariantAPA56)
+	armB, err := renderAPA59Variant(req, PromptVariantAPA59)
 	if err != nil {
-		t.Fatalf("render arm A: %v", err)
+		t.Fatalf("render arm B: %v", err)
 	}
-	if armA != production {
-		t.Errorf("arm A is NOT the production prompt (armA=%d bytes, production=%d bytes).\n"+
-			"A must be RenderPrompt(req) verbatim; a reconstructed control is weaker "+
-			"evidence than the real historical implementation", len(armA), len(production))
+	if armB != production {
+		t.Errorf("arm B is NOT the production prompt (armB=%d bytes, production=%d bytes).\n"+
+			"arm B must be RenderPrompt(req) verbatim; a reconstructed treatment arm is "+
+			"weaker evidence than the renderer that actually ships", len(armB), len(production))
 	}
 }
 
@@ -209,9 +184,20 @@ func TestAPA59_ClauseInsertionPointIsUnique(t *testing.T) {
 		t.Fatalf("insertion anchor appears %d times in the rendered prompt, want exactly 1; "+
 			"pick a new anchor before running the A/B", n)
 	}
-	if strings.Contains(prompt, apa59LimitBoundsClause()) {
-		t.Fatal("the production prompt ALREADY contains the APA-59 clause; arm A would no " +
-			"longer be the pre-APA-59 control and the experiment would be meaningless")
+	// Production is now the treatment arm, so it must carry the clause; the
+	// pre-APA-59 control is derived from it by subtraction in
+	// renderAPA59Variant.
+	if !strings.Contains(prompt, limitBoundsClause()) {
+		t.Fatal("production prompt does not contain the APA-59 clause; PR B has been reverted " +
+			"or the clause has drifted out of the template")
+	}
+	control, err := renderAPA59Variant(apa59SampleRequest(t), PromptVariantAPA56)
+	if err != nil {
+		t.Fatalf("render control arm: %v", err)
+	}
+	if strings.Contains(control, limitBoundsClause()) {
+		t.Fatal("the derived control arm still contains the bounds clause, so stripping it " +
+			"did not reconstruct the pre-APA-59 prompt")
 	}
 }
 
@@ -228,7 +214,7 @@ func TestAPA59_ArmsDifferOnlyByTheClause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render arm B: %v", err)
 	}
-	clause := apa59LimitBoundsClause()
+	clause := limitBoundsClause()
 
 	if armA == armB {
 		t.Fatal("arm A and arm B are identical; the experiment would compare nothing")
@@ -253,7 +239,7 @@ func TestAPA59_ArmsDifferOnlyByTheClause(t *testing.T) {
 // this defect class recurring. Every bound the clause states is read back from
 // investigate.MaxRows, so the prompt cannot disagree with the validator.
 func TestAPA59_ClauseMatchesAuthoritativeBounds(t *testing.T) {
-	clause := apa59LimitBoundsClause()
+	clause := limitBoundsClause()
 
 	if strings.Count(clause, apa59ClauseAnchor) != 0 {
 		t.Error("the clause must not contain its own insertion anchor; it would nest on re-render")
@@ -268,7 +254,7 @@ func TestAPA59_ClauseMatchesAuthoritativeBounds(t *testing.T) {
 	// match as a substring, so the clause is parsed and the pairs compared as
 	// whole units.
 	stated := apa59StatedBounds(clause)
-	for _, tool := range apa59BoundTools() {
+	for _, tool := range limitBoundsTools() {
 		max, err := investigate.MaxRows(tool)
 		if err != nil {
 			t.Fatalf("authoritative bound for %s: %v", tool, err)
@@ -289,11 +275,11 @@ func TestAPA59_ClauseMatchesAuthoritativeBounds(t *testing.T) {
 	// allowlisted tool that silently missed the clause would reintroduce this
 	// exact gap; a tool named in the clause that does not exist would teach a
 	// knob that does not exist.
-	if len(stated) != len(apa59BoundTools()) {
+	if len(stated) != len(limitBoundsTools()) {
 		t.Errorf("clause states %d bounds but %d tools carry one; stated=%v",
-			len(stated), len(apa59BoundTools()), stated)
+			len(stated), len(limitBoundsTools()), stated)
 	}
-	for _, tool := range apa59BoundTools() {
+	for _, tool := range limitBoundsTools() {
 		if _, err := investigate.MaxRows(tool); err != nil {
 			t.Errorf("clause names tool %s, which is not a real tool: %v", tool, err)
 		}
@@ -347,7 +333,7 @@ func apa59StatedBounds(clause string) map[string]int {
 // authority against itself. The path that matters is clause -> string ->
 // validator, because that is the path the model reads.
 func TestAPA59_ClauseStaysWithinEveryAuthoritativeBound(t *testing.T) {
-	clause := apa59LimitBoundsClause()
+	clause := limitBoundsClause()
 	stated := apa59StatedBounds(clause)
 	if len(stated) == 0 {
 		t.Fatalf("clause yielded no parseable bounds; the parser and the clause "+
@@ -582,9 +568,9 @@ func TestAPA59_QualificationStatus(t *testing.T) {
 	}
 	armA, armB := clauses[PromptVariantAPA56], clauses[PromptVariantAPA59]
 
-	stated := apa59StatedBounds(apa59LimitBoundsClause())
-	structuralOK := len(stated) == len(apa59BoundTools())
-	for _, tool := range apa59BoundTools() {
+	stated := apa59StatedBounds(limitBoundsClause())
+	structuralOK := len(stated) == len(limitBoundsTools())
+	for _, tool := range limitBoundsTools() {
 		max, err := investigate.MaxRows(tool)
 		if err != nil || stated[string(tool)] != max {
 			structuralOK = false
@@ -592,8 +578,8 @@ func TestAPA59_QualificationStatus(t *testing.T) {
 		}
 	}
 	structuralOK = structuralOK &&
-		strings.Contains(armB, apa59LimitBoundsClause()) &&
-		!strings.Contains(armA, apa59LimitBoundsClause())
+		strings.Contains(armB, limitBoundsClause()) &&
+		!strings.Contains(armA, limitBoundsClause())
 
 	a, b := qualifyingTrajectoryFromEnv("A"), qualifyingTrajectoryFromEnv("B")
 	t.Logf("APA-59 harness: structural gates %s",
