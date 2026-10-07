@@ -46,6 +46,15 @@
 #        measured == expected                      -> eligible for a verdict
 #      A 429, skip, discard, or fatal is never a measurement. Declaring no
 #      scenarios leaves the PG-only path byte-for-byte unchanged.
+#   7. Anti-fake-green, APA-59 causal trajectory: the same discipline one
+#      level down, at the qualification gate itself (APA-57 closed the
+#      "zero measurements => QUALIFIED" hole; #7 closes the sibling hole for
+#      the decisive A/B comparison). Setting QUAL_APA59=1 declares that this
+#      run is an APA-59 qualification, so qualify.sh exports
+#      APA59_REQUIRE_TRAJECTORY=1 before `go test`. Without a measured
+#      A/B trajectory the decisive test FAILs rather than silently skips, and
+#      the run is NOT qualified. Ordinary `go test ./...` (no QUAL_APA59)
+#      leaves the trajectory dormant: no qualification claim, no failure.
 #
 # ROLE TOPOLOGY
 #   Mirrors .github/workflows/integration.yml exactly, for the same reason:
@@ -301,6 +310,20 @@ main() {
   # Prove the database really is empty, so "fresh database" is a measured fact
   # and not an assumption inherited from the container being new.
   assert_empty
+
+  # APA-59 causal-qualification opt-in: when this run declares itself an
+  # APA-59 qualification, the harness's decisive trajectory must be PRESENT.
+  # Absent (the default), the trajectory stays dormant and this is not an
+  # APA-59 qualification run. This belongs at the entry point, not in every
+  # developer invocation.
+  if [ "${QUAL_APA59:-0}" = "1" ]; then
+    export APA59_REQUIRE_TRAJECTORY=1
+    log "QUAL_APA59=1: requiring the decisive A/B trajectory (APA59_REQUIRE_TRAJECTORY=1)"
+    if [ -z "${APA59_TRAJECTORY_A:-}" ] || [ -z "${APA59_TRAJECTORY_B:-}" ]; then
+      log "WARNING: APA59_TRAJECTORY_A and/or APA59_TRAJECTORY_B unset; the decisive "
+      log "  APA-59 trajectory test will FAIL, so this run will NOT qualify APA-59."
+    fi
+  fi
 
   log "go test ${GO_TEST_FLAGS:--count=1} ./... (GO_TEST_FLAGS='${GO_TEST_FLAGS:-}')"
   local go_status=0
