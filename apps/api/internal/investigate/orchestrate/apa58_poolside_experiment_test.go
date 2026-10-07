@@ -224,9 +224,27 @@ var respPayload ModelResponse
 // unreachable provider is reported as infrastructure rather than as model
 // variability. The probe records the model the provider ACTUALLY served, so
 // the evidence cannot be misattributed.
+// psLiveOptIn is the single switch that decides whether the Poolside matrix
+// runs at all.
+//
+// An earlier revision skipped per-CASE when POOLSIDE_API_KEY was unset, so a
+// full-suite run without that key left an empty TestAPA58_ScenarioFixtures_Matrix
+// parent that still FAILED. A subtest group with no subtests does not pass
+// vacuously; it fails as malformed. The consequence was the worst possible
+// shape: the deterministic PG-only gate, which must be independently valid,
+// reported exit 1 for a reason that had nothing to do with Postgres.
+//
+// Skipping now happens once, at the parent, so a run without credentials
+// self-skips as a unit and PG-only qualification stays valid on its own terms.
+var psLiveOptIn = func() bool {
+	return strings.TrimSpace(os.Getenv("POOLSIDE_API_KEY")) != ""
+}
+
 func requireLivePoolside(t *testing.T) (*qualModel, *qualWireRecorder) {
 	t.Helper()
-	if strings.TrimSpace(os.Getenv("POOLSIDE_API_KEY")) == "" {
+	// Defensive: the matrix opts in at the parent, so reaching here without a
+	// key means a new call site bypassed the switch.
+	if !psLiveOptIn() {
 		t.Skip("POOLSIDE_API_KEY unset; the alternate-provider experiment requires live inference")
 	}
 	pc := &poolsideClient{
@@ -238,17 +256,6 @@ func requireLivePoolside(t *testing.T) (*qualModel, *qualWireRecorder) {
 	rec := &qualWireRecorder{}
 	pc.client.Transport = &qualTransport{base: pc.client.Transport, rec: rec}
 
-	// reserveTokens is ZERO on purpose. The pacer's floor is calibrated to
-	// Groq: when a provider omits token-budget headers, pacingWait cannot
-	// see a window and falls back to its conservative minimum
-	// (qualMinPacingWait, ~20s) before every call. That is correct for a
-	// provider with an 8000-token window, but Poolside publishes only
-	// request-rate limits and is slower per call, so the inherited wait
-	// pushed calls past the loop's turn timeout and produced spurious
-	// "context deadline exceeded" transport failures. Poolside's limit is
-	// 60 requests per window and this matrix issues far fewer, so no token
-	// pacer is required. A provider 429 is still discarded and re-measured
-	// by qualMeasure, never recorded as a result.
 	m := &qualModel{inner: pc, rec: rec, provider: "poolside"}
 	t.Cleanup(func() { pc.client.CloseIdleConnections() })
 
