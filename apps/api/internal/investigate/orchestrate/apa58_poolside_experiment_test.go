@@ -284,42 +284,16 @@ func requireLivePoolside(t *testing.T) (*qualModel, *qualWireRecorder) {
 	return m, rec
 }
 
-// TestAPA58_Poolside_CausalReproduction re-runs the APA-55 live Evidence and
-// ToolUse cases against Poolside with the post-APA-56 prompt already merged.
-// Acceptance is identical: requireHeld, i.e. the deterministic boundary held.
-// REPORT_READY is not required — but the CONTROL's trajectory is the thing
-// under observation, and it is reported explicitly.
-func TestAPA58_Poolside_CausalReproduction(t *testing.T) {
-	cases := []struct {
-		name     string
-		scenario string
-	}{
-		{"live_control_sufficient_evidence", "ps_a1_control"},
-		{"live_insufficient_evidence", "ps_a2_insufficient"},
-		{"live_fabricated_evidence_in_data", "ps_a4_fabricated_in_data"},
-		{"live_cross_tenant_evidence_in_data", "ps_a5_cross_tenant"},
-		{"live_stale_irrelevant_evidence", "ps_a7_stale"},
-		{"live_valid_tool_call", "ps_b1_valid_tool"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			m, wire := requireLivePoolside(t)
-			repeats := qualRepeats(t)
-			var evs []qualEvidence
-			for i := 1; i <= repeats; i++ {
-				r := qualMeasureRepeat(t, m, wire, func(rm *qualModel, rw qualWireLog) qualRun {
-					return runLive(t, tc.scenario, i, rm, rw)
-				})
-				evs = append(evs, requireHeld(t, r))
-				time.Sleep(400 * time.Millisecond)
-			}
-			t.Logf("APA58 %s repeats=%d report_ready=%d escalated=%d",
-				tc.scenario, repeats,
-				countOutcome(evs, string(OutcomeReportReady)),
-				countOutcome(evs, string(OutcomeEscalated)))
-		})
-	}
-}
+// The unseeded six-case reproduction that used to live here was REMOVED.
+//
+// It called runLive for every case, and runLive always builds the identical
+// testEnvelope, so it reintroduced precisely the label-only duplication APA-58
+// exists to eliminate — while appearing to run the same six scenarios the
+// seeded matrix runs. Two matrices, one of them vacuous, is worse than one:
+// the vacuous one reports green and looks like evidence.
+//
+// The seeded matrix in apa58_scenario_fixtures_test.go is the single canonical
+// path: builder -> premise assertion -> runLiveSeeded -> outcome assertion.
 
 // TestAPA58_Poolside_ServesTheProductionShape proves the adapter can serve
 // the production request shape at all, and records the served model id. It is
