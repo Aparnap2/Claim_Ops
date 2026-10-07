@@ -8,13 +8,32 @@ package orchestrate
 // citable evidence + absent required document), so the arms differ solely in
 // what the model is told about "limit".
 //
+// Three lifecycle metrics are reported separately, because they are distinct
+// events rather than proxies for one another:
+//
+//	attemptedTool       the model emitted a call-tool action
+//	executorObserved    the request crossed into the real executor
+//	completedResponses  the executor produced/retained a completed response
+//
 // Decisive shape, enforced directly here:
 //
-//	A: attempted a tool > 0, executed a tool = 0
-//	B: attempted a tool > 0, executed a tool > 0
+//	A: attempted a tool > 0, executor observed = 0
+//	B: attempted a tool > 0, executor observed > 0
 //
-// If B is attempted>0 / executed=0, it is a NULL RESULT (FAIL), never causal
-// evidence.
+// executorObserved is the decisive boundary metric for this experiment,
+// because that is the seam the hypothesis is about: did a bounded,
+// contract-legal request actually cross into the executor? completedResponses
+// is supplementary evidence of a stricter lifecycle event and is deliberately
+// NOT fused into the causal claim.
+//
+// If B is attempted>0 / executorObserved=0, it is a NULL RESULT (FAIL), never
+// causal evidence. Equally, an A that reaches the executor means the control
+// did not reproduce the pre-APA-59 condition, so any A-to-B difference is
+// confounded and the run is rejected rather than reported as a pass.
+//
+// Reaching terminal completion is out of scope for APA-59. A run that escalates
+// after the bounded request — for example on the repetition guard — is recorded
+// as such and does not qualify end-to-end investigation.
 
 import (
 	"context"
