@@ -491,16 +491,31 @@ type qualModel struct {
 	// each call. It mirrors the production client's fixed MaxTokens plus
 	// a prompt allowance.
 	reserveTokens int
-	mu            sync.Mutex
-	calls         int
-	lats          []time.Duration
-	errs          []error
-	raw           []string
-	pacedMS       int64
+	// provider names the upstream this seam actually talks to, and is what
+	// lands in the recorded evidence. Empty means the historical default,
+	// Groq, so every existing run is unchanged. It exists because an
+	// evidence record that mislabels its provider is worse than no record:
+	// an alternate-provider run must never be filed as Groq evidence.
+	provider string
+	mu       sync.Mutex
+	calls    int
+	lats     []time.Duration
+	errs     []error
+	raw      []string
+	pacedMS  int64
 	// parent is the seam this one was forked from, if any. Only the
 	// un-forked seam from requireLiveGroq has a nil parent, and its counters
 	// are the process-wide cumulative view.
 	parent *qualModel
+}
+
+// providerLabel is the provider name recorded in evidence, defaulting to the
+// Groq seam every existing run used.
+func (m *qualModel) providerLabel() string {
+	if strings.TrimSpace(m.provider) == "" {
+		return "groq"
+	}
+	return m.provider
 }
 
 // Complete delegates to the real client verbatim, after any pacing wait.
@@ -588,7 +603,12 @@ func (m *qualModel) forkForRep() *qualModel {
 		inner:         m.inner,
 		rec:           m.rec,
 		reserveTokens: m.reserveTokens,
-		parent:        m,
+		// provider MUST be carried into the fork: the fork is what actually
+		// serves the repetition, so dropping it here made every alternate-
+		// provider run label its own evidence "groq". An evidence record
+		// that names the wrong provider is worse than no record.
+		provider: m.provider,
+		parent:   m,
 	}
 }
 
@@ -2080,7 +2100,7 @@ func runLive(t *testing.T, scenario string, repeat int, m *qualModel, wire qualW
 		Scenario:    scenario,
 		Repeat:      repeat,
 		ModelID:     out.ModelID,
-		Provider:    "groq",
+		Provider:    m.providerLabel(),
 		Output:      out,
 		Err:         runErr,
 		Envelope:    env,
@@ -2116,7 +2136,7 @@ func runLiveSeeded(t *testing.T, scenario string, repeat int, m *qualModel, wire
 		Scenario:    scenario,
 		Repeat:      repeat,
 		ModelID:     out.ModelID,
-		Provider:    "groq",
+		Provider:    m.providerLabel(),
 		Output:      out,
 		Err:         runErr,
 		Envelope:    env,
