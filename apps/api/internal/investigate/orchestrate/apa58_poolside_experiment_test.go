@@ -113,6 +113,18 @@ type poolsideClient struct {
 	model   string
 	baseURL string
 	client  *http.Client
+	// render controls how the prompt for this request is derived. Nil
+	// means production RenderPrompt. Used ONLY by the APA-59 A/B: arm A is
+	// the verbatim production prompt and arm B injects the bounds clause,
+	// everything else shares this same client/channel.
+	render func(ModelRequest) (string, error)
+}
+
+func (p *poolsideClient) promptFrom(req ModelRequest) (string, error) {
+	if p.render != nil {
+		return p.render(req)
+	}
+	return RenderPrompt(req)
 }
 
 // Complete renders the identical prompt and decodes the identical response
@@ -124,7 +136,7 @@ func (p *poolsideClient) Complete(ctx context.Context, req ModelRequest) (ModelR
 	if err := ctx.Err(); err != nil {
 		return ModelResponse{}, err
 	}
-	prompt, err := RenderPrompt(req)
+	prompt, err := p.promptFrom(req)
 	if err != nil {
 		return ModelResponse{}, err
 	}
