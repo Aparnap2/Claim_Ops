@@ -284,13 +284,14 @@ Rules:
   - "source_type": optional; owned by get_evidence. Evidence source filter.
   - "hash": required; owned by create_investigation_report. The report's sha256 hex.
   - "payload": required; owned by create_investigation_report. The canonical report bytes.
+%[2]s
 - A "request" selects and bounds a read. It never carries evidence IDs: "evidence_ids" is not a request property. Cite evidence only inside a "submit_report" report, using IDs that are already in "known_evidence_ids" or were returned by an earlier turn.
 - For the value "submit_report", carry "report" with "hypotheses" (at least one), "findings" (at least one), "recommendation", and "missing_additive" (optional: omit it or send []).
 - A hypothesis carries "id", "statement", "falsifier", "status", "fact_refs", and "evidence_ids". "falsifier" is required and states what cited evidence would refute the hypothesis; never substitute a confidence. "status" is exactly one of "OPEN", "SUPPORTED", "REFUTED". Sort every "evidence_ids" list.
 - A fact reference inside "fact_refs" carries exactly "key", "agreed", "evidence_id", all required. "agreed" copies the agreed snapshot value verbatim and "evidence_id" is one of that key's evidence rows. The property is "agreed": there is no "value" property in a fact reference.
 - A finding carries "id", "hypothesis_id", "summary", "evidence_ids". The property is "summary", never "description".
 - "recommendation" carries "action", "rationale", "finding_ids". "action" is exactly one of "REQUEST_EVIDENCE", "CONFIRM_EXCEPTION", "REFER_HUMAN", "REVERIFY"; there is no "manual_review". The property is "rationale", never "reason".
-%s
+%[1]s
 - Cite only the agreed snapshot and evidence you were given. Never invent, rename, or reinterpret an evidence ID or an agreed value.
 - Every cited evidence ID must already be known: IDs from the exception envelope or from prior tool results.
 - Every finding must name a hypothesis from the same report. The recommendation must cite findings from the same report.
@@ -313,7 +314,7 @@ A non-empty "missing_additive" is shaped the same way, one entry per gap, sorted
 {"action":"submit_report","report":{"hypotheses":[{"id":"h-01","statement":"The billed total exceeds the policy-schedule allowance.","falsifier":"A pinned policy schedule showing the allowed amount for this admission.","status":"OPEN","fact_refs":[{"key":"hospital_name","agreed":"City Hospital","evidence_id":"ev-doc-02"}],"evidence_ids":["ev-doc-01","ev-doc-02"]}],"findings":[{"id":"f-01","hypothesis_id":"h-01","summary":"The hospital bill total and the policy schedule allowance disagree.","evidence_ids":["ev-doc-01","ev-doc-02"]}],"recommendation":{"action":"REQUEST_EVIDENCE","rationale":"The allowance cannot be confirmed without the pinned policy schedule.","finding_ids":["f-01"]},"missing_additive":[{"kind":"external","key":"policy","detail":"R1: no pinned policy evidence for the claimed policy_number"},{"kind":"field","key":"policy_number","detail":"R1: claimed value conflicts with the policy schedule value"},{"kind":"required_document","key":"HOSPITAL_BILL","detail":"R8: required document absent"}]}}
 
 DATA:
-%s`
+%[3]s`
 
 // additiveKindKeyClause is the model-facing statement of which vocabulary a
 // "missing_additive" key must be drawn from, given the entry's "kind".
@@ -345,6 +346,60 @@ func additiveKindKeyClause() string {
 		strings.Join(docs, ", "), strings.Join(quoted, ", "))
 }
 
+// limitBoundsTools is every tool that carries a "limit". The maxima themselves
+// are read from the authoritative bound table via investigate.MaxRows at render
+// time, never restated here, so the prompt cannot state a bound the request
+// validator would reject.
+func limitBoundsTools() []invest.ToolName {
+	return []invest.ToolName{
+		invest.ToolGetClaim,
+		invest.ToolGetPolicyContext,
+		invest.ToolGetDocuments,
+		invest.ToolGetEvidence,
+		invest.ToolSearchEvidence,
+		invest.ToolGetVerificationFindings,
+		invest.ToolGetExternalPolicyStatus,
+		invest.ToolGetTPACase,
+		invest.ToolGetProviderEncounter,
+		invest.ToolGetRiskSignals,
+		invest.ToolCreateInvestigationReport,
+	}
+}
+
+// limitBoundsClause states the per-tool "limit" maximum, model-facing.
+//
+// APA-59. The prompt defines "limit" and demonstrates it with get_documents
+// "limit":10, but it never says what any tool may actually ask for. The bound
+// is not uniform: get_claim is capped at 1 while get_documents allows 50, so
+// the example value leaks across tools and the request validator rejects the
+// model's argument. The model was never told the rule.
+//
+// Every per-tool maximum is rendered from investigate.MaxRows, so the prompt
+// and the authority that rejects an over-bound request cannot drift apart.
+// Nothing here relaxes a validator: the deterministic envelope stays
+// authoritative and the model is taught the contract it must satisfy.
+func limitBoundsClause() string {
+	var b strings.Builder
+	b.WriteString("- ")
+	b.WriteString(`"limit" is bounded per tool, and the bound is not the same for every tool.`)
+	b.WriteString(` Send "limit" no greater than the tool's own maximum: `)
+	tools := limitBoundsTools()
+	parts := make([]string, 0, len(tools))
+	for _, t := range tools {
+		max, err := investigate.MaxRows(t)
+		if err != nil {
+			// Unreachable for the fixed list above; failing loudly beats
+			// rendering a bound nobody can verify.
+			panic("limitBoundsClause: authoritative bound unavailable: " + err.Error())
+		}
+		parts = append(parts, fmt.Sprintf("%s at most %d", string(t), max))
+	}
+	b.WriteString(strings.Join(parts, ", "))
+	b.WriteString(".")
+	b.WriteString(` A "limit" above a tool's maximum is rejected before the tool runs, so a single-row tool must send "limit" 1.`)
+	return b.String()
+}
+
 // RenderPrompt renders the template over the canonical request bytes.
 // It reads only validated ModelRequest fields, so no secret can enter.
 func RenderPrompt(r ModelRequest) (string, error) {
@@ -352,5 +407,7 @@ func RenderPrompt(r ModelRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf(PromptTemplate, additiveKindKeyClause(), string(raw)), nil
+	// Indexed verbs in the template pin each clause to its position, so adding
+	// or reordering a placeholder cannot silently swap two clauses.
+	return fmt.Sprintf(PromptTemplate, additiveKindKeyClause(), limitBoundsClause(), string(raw)), nil
 }
