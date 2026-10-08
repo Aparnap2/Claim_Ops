@@ -1,8 +1,8 @@
 # 10 — Phase 3 Local Cloud E2E Qualification
 
-**Status**: Partially implemented (slices 1–2 landed #80 main@5cb15f1; remainder pending)
-**Date**: 2026-09-15
-**Depends on**: Phase 2 frozen baseline (PR #79, SHA eec02a0); current base main@9f7a196 (APA-13)
+**Status**: Partially implemented (slices 1–2 landed #80 main@5cb15f1; slices A/B/C landed APA-34/35/36; remainder pending — the `check`-switch branches are blocked on `docs/KNOWN_LIMITATIONS.md` KL-01)
+**Date**: 2026-09-15 (status line reconciled 2026-10-08)
+**Depends on**: Phase 2 frozen baseline (PR #79, SHA eec02a0); base at time of writing was main@9f7a196 (APA-13). Reconciled 2026-10-08: that pointer was stale, and the base is now main@dffa160 (APA-64).
 
 ## Summary
 
@@ -158,7 +158,9 @@ Shared ModelClient seam: internal/investigate/orchestrate/model.go unchanged.
 
 MockModelClient in internal/investigate/orchestrate/mock_model.go: scripted []ModelResponse, Complete returns next scripted item, deterministic, no validation bypass.
 
-GroqModelClient in internal/investigate/orchestrate/groq_model.go: OpenAI compatible HTTP POST to https://api.groq.com/openai/v1/chat/completions, model from GROQ_MODEL env (default llama-3.1-8b-instant), key from GROQ_API_KEY env, prompt via RenderPrompt, response payload extraction, retry 3x transient with backoff, no SDK import, httpx.
+GroqModelClient in internal/investigate/orchestrate/groq_model.go: OpenAI compatible HTTP POST to https://api.groq.com/openai/v1/chat/completions, model from GROQ_MODEL env (default `qwen/qwen3.8-27b`), key from GROQ_API_KEY env, prompt via RenderPrompt, response payload extraction, retry 3x transient with backoff, no SDK import, httpx.
+
+Model-string correction (2026-09-28). This paragraph originally read `default llama-3.1-8b-instant`. That was correct when this document was written (2026-09-15) and was the adjudicated canonical string as of the 2026-09-26 Option A ruling. It was superseded: `llama-3.1-8b-instant` was retired from Groq and answers HTTP 404 `model_not_found`, so it would have failed every inference call. Current authoritative model: `qwen/qwen3.8-27b` — ADR-002 (amended) + code default + README + `.env.example`, all four of which now agree. Merged change: `ad0d631` / PR #114. Config and documentation only; no client wire-format, prompt, or validation change.
 
 Orchestrator never imports Groq types. Selection via config.ModelProvider.
 
