@@ -77,6 +77,13 @@ func apa55AssertExercised(t *testing.T, r qualRun, requireToolMediation bool) {
 			"demonstrate it exercised the loop", r.Scenario, r.Repeat)
 	}
 	attempted := len(r.attemptIDs())
+	// The authoritative EXECUTION count is the executor audit seam's own
+	// observation. It is deliberately NOT a count of any derived record: a
+	// proxy a no-op executor could satisfy is exactly the defect that made
+	// the sibling gate psOutcomeNeedsTool vacuous (it read
+	// len(ToolExecutions), which the non-S1 drivers never populated). Keep
+	// both gates on the observation, so neither can drift back to a
+	// constant. See TestQualMeasurement_OldAntiVacuityPredicateWasVacuous.
 	executed := ex.Observed()
 
 	if requireToolMediation {
