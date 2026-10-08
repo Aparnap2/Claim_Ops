@@ -1110,6 +1110,13 @@ func isClosedLoopError(err error) bool {
 // ToolFunc received it: the same struct the loop hashed for the repetition
 // guard, and the same one the executor re-validated. Empty-valued fields
 // are omitted so the record stays readable.
+//
+// It is populated by the S1 path, which wraps the production ToolFunc
+// registry and observes the verbatim request. The shared non-S1 path builds
+// this record from the executor's audit seam, which is an
+// "IDs/hashes/counts-only" payload (investigate/audit.go:36) and carries no
+// request at all, so Arguments is nil there. A nil Arguments means "this seam
+// does not observe arguments", never "the tool took none".
 type qualToolExecution struct {
 	Turn        int      `json:"turn"`
 	Tool        string   `json:"tool"`
@@ -1926,6 +1933,26 @@ type qualExecutor struct {
 	// own Calls() on any run that executed a tool, or the recorder is
 	// silently inert.
 	calls int
+	// execs is the per-execution record, one entry per audit-seam firing, in
+	// execution order. It exists because qualRun.ToolExecutions used to be
+	// populated only by the S1-specific paths, so on every non-S1 scenario
+	// the field was structurally ALWAYS empty while this recorder observed
+	// the executions that really happened — and the anti-vacuity gate that
+	// read it could therefore never observe an execution. Built from the
+	// same audit hook as `calls`, so len(execs) == Observed() by
+	// construction and the record cannot drift from the counter.
+	//
+	// It carries what the audit seam ACTUALLY carries and nothing more.
+	// investigate.AuditParams is documented as an
+	// "IDs/hashes/counts-only audit payload" (audit.go:36): it holds the
+	// tool, the row count, the content hash, the evidence IDs and the call
+	// error, and carries NO limit, cursor, query or source_type. Arguments
+	// is therefore left nil here, which reads as "not observed on this
+	// seam" rather than "the tool took no arguments". S1 records the
+	// verbatim investigate.Request by wrapping the production ToolFunc
+	// registry instead; that difference is a property of the seam, not an
+	// omission in the record.
+	execs []qualToolExecution
 }
 
 // newQualExecutor attaches the recorder to a real executor. The hook is
@@ -1947,6 +1974,7 @@ func newQualExecutor(inner *investigate.Executor) *qualExecutor {
 func (q *qualExecutor) observeAudit(_ context.Context, p investigate.AuditParams, callErr error) {
 	q.mu.Lock()
 	q.calls++
+	q.execs = append(q.execs, newQualExecutionFromAudit(p, callErr))
 	q.mu.Unlock()
 	if callErr != nil {
 		// A refused call contributed no evidence. The loop records an
@@ -1963,6 +1991,87 @@ func (q *qualExecutor) observeAudit(_ context.Context, p investigate.AuditParams
 		IDs:      append([]string(nil), p.EvidenceIDs...),
 		Hash:     p.ContentHash,
 	})
+}
+
+// newQualExecutionFromAudit renders one audit-seam firing as a tool-execution
+// record.
+//
+// It is the audit-path counterpart of newQualToolExecution, which takes the
+// verbatim investigate.Request a production ToolFunc received. The audit seam
+// carries no request, so the record is built from what AuditParams does carry
+// and Arguments is left nil; see qualExecutor.execs for why that is a property
+// of the seam rather than a gap in the record.
+//
+// The error branch matches newQualToolExecution exactly: a failed call returns
+// no evidence, so recording any would make a rebuilt known-set disagree with
+// the loop's. AuditParams is already zeroed on failure (the executor audits a
+// failed call with an empty Response), and the explicit reset states the
+// invariant instead of depending on that.
+func newQualExecutionFromAudit(p investigate.AuditParams, callErr error) qualToolExecution {
+	x := qualToolExecution{
+		Tool:        string(p.Tool),
+		RowCount:    p.RowCount,
+		EvidenceIDs: append([]string(nil), p.EvidenceIDs...),
+		ContentHash: p.ContentHash,
+		ErrorCode:   errorCodeOK,
+	}
+	if callErr != nil {
+		x.ErrorCode = errorCodeFor(callErr)
+		x.Error = callErr.Error()
+		x.RowCount = 0
+		x.EvidenceIDs = nil
+		x.ContentHash = ""
+	}
+	return x
+}
+
+// executions returns the per-execution record: one entry per audit-seam
+// firing, in execution order, so len(executions()) == Observed().
+func (q *qualExecutor) executions() []qualToolExecution {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]qualToolExecution(nil), q.execs...)
+}
+
+// qualJoinExecutionTurns attaches the loop's own turn number and canonical
+// request hash to each recorded execution, matching on the tool and the
+// response IDs. Both sides hold the response IDs verbatim, so the join needs no
+// re-derivation of the canonical hash.
+//
+// The loop's TurnRecord deliberately carries only a request HASH and the
+// response IDs, never the arguments, so without this join an audit-derived
+// record cannot be tied back to the repetition guard's decision.
+//
+// Each attempt-log row is consumed at most once and rows are matched in order,
+// which is what keeps a repeated tool+ID combination from giving one log row to
+// two executions. A row that matches nothing leaves Turn at 0 and RequestHash
+// empty rather than guessing; the count is reported by
+// qualJoinExecutionTurnsProblems so a silent mismatch is visible.
+func qualJoinExecutionTurns(execs []qualToolExecution, log []TurnRecord) ([]qualToolExecution, []string) {
+	out := append([]qualToolExecution(nil), execs...)
+	used := make([]bool, len(log))
+	var problems []string
+	for i := range out {
+		for j, rec := range log {
+			if used[j] || rec.Tool != invest.ToolName(out[i].Tool) {
+				continue
+			}
+			if !sameStringSet(rec.ResponseIDs, out[i].EvidenceIDs) &&
+				!(len(rec.ResponseIDs) == 0 && len(out[i].EvidenceIDs) == 0 && rec.RowCount == out[i].RowCount) {
+				continue
+			}
+			out[i].RequestHash = rec.RequestHash
+			out[i].Turn = rec.Turn
+			used[j] = true
+			break
+		}
+		if out[i].Turn == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"tool_executions[%d] (%s) matched no attempt-log row, so it carries no turn or request hash",
+				i, out[i].Tool))
+		}
+	}
+	return out, problems
 }
 
 // record appends one returned response.
@@ -2096,21 +2205,31 @@ func runLive(t *testing.T, scenario string, repeat int, m *qualModel, wire qualW
 	out, runErr := lp.Run(ctx)
 	elapsed := time.Since(start)
 	_ = elapsed
+	execs, joinProblems := qualJoinExecutionTurns(ex.executions(), out.AttemptLog)
+	for _, p := range joinProblems {
+		t.Errorf("%s repeat %d: %s", scenario, repeat, p)
+	}
 	r := qualRun{
-		Scenario:    scenario,
-		Repeat:      repeat,
-		ModelID:     out.ModelID,
-		Provider:    m.providerLabel(),
-		Output:      out,
-		Err:         runErr,
-		Envelope:    env,
-		Responses:   ex.recorded(),
-		Budgets:     budgets,
-		Wire:        wire,
-		Model:       m,
-		Executor:    ex,
-		ClaimBefore: "not-applicable-no-authoritative-state",
-		ClaimAfter:  "not-applicable-no-authoritative-state",
+		Scenario:  scenario,
+		Repeat:    repeat,
+		ModelID:   out.ModelID,
+		Provider:  m.providerLabel(),
+		Output:    out,
+		Err:       runErr,
+		Envelope:  env,
+		Responses: ex.recorded(),
+		Budgets:   budgets,
+		Wire:      wire,
+		Model:     m,
+		Executor:  ex,
+		// The shared recorder's per-execution record. Populated here as well
+		// as in runLiveSeeded because this path was the second half of the
+		// same defect: both non-S1 drivers left ToolExecutions empty, so
+		// scenarios 3, 5 and 7 reported an empty tool-execution list while
+		// the recorder on the same line reported the executions.
+		ToolExecutions: execs,
+		ClaimBefore:    "not-applicable-no-authoritative-state",
+		ClaimAfter:     "not-applicable-no-authoritative-state",
 	}
 	return r
 }
@@ -2132,22 +2251,32 @@ func runLiveSeeded(t *testing.T, scenario string, repeat int, m *qualModel, wire
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	out, runErr := lp.Run(ctx)
+	// The shared recorder's per-execution record. S1 populates the same
+	// field from its own registry wrap (apa52_s1_pg_live_test.go); this is
+	// the non-S1 equivalent, so the field is no longer empty on every
+	// scenario that is not S1. len(execs) == ex.Observed() by construction.
+	execs, joinProblems := qualJoinExecutionTurns(ex.executions(), out.AttemptLog)
+	for _, p := range joinProblems {
+		t.Errorf("%s repeat %d: %s", scenario, repeat, p)
+	}
 	return qualRun{
-		Scenario:    scenario,
-		Repeat:      repeat,
-		ModelID:     out.ModelID,
-		Provider:    m.providerLabel(),
-		Output:      out,
-		Err:         runErr,
-		Envelope:    env,
-		Responses:   ex.recorded(),
-		Forbidden:   forbidden,
-		Budgets:     budgets,
-		Wire:        wire,
-		Model:       m,
-		Executor:    ex,
-		ClaimBefore: "not-applicable-no-authoritative-state",
-		ClaimAfter:  "not-applicable-no-authoritative-state",
+		Scenario:  scenario,
+		Repeat:    repeat,
+		ModelID:   out.ModelID,
+		Provider:  m.providerLabel(),
+		Output:    out,
+		Err:       runErr,
+		Envelope:  env,
+		Responses: ex.recorded(),
+		Forbidden: forbidden,
+		Budgets:   budgets,
+		Wire:      wire,
+		Model:     m,
+		Executor:  ex,
+
+		ToolExecutions: execs,
+		ClaimBefore:    "not-applicable-no-authoritative-state",
+		ClaimAfter:     "not-applicable-no-authoritative-state",
 	}
 }
 

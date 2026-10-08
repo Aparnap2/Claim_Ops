@@ -48,6 +48,68 @@ import (
 // citation of this id is rejected at the grounding boundary.
 const psPhantomEvidenceID = "ev-phantom-99"
 
+// psQualificationDeadlineMs is the investigation budget every APA fixture runs
+// under. It is referenced from exactly two sites, psBuildParams (the envelope)
+// and psScopeFor (the run scope), and BOTH are required — see below.
+//
+// WHY 600000. Three measured facts bound it, and only the middle one picks the
+// value:
+//
+//  1. It must ABSORB the pacing the harness charges inside the run. The APA-55
+//     live run measured ps_a1_control 3/3 as ESCALATED(DEADLINE) with zero
+//     REPORT_READY, and the measured cause was that this budget was smaller
+//     than the cumulative provider pacing. That pacing is CUMULATIVE per
+//     repetition: the three measured repetitions reported pacedMs = 60770 /
+//     60794 / 60778 over modelCalls = 3 each, so one turn costs ~20.26s and
+//     ~60.77s is the THREE-TURN TOTAL. A paced multi-turn read-then-report
+//     trajectory therefore needs more than ~60.78s of headroom, which 60000
+//     did not have — the I2 post-Complete deadline check discarded the turn-3
+//     report before grounding ever saw it.
+//  2. It is the value the S1 qualification envelope ALREADY USES
+//     (apa52_s1_pg_live_test.go:448), which measured 3/3 REPORT_READY under
+//     this same harness and this same model. Nothing is invented here. The
+//     number already proven to work on this harness is adopted rather than a
+//     fresh figure chosen to make one run pass.
+//  3. It must stay STRICTLY BELOW the harness's own context ceiling.
+//     runLiveSeeded wraps lp.Run in context.WithTimeout(..., 12*time.Minute)
+//     = 720000ms (groq_qualification_live_test.go:2251). At or above that
+//     ceiling the context preempts the loop and the run yields an EMPTY
+//     InvestigationOutput with a raw context.DeadlineExceeded — strictly worse
+//     than a well-formed ESCALATED(DEADLINE), because no structured escalation
+//     survives to be read. 600000 keeps ~120s of margin under it.
+//
+// WHY BOTH SITES, NOT ONE. The envelope deadline and the scope deadline are
+// different values with different readers, and only the scope one governs:
+//
+//   - loop.go:502 derives the effective window from the SCOPE:
+//     deadline := time.Now().Add(l.scope.DeadlineMs). The loop body never reads
+//     the envelope deadline.
+//   - loop.go:295-296 (checkLoopAuthority, reached from NewLoop) rejects a
+//     scope whose DeadlineMs EXCEEDS the envelope's. The scope may tighten the
+//     deadline, never extend it.
+//
+// So raising only psBuildParams would leave psScopeFor returning testScope's
+// 60000. NewLoop would still PASS checkLoopAuthority, because 60000 <= 600000
+// trivially — nothing would fail, nothing would log, and the run would still
+// escalate at 60s while appearing to have been fixed. That is the silent no-op
+// trap, and it is why psScopeFor assigns the constant explicitly rather than
+// inheriting it. TestAPA64Recon_NoOpTrapIsReal demonstrates the trap
+// executably.
+//
+// WHY THEY WERE PREVIOUSLY EQUAL BY COINCIDENCE, NOT BY DESIGN. Both literals
+// happened to read 60000, which made the fixture look self-consistent. They
+// were not coupled: psScopeFor derives from testScope, which HARDCODES its own
+// DeadlineMs: 60000 (orchestrate_test.go:198) independently of any envelope.
+// Editing one could never have moved the other. Referencing this constant from
+// both sites replaces that coincidence with a deliberate coupling, so the two
+// deadlines can no longer drift apart through a forgotten edit.
+//
+// NO BUDGET VALUE CHANGES WITH IT. DefaultBudgets (loop.go:80) reads only
+// scope.MaxCalls; Budgets carries no deadline field at all. The deadline is a
+// window, not a budget, so nothing else in the loop needed to move.
+// TestAPA64Recon_NoBudgetValueChanges pins that.
+const psQualificationDeadlineMs = int64(600000)
+
 // psBuildParams returns the Build params every fixture shares. Only the
 // Claim, Unresolved, Evidence, and Result fields differ between cases.
 func psBuildParams(t *testing.T, claim assemble.CanonicalClaim, unresolved []verifywrap.Unresolved, evidence []invest.EvidenceRef, result verify.Result) invest.UnresolvedException {
@@ -65,8 +127,13 @@ func psBuildParams(t *testing.T, claim assemble.CanonicalClaim, unresolved []ver
 			TenantID: tTenant, ClaimID: tClaim,
 			AllowTools:   qualifyingTools(),
 			MaxToolCalls: 5,
-			DeadlineMs:   60000,
-			RequestID:    tReqID,
+			// The ENVELOPE half of the coupled pair. psScopeFor sets the
+			// matching scope deadline; both are required together because
+			// loop.go:295 permits the scope to tighten but never extend the
+			// envelope, and loop.go:502 derives the run's effective window
+			// from the SCOPE alone. See psQualificationDeadlineMs.
+			DeadlineMs: psQualificationDeadlineMs,
+			RequestID:  tReqID,
 		},
 	})
 	if err != nil {
@@ -80,10 +147,23 @@ func psBuildParams(t *testing.T, claim assemble.CanonicalClaim, unresolved []ver
 	return env
 }
 
-// psScopeFor derives the live scope, with the qualification tool allowlist.
+// psScopeFor derives the live scope, with the qualification tool allowlist and
+// the coupled qualification deadline.
 func psScopeFor(env invest.UnresolvedException) investigate.Scope {
 	scope := testScope(env)
 	scope.AllowTools = qualifyingTools()
+	// The SCOPE half of the coupled pair, and the value the loop actually
+	// runs on: loop.go:502 derives the effective window from
+	// l.scope.DeadlineMs and never reads the envelope's.
+	//
+	// This assignment is NOT redundant with testScope, which carries its own
+	// hardcoded DeadlineMs: 60000 (orchestrate_test.go:198). testScope is a
+	// shared helper for every test in the package and must not be edited for
+	// one fixture, so the fixture sets its own budget here. Without this line
+	// the scope stays at 60s, NewLoop still passes checkLoopAuthority
+	// (60000 <= the envelope is trivially true), and the fixture measures
+	// exactly as it did before the envelope was raised — a silent no-op.
+	scope.DeadlineMs = psQualificationDeadlineMs
 	if err := scope.Validate(); err != nil {
 		panic("scope: " + err.Error())
 	}
@@ -376,9 +456,20 @@ func psOutcomeNeedsTool(t *testing.T, evs []qualEvidence) {
 	// demonstrates it chose to call one; collapsing the two reported "never
 	// called a tool" for runs that plainly did. Both are recorded, and the
 	// gap between them is a real finding, not a pass.
+	//
+	// EXECUTED is read from RecorderObserved, the executor audit seam's own
+	// count, NOT from len(ToolExecutions). The previous form was vacuously
+	// false: ToolExecutions was populated only by the S1-specific drivers, so
+	// on every scenario routed through runLiveSeeded the field was empty and
+	// this gate could not observe an execution no matter how many tools ran.
+	// It fired on live evidence that showed recorderObserved=2 and
+	// recordedIDs=[ev-new-01 ev-new-02], claiming tool mediation never
+	// happened. The observation is what is authoritative, so the gate now
+	// reads the observation. TestQualMeasurement_OldAntiVacuityPredicateWasVacuous
+	// pins that history offline.
 	executed, attempted := 0, 0
 	for _, e := range evs {
-		if len(e.ToolExecutions) > 0 {
+		if e.RecorderObserved > 0 {
 			executed++
 		}
 		if e.ModelCalls > 1 {
