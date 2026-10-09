@@ -318,41 +318,184 @@ func (w *qualWireRecorder) last() (qualWireAttempt, bool) {
 // pacingWait returns how long to wait before the next Complete call, given
 // the provider's own token-budget headers.
 //
-// This is harness-side rate-limit management and nothing more. It does
-// not change the request the production client builds, the model, the
-// prompt, or anything the loop decides; it only refuses to start a call
-// that the provider would certainly reject, which would otherwise
-// masquerade as a model-quality result. Because the production client
-// reserves MaxTokens=4096 per call, the reservation (not the real
-// consumption) is what the budget measures, so the pacer budgets for the
-// reservation.
-func (w *qualWireRecorder) pacingWait(reserveTokens int) time.Duration {
+// This is harness-side rate-limit management and nothing more. It does not
+// change the request the production client builds, the model, the prompt, or
+// anything the loop decides.
+//
+// # WHAT IT IS, AND WHAT IT IS NOT
+//
+// It is rate control against OBSERVED usage, plus a single-call headroom
+// guard. It is NOT a guarantee that the provider will accept the next call.
+// Provider-side variance remains possible: a throttled response, a concurrent
+// consumer of the same account, or a provider accounting change can all reject
+// a call that this function admitted. What the function does bound is the cost
+// the harness ITSELF generates, and a throttle it avoids is no longer able to
+// masquerade as a model-quality result.
+//
+// # THE DECISION
+//
+// Three terms, each a lower bound, plus a fixed margin:
+//
+//	rate      = observedTokens * 60s / limitTokens
+//	            — SUSTAINED cost. Keeps observedTokens/min inside the reported
+//	            per-minute ceiling. Uses the PREVIOUS call's OBSERVED usage, so
+//	            it is correct whatever MaxTokens is set to.
+//	headroom  = (callCeiling - remainingTokens) * 60s / limitTokens
+//	            — SINGLE-CALL worst case. The reported window must be able to
+//	            hold one call at the ceiling before a call may start. Derived
+//	            from the provider's own reported remaining budget and its own
+//	            reported refill rate (limitTokens per 60s window).
+//	reset     = x-ratelimit-reset-tokens
+//	            — the provider's own statement of when the window refills.
+//	wait      = max(rate, headroom, reset, qualMinPacingWait) + qualPacingMargin
+//
+// With the measured ~3133 tokens/call against this account's 8000 TPM ceiling
+// and a healthy window, rate is 23.4975s. The old reservation-based floor
+// bought 20.25s, which sustained ~9283 tokens/min — ~16% over the ceiling —
+// so the old run was not admissible against the provider's budget.
+//
+// # WHY BOTH DIMENSIONS, AND WHY THE RESERVATION IS BACK
+//
+// THE BUDGET IS SPENT ON ACTUAL USAGE. An earlier revision of this comment
+// claimed that because the production client reserves MaxTokens=4096 per call,
+// "the reservation (not the real consumption) is what the budget measures".
+// That premise is false, and header evidence for this account falsifies it:
+// x-ratelimit-remaining-tokens fell 8000 -> 7986 across a ~14-token request.
+//
+// But dropping the reservation ENTIRELY was also wrong, in the other
+// direction. Rate alone is derived from the PREVIOUS call, so a small
+// response followed by a large one is paced as though the next call were also
+// small: at the measured floor a 300-token call yields a 2.25s rate term,
+// which collapses to qualMinPacingWait, and a subsequent 6200-token call is
+// then admitted far too soon. That is why RemainingTokens is read here at all.
+//
+// The reservation returns as the CEILING of one call, not as the thing the
+// budget measures. qualReserveTokens (MaxTokens + prompt allowance) is a true
+// upper bound for a single call on this harness: completion is capped at
+// MaxTokens=4096 and the prompt grows by a bounded amount each turn. The two
+// terms therefore answer different questions and neither substitutes for the
+// other:
+//
+//	rate      bounds the SUSTAINED cost across a window.
+//	headroom  bounds the SINGLE-CALL worst case against the reported budget.
+//
+// # THE HONEST LIMIT OF THE HEADROOM TERM
+//
+// headroom models the window as refilling LINEARLY at limitTokens per 60s.
+// That is a standard token-bucket model and it is only load-bearing when the
+// provider's own reset is shorter than the modelled refill; reset is still
+// taken as an independent maximum, so whenever the provider states a longer
+// window the provider wins.
+//
+// And it bounds ONE call at the ceiling. It does not bound a next call LARGER
+// than the ceiling, because nothing observed so far predicts that. A
+// qualification run whose cost per call grows past the reservation is paced as
+// though it had not. That limitation is asserted explicitly by
+// TestAPA78_HeadroomIsNotAGuaranteeForCallsLargerThanTheCeiling rather than
+// left for a reader to discover.
+//
+// # THE FALLBACK PATH
+//
+// With no token ceiling at all there is no rate to derive and no remaining
+// budget to gate on, so the decision falls back to the provider's reset under
+// qualMinPacingWait — a strictly positive wait, always at least the floor.
+// That is the header-missing case a throttled response produces, and it is
+// deliberately NOT the rate-derived interval.
+func (w *qualWireRecorder) pacingWait() time.Duration {
 	a, ok := w.last()
 	if !ok {
+		// Nothing has been observed yet: there is no measured rate, no
+		// remaining budget and no window to wait out. This is the first
+		// call of a run, and the provider does not rate-limit it.
 		return 0
 	}
 	reset := time.Duration(a.ResetTokensSecs * float64(time.Second))
-	// Measured against this provider: the budget is 8000 tokens per
-	// window and the production client's fixed MaxTokens=4096 means ONE
-	// call consumes roughly half the window, with the next window about
-	// 38-40s away. So a call is only safe when the provider reports both
-	// a healthy remaining budget and a window that has already rolled.
-	if a.LimitTokens > 0 && a.RemainingTokens >= reserveTokens && reset < 2*time.Second {
-		return 0
+
+	if a.LimitTokens <= 0 {
+		// No usable RATE evidence — most often because the reply omitted its
+		// headers, which a throttled response commonly does. Fall back to
+		// waiting out the reported window under the conservative floor, so a
+		// missing header still cannot produce a call the provider would
+		// reject. The floor, not the rate-derived interval, is this path's
+		// lower bound; the two are separate and are asserted separately.
+		if reset < qualMinPacingWait {
+			reset = qualMinPacingWait
+		}
+		return reset + qualPacingMargin
 	}
-	// Otherwise wait out the reported window, with a conservative floor
-	// so a response that omits the rate-limit headers (a throttled reply
-	// often does) still cannot produce a call the provider will reject.
-	if reset < qualMinPacingWait {
-		reset = qualMinPacingWait
+
+	// Term 1 — sustained rate, from the previous call's OBSERVED usage.
+	wait := qualMinPacingWait
+	if a.TotalTokens > 0 {
+		if rate := time.Duration(a.TotalTokens) * time.Minute / time.Duration(a.LimitTokens); rate > wait {
+			wait = rate
+		}
 	}
-	return reset + 250*time.Millisecond
+
+	// Term 2 — single-call headroom, from the reported remaining budget.
+	// RemainingTokens == 0 is indistinguishable from "header absent" (see
+	// headerInt), so a zero remaining is treated as unknown and this term is
+	// skipped rather than guessed.
+	if a.RemainingTokens > 0 {
+		if deficit := callCeilingTokens(a.TotalTokens) - a.RemainingTokens; deficit > 0 {
+			if headroom := time.Duration(deficit) * time.Minute / time.Duration(a.LimitTokens); headroom > wait {
+				wait = headroom
+			}
+		}
+	}
+
+	// Term 3 — the provider's own statement of when the window refills. It
+	// wins whenever it is the longest of the three.
+	if reset > wait {
+		wait = reset
+	}
+	return wait + qualPacingMargin
 }
 
-// qualMinPacingWait is the floor between two real inference calls. It is
-// set above the provider's observed window so that a response missing its
-// rate-limit headers still cannot trigger a call that would be throttled.
+// callCeilingTokens is the upper bound the headroom term provisions one call
+// against.
+//
+// It is the harness's own reservation (MaxTokens=4096 plus a 1024-token
+// prompt allowance), RAISED to the previous call's observed usage when that
+// usage exceeds it — because a reservation that a real call has already
+// exceeded is demonstrably not an upper bound, and the honest response is to
+// provision for what was actually observed rather than for what was assumed.
+//
+// It is NOT read from a caller argument. An earlier revision threaded
+// reserveTokens through pacingWait's signature while ignoring it, which told
+// every reader that the reservation was budgeted while ten call sites
+// supplied a discarded value. The reservation is a package-level constant of
+// this harness, so it is read as one.
+func callCeilingTokens(observed int) int {
+	if observed > qualReserveTokens {
+		return observed
+	}
+	return qualReserveTokens
+}
+
+// qualMinPacingWait is the floor between two real inference calls, used when
+// the provider's reply carries no usable RATE evidence — no token ceiling at
+// all (see pacingWait). It is set above the provider's observed window so that
+// a response missing its rate-limit headers still cannot trigger a call that
+// would be throttled.
+//
+// It is a FLOOR for that one path, not the pacing interval. When the provider
+// reports a token ceiling, pacingWait derives the interval from observed usage
+// and, independently, gates on the reported remaining budget (APA-78), which on
+// this account is ~23.7475s against the measured 3133 tokens/call — longer
+// than this floor. The value is left unchanged because
+// TestQualMeasurement_PacedMSIsCumulativeNotPerCall pins the recorded live
+// pacing against it.
 const qualMinPacingWait = 20 * time.Second
+
+// qualPacingMargin is the fixed margin added to every wait the pacer returns.
+//
+// It is named rather than inlined because two independent tests read it
+// (TestAPA78_HeaderMissingFallbackIsExactlyTheFloorAndMargin here and
+// TestQualMeasurement_PacedMSIsCumulativeNotPerCall), and a literal in two
+// places can drift apart silently. It is small and constant: the pacer's
+// conservatism lives in the decision, not in this cushion.
+const qualPacingMargin = 250 * time.Millisecond
 
 // qualTransport is a read-only observer around the real client's
 // transport. It forwards the request untouched and restores the response
@@ -476,20 +619,27 @@ func containsString(xs []string, s string) bool {
 // measures seam latency so the per-run record can report attempts and
 // latency at the boundary the loop actually calls.
 //
-// The only behaviour it adds is pacing: before delegating, it waits out
-// the provider's own token-budget reset when the next call could not
-// fit. That is rate-limit hygiene in the test seam, not a change to what
-// the model is asked or what the loop decides, and it exists because the
-// production client reserves MaxTokens=4096 per call against a
-// per-window token budget that a single call can exhaust. Without it a
-// provider throttle is indistinguishable from a model-quality result,
-// which would contaminate the whole qualification.
+// The only behaviour it adds is pacing: before delegating, it waits the
+// interval the recorder derives from the provider's own token-budget
+// headers and the previous call's observed usage. That is rate-limit
+// hygiene in the test seam, not a change to what the model is asked or what
+// the loop decides. It exists because the harness's per-call cost is a large
+// fraction of the account's per-minute token budget, so an unpaced run
+// throttles; a provider throttle is then indistinguishable from a
+// model-quality result, which would contaminate the whole qualification.
 type qualModel struct {
 	inner ModelClient
 	rec   *qualWireRecorder
-	// reserveTokens is the token reservation the pacer budgets for on
-	// each call. It mirrors the production client's fixed MaxTokens plus
-	// a prompt allowance.
+	// reserveTokens is the per-call token reservation this seam carries:
+	// the production client's fixed MaxTokens plus a prompt allowance.
+	// Equal to qualReserveTokens on every seam built by requireLiveGroq.
+	//
+	// Its ONE effect is to enable pacing at all: Complete skips the wait
+	// entirely when it is zero, which is how a seam with no live recorder
+	// (and the alternate-provider probe, whose budget is unmeasured) stays
+	// unpaced. The pacer's arithmetic does not read it — the ceiling of one
+	// call comes from qualReserveTokens, the harness-wide constant, so the
+	// figure can never be one seam's opinion (see callCeilingTokens).
 	reserveTokens int
 	// provider names the upstream this seam actually talks to, and is what
 	// lands in the recorded evidence. Empty means the historical default,
@@ -521,7 +671,7 @@ func (m *qualModel) providerLabel() string {
 // Complete delegates to the real client verbatim, after any pacing wait.
 func (m *qualModel) Complete(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 	if m.rec != nil && m.reserveTokens > 0 {
-		if wait := m.rec.pacingWait(m.reserveTokens); wait > 0 {
+		if wait := m.rec.pacingWait(); wait > 0 {
 			start := time.Now()
 			select {
 			case <-ctx.Done():
@@ -711,10 +861,10 @@ func requireLiveGroq(t *testing.T) (*qualModel, *qualWireRecorder) {
 	}
 	rec := &qualWireRecorder{}
 	gc.client.Transport = &qualTransport{base: gc.client.Transport, rec: rec}
-	// The production client always sends MaxTokens=4096, and Groq meters
-	// the RESERVATION against the per-window token budget. Budget for
-	// that reservation plus a prompt allowance so the pacer never starts
-	// a call the provider will certainly reject.
+	// The production client always sends MaxTokens=4096. The harness
+	// reserves that plus a prompt allowance, and the pacer uses the
+	// reservation as the CEILING of a single call (see callCeilingTokens)
+	// alongside the rate derived from observed usage — never instead of it.
 	m := &qualModel{inner: gc, rec: rec, reserveTokens: qualReserveTokens}
 	t.Cleanup(func() {
 		// Leave no idle connection behind for the next scenario.
@@ -771,6 +921,22 @@ func requireLiveGroq(t *testing.T) (*qualModel, *qualWireRecorder) {
 // Expressed as a constant because it mirrors a production constant
 // (groqModel.go MaxTokens: 4096) and must not drift silently.
 const qualReserveTokens = 4096 + 1024
+
+// qualTurnTimeoutMs is the per-turn budget the LIVE harness supplies to the
+// Loop, overriding the production default of 30000ms.
+//
+// APA-78: pacing is charged to the per-turn deadline, because
+// qualModel.Complete sleeps pacingWait BEFORE the inner provider call and the
+// loop hands Complete a context bounded by TurnTimeoutMs. With the corrected
+// rate-based pacing interval (~23.4975s against this account's 8000 TPM
+// ceiling), 30000ms leaves only ~6.5s of inference allowance — below the
+// production client's own single-call ceiling — so a turn can never deliver
+// its call. 60000ms leaves ~36.5s, which is above that ceiling.
+//
+// This is a HARNESS override, not a production change: DefaultBudgets and
+// DefaultTurnTimeoutMs are untouched, and 60000 is within MaxTurnTimeoutMs
+// (300000) and above the only floor ValidateBudgets enforces.
+const qualTurnTimeoutMs = int64(60000)
 
 // qualMaxRunAttempts bounds how many times one measurement is retried
 // when the provider throttles it. A throttled run is an invalid
@@ -2194,6 +2360,11 @@ func runLive(t *testing.T, scenario string, repeat int, m *qualModel, wire qualW
 		t.Fatalf("scope: %v", err)
 	}
 	budgets := DefaultBudgets(scope)
+	// APA-78: same harness-supplied per-turn budget as runLiveSeeded, and
+	// for the same reason — pacing is charged to the turn deadline, so the
+	// corrected rate-based interval plus one inference call must fit inside
+	// one turn. Production defaults are unchanged.
+	budgets.TurnTimeoutMs = qualTurnTimeoutMs
 	ex := newQualExecutor(successExecutor())
 	lp, err := NewLoop(m, ex.inner, budgets, scope, env, nil)
 	if err != nil {
@@ -2243,6 +2414,15 @@ func runLiveSeeded(t *testing.T, scenario string, repeat int, m *qualModel, wire
 		t.Fatalf("scope: %v", err)
 	}
 	budgets := DefaultBudgets(scope)
+	// APA-78: pacing is charged to the per-turn deadline (qualModel.Complete
+	// sleeps pacingWait BEFORE the inner call), so the corrected ~23.4975s
+	// rate-based interval plus one inference call has to fit inside a single
+	// turn. The production default (30s) does not carry it, so the harness
+	// supplies a larger budget instead — DefaultBudgets and
+	// DefaultTurnTimeoutMs are untouched. 60000ms leaves ~36.5s of inference
+	// allowance, above the client's own single-call ceiling, and passes
+	// ValidateBudgets (MaxTurnTimeoutMs is 300000).
+	budgets.TurnTimeoutMs = qualTurnTimeoutMs
 	ex := newQualExecutor(successExecutor())
 	lp, err := NewLoop(m, ex.inner, budgets, scope, env, nil)
 	if err != nil {

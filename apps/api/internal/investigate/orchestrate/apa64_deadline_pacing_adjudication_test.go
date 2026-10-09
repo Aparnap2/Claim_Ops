@@ -76,7 +76,7 @@ import (
 //	    ... exec.Execute(...)                                       // unreachable once the check fires
 //	}
 //
-// and qualModel.Complete sleeps pacingWait(reserveTokens) BEFORE the inner
+// and qualModel.Complete sleeps pacingWait() BEFORE the inner
 // provider call, so pacing is inside the deadline window and is charged to it.
 //
 // NO PROVIDER CREDENTIAL IS REQUIRED. FakeModelClient.Delay injects the pacing
