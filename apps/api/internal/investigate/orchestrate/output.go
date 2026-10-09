@@ -125,6 +125,20 @@ func ValidateInvestigationOutput(o InvestigationOutput) error {
 		// APA-67: the retained denial record is validated, never trusted.
 		// It is additive — it narrows what an escalation may carry, and
 		// changes no existing rule.
+		//
+		// A record belongs exclusively to an INVALID_OUTPUT escalation: the
+		// loop builds one only on the validator rejection path, which is
+		// exactly that exit class. Every other reason is emitted with a nil
+		// record, so a non-nil record anywhere else is unreachable by
+		// construction and is refused rather than tolerated. The placement
+		// gate precedes record validation on purpose: a field that may not
+		// be present at all is rejected on that ground first, before its
+		// contents are worth validating. Mirrors the REPORT_READY
+		// must-not-carry-rejection_record check above.
+		if o.RejectionRecord != nil && o.EscalationReason != EscalationInvalidOutput {
+			return fmt.Errorf("orchestrate: output rejection_record requires INVALID_OUTPUT escalation, got %q: %w",
+				string(o.EscalationReason), ErrModelContract)
+		}
 		if err := ValidateRejectionRecord(o.RejectionRecord); err != nil {
 			return fmt.Errorf("orchestrate: output rejection_record: %v: %w", err, ErrModelContract)
 		}

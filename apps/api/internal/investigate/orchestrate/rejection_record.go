@@ -161,8 +161,9 @@ func buildRejectionRecord(a ModelAction, kind invalidKind) *RejectionRecord {
 
 // ValidateRejectionRecord checks one retained record standalone. A nil
 // record is valid (absence is a legal state). Everything present must be
-// closed vocabulary, and the discriminator must agree with the content, so
-// a record can never claim to be empty while carrying counts.
+// closed vocabulary, the action must be the one recordable act, and the
+// discriminator must agree with the content, so a record can never claim to
+// be empty while carrying counts.
 func ValidateRejectionRecord(r *RejectionRecord) error {
 	if r == nil {
 		return nil
@@ -175,10 +176,15 @@ func ValidateRejectionRecord(r *RejectionRecord) error {
 	default:
 		return fmt.Errorf("orchestrate: rejection record has unknown state %q: %w", string(r.State), ErrModelContract)
 	}
-	switch r.Action {
-	case ActionCallTool, ActionSubmitReport:
-	default:
-		return fmt.Errorf("orchestrate: rejection record has unknown action %q: %w", r.Action, ErrModelContract)
+	// The record traces a DENIED SUBMIT_REPORT and nothing else: that is the
+	// single act buildRejectionRecord can produce. A call_tool denial loses
+	// no report, so there is nothing to trace and the builder emits no
+	// record. Accepting call_tool would admit a state no builder can reach --
+	// a trace claiming a tool call was rejected "with evidence" that never
+	// existed. Requiring submit_report keeps the validator no more
+	// permissive than the builder.
+	if r.Action != ActionSubmitReport {
+		return fmt.Errorf("orchestrate: rejection record must be submit_report, got %q: %w", r.Action, ErrModelContract)
 	}
 	if !validInvalidKindString(r.InvalidKind) {
 		return fmt.Errorf("orchestrate: rejection record has unknown invalid_kind %q: %w", r.InvalidKind, ErrModelContract)
