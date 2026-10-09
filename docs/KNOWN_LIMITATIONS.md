@@ -100,6 +100,17 @@ not for relaxing a validator.** In every case the deterministic bound was
 kept and the prompt was corrected. The five divergence tests added are the
 durable artefact.
 
+| KL-15 | The observability workstream (Linear APA-76) rests on an **unverified** premise about emulator capability. **Correction, 2026-10-09:** an earlier statement in APA-76 that localgcp has "no established emulator contract for Logging/Trace/Monitoring" was wrong, and the error was mine. The repo contained no evidence for Logging, and I generalised *repo-evidence absence* into *capability absence*. localgcp **does** document and expose **Cloud Logging on :8092**, alongside Secret Manager :8086, Firestore :8088, Cloud Tasks :8089, Vertex AI :8090, KMS :8091 and Cloud Run :8093, plus Docker-orchestrated Spanner/Bigtable/Cloud SQL/Memorystore/BigQuery. Measured on this host: Pub/Sub :8085 and Logging :8092 both **reachable** while the emulator was running. **Cloud Trace remains UNVERIFIED** — no Trace endpoint is documented, and absence of documentation is not evidence of absence. Separately, **emulator availability is not ClaimOps integration**: no ClaimOps test addresses :8092, and `Makefile:localgcp-test` gates only pubsubadapter, gcsblob, ingest and outbox, so `internal/investigate/orchestrate/` has no emulator-gated coverage at all. | APA-76's P0/P1 workstreams were scoped against an inaccurate capability baseline. Observability hardening remains unstarted and unmeasured; any plan that cites "emulator supports it" as justification is unproven until a ClaimOps test actually exercises the endpoint. | localgcp documentation (localgcp.com/docs); observed ports on this host; `Makefile:96-114`; `integration.yml:18-21` | `Corrected` | Linear APA-76 (corrected in place); `make localgcp-test` transcript; see the correction note below |
+
+### KL-15 correction note
+
+Recorded 2026-10-09 against `main@abd4f1a`. The distinction this row exists to keep:
+
+- **emulator capability** — what localgcp exposes. Logging `:8092` is exposed and was reachable; Trace is undocumented and therefore unverified.
+- **ClaimOps integration** — whether a ClaimOps test exercises it. For Logging this is **none**. For the rejection-record path (`internal/investigate/orchestrate/`) it is **none for any emulator**; APA-67's regression tests are deterministic by design and `make localgcp-test` does not touch that package.
+
+Neither fact implies the other, and neither implies APA-67 qualification.
+
 ## Update rule
 
 IDs are stable once this file is merged. Renumber freely only before the
