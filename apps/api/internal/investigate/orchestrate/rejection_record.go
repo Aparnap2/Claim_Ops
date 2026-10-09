@@ -17,9 +17,33 @@ package orchestrate
 //   - report free text (hypothesis statement/falsifier, finding summary,
 //     recommendation rationale);
 //   - missing_additive Detail, which is free text by construction;
-//   - missing_additive Key unless it is a member of closedExternalKeys.
+//   - missing_additive Key unless it is a member of closedExternalKeys;
+//   - missing_additive Kind unless it is a member of the three-kind
+//     closed additive vocabulary.
 //
-// That last rule is the load-bearing one. Missing additive keys are NOT
+// GOVERNING RULE (the reason the two bullet rules above look the way they do).
+// A RejectionRecord must be valid BY CONSTRUCTION for any input the model can
+// produce. Every value it carries is therefore either a compile-time literal of
+// this package or the LENGTH of a model-controlled collection. A field whose
+// value can originate in model output is never RETAINED; it is reduced to a
+// closed vocabulary plus an explicit flag recording whether the submitted value
+// was a member of that vocabulary. Two consequences, both load-bearing:
+//
+//  1. The record can never invalidate the escalation that carries it. This is
+//     not a nicety: executeLoop treats a record that fails
+//     ValidateInvestigationOutput as a LOOP PROGRAMMER ERROR and deliberately
+//     aborts raw with an empty InvestigationOutput. Copying a model-authored
+//     string into a closed-vocabulary field therefore let ordinary model input
+//     reach the programmer-error path and discarded a real denial.
+//  2. An unknown value is REPRESENTED, not dropped. The additive entry is
+//     still emitted (so the item's existence and position survive) with the
+//     string gone and the flag false.
+//
+// That is why Key and Kind are handled identically, with key_in_vocabulary and
+// kind_in_vocabulary in the same shape. A new model-derived string field must
+// be given the same treatment, or this invariant will be broken again.
+//
+// The Key rule is the original one. Missing additive keys are NOT
 // closed vocabulary: for required_document and field the key is model-
 // authored text, and for external the key is closed ONLY for items that
 // PASSED validation — the canonical denial's offending key ("policy_number",
@@ -82,15 +106,42 @@ var closedExternalKeys = map[string]struct{}{
 // kind plus, only when that key is a compile-time literal, the key itself.
 // Detail is never present: it is free text and would carry the model output
 // verbatim.
+//
+// Kind is reduced by the same rule as Key, and for the same reason. Kind
+// originates in model output just as Key does, so retaining it verbatim would
+// let a submitted string ride into a closed-vocabulary field -- the failure
+// the governing rule at the top of this file exists to prevent. Both fields
+// therefore carry a *_in_vocabulary flag with identical meaning: true means
+// the retained string is a compile-time literal of this package; false means
+// the submitted string was out of vocabulary and has been dropped, with the
+// ENTRY KEPT so the item's presence and position survive.
 type AdditiveRef struct {
-	// Kind is the closed additive kind vocabulary.
-	Kind invest.MissingKind `json:"kind"`
+	// Kind is retained only when KindInVocabulary is true; otherwise empty.
+	// The omitempty is what keeps an out-of-vocabulary kind absent from the
+	// marshalled record rather than serialised as "".
+	Kind invest.MissingKind `json:"kind,omitempty"`
+	// KindInVocabulary states whether Kind is a closed-vocabulary literal.
+	// A false value with a populated Kind is rejected by
+	// ValidateRejectionRecord, so no arbitrary kind can ride along.
+	KindInVocabulary bool `json:"kind_in_vocabulary"`
 	// Key is retained only when KeyInVocabulary is true; otherwise empty.
 	Key string `json:"key,omitempty"`
 	// KeyInVocabulary states whether Key is a closed-vocabulary literal.
 	// A false value with a populated Key is rejected by
 	// ValidateRejectionRecord, so no arbitrary key can ride along.
 	KeyInVocabulary bool `json:"key_in_vocabulary"`
+}
+
+// kindInClosedVocabulary reports whether k is one of the three closed additive
+// kinds. Derived from invest's literals rather than re-spelled, so the builder
+// and the validator cannot drift from the type they reduce.
+func kindInClosedVocabulary(k invest.MissingKind) bool {
+	switch k {
+	case invest.MissingRequiredDocument, invest.MissingField, invest.MissingExternal:
+		return true
+	default:
+		return false
+	}
 }
 
 // RejectionRecord is the in-band trace of a denied submission: the action,
@@ -130,6 +181,14 @@ func RejectionStateOf(o InvestigationOutput) RejectionState {
 // returns nil for any act that carries no report: a call_tool denial has
 // nothing to trace, and the grounding path keeps the whole report in
 // Partial, so neither needs a record.
+//
+// Every value written below is either a literal of this file or a length. In
+// particular both fields copied off a MissingItem are gated on a closed
+// vocabulary rather than copied: Kind because it is model-authored (this is
+// what makes the record valid by construction for any input), and Key because
+// it was always model-authored. An out-of-vocabulary value yields an entry
+// that is still PRESENT -- so the submitted list's arity and order survive --
+// with the string dropped and the corresponding flag false.
 func buildRejectionRecord(a ModelAction, kind invalidKind) *RejectionRecord {
 	if a.Action != ActionSubmitReport || a.Report == nil {
 		return nil
@@ -144,7 +203,15 @@ func buildRejectionRecord(a ModelAction, kind invalidKind) *RejectionRecord {
 		Additive:        make([]AdditiveRef, 0, len(r.MissingAdditive)),
 	}
 	for _, m := range r.MissingAdditive {
-		ref := AdditiveRef{Kind: m.Kind}
+		var ref AdditiveRef
+		if kindInClosedVocabulary(m.Kind) {
+			ref.Kind = m.Kind
+			ref.KindInVocabulary = true
+		}
+		// Deliberately NOT keyed on the retained kind: an out-of-vocabulary
+		// kind must never inherit the external-key rule, or a submitted
+		// "guess" item keyed "policy" would smuggle a closed-vocabulary key
+		// in on a record that has no kind to justify it.
 		if m.Kind == invest.MissingExternal {
 			if _, ok := closedExternalKeys[m.Key]; ok {
 				ref.Key = m.Key
@@ -194,15 +261,24 @@ func ValidateRejectionRecord(r *RejectionRecord) error {
 	}
 	for i := range r.Additive {
 		a := &r.Additive[i]
-		switch a.Kind {
-		case invest.MissingRequiredDocument, invest.MissingField, invest.MissingExternal:
-		default:
-			return fmt.Errorf("orchestrate: rejection record additive[%d] has unknown kind %q: %w",
+		// The content-free guarantee, enforced for the KIND. Kind is
+		// model-authored, so a retained kind must be one of the three closed
+		// literals; a false flag with a populated Kind is refused rather than
+		// trusted, exactly as it is for the key below. The rule is narrowed,
+		// not relaxed: flag-true with an out-of-vocabulary kind is still
+		// rejected with the same unknown-kind error it always was, and only
+		// the honest representation of a submitted unknown kind (empty kind,
+		// flag false) is newly admitted.
+		if a.KindInVocabulary {
+			if !kindInClosedVocabulary(a.Kind) {
+				return fmt.Errorf("orchestrate: rejection record additive[%d] has unknown kind %q: %w",
+					i, string(a.Kind), ErrModelContract)
+			}
+		} else if a.Kind != "" {
+			return fmt.Errorf("orchestrate: rejection record additive[%d] carries kind %q without the closed-vocabulary flag: %w",
 				i, string(a.Kind), ErrModelContract)
 		}
-		// The content-free guarantee, enforced: a retained key must be one
-		// of this package's literals, and an omitted key must really be
-		// omitted rather than smuggled past the flag.
+		// The same guarantee, enforced for the KEY.
 		if a.KeyInVocabulary {
 			if _, ok := closedExternalKeys[a.Key]; !ok {
 				return fmt.Errorf("orchestrate: rejection record additive[%d] claims a closed-vocabulary key %q: %w",
@@ -272,6 +348,13 @@ func rejectionRecordIsContentFree(r *RejectionRecord) bool {
 	}
 	for i := range r.Additive {
 		a := &r.Additive[i]
+		if !a.KindInVocabulary {
+			if a.Kind != "" {
+				return false
+			}
+		} else if !kindInClosedVocabulary(a.Kind) {
+			return false
+		}
 		if !a.KeyInVocabulary {
 			if a.Key != "" {
 				return false
