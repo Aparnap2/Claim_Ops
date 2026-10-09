@@ -348,8 +348,9 @@ func submitPartial(a ModelAction) *Report {
 }
 
 // buildEscalation assembles the ESCALATED output for one exit. History is
-// copied so later appends cannot alias the result.
-func buildEscalation(invID string, reason EscalationReason, partial *Report, history []TurnRecord, modelID string, turnsUsed, toolCalls int) InvestigationOutput {
+// copied so later appends cannot alias the result. rec is the APA-67
+// bounded denial record, nil on every path that did not lose a report.
+func buildEscalation(invID string, reason EscalationReason, partial *Report, rec *RejectionRecord, history []TurnRecord, modelID string, turnsUsed, toolCalls int) InvestigationOutput {
 	var p *ModelSubmitReport
 	if partial != nil {
 		r := normalizeReportCopy(*partial)
@@ -360,6 +361,7 @@ func buildEscalation(invID string, reason EscalationReason, partial *Report, his
 		Outcome:          OutcomeEscalated,
 		EscalationReason: reason,
 		Partial:          p,
+		RejectionRecord:  rec,
 		AttemptLog:       append([]TurnRecord(nil), history...),
 		ModelID:          modelID,
 		TurnsUsed:        turnsUsed,
@@ -512,16 +514,20 @@ func executeLoop(l *Loop, ctx context.Context, known *KnownEvidence) (Investigat
 		// failure, then the last failure observed.
 		lastToolErr error
 	)
-	// fail builds the ESCALATED output and validates it (I4): a built
-	// escalation that violates ValidateInvestigationOutput is a loop
-	// programmer error, so validation failure aborts raw with an empty
-	// output rather than emitting a malformed escalation.
-	fail := func(reason EscalationReason, partial *Report, turn int, cause error) (InvestigationOutput, error) {
-		built := buildEscalation(invID, reason, partial, history, modelID, turn, toolCalls)
+	// failWithRecord builds the ESCALATED output (optionally carrying the
+	// APA-67 denial record) and validates it (I4): a built escalation that
+	// violates ValidateInvestigationOutput is a loop programmer error, so
+	// validation failure aborts raw with an empty output rather than
+	// emitting a malformed escalation.
+	failWithRecord := func(reason EscalationReason, partial *Report, rec *RejectionRecord, turn int, cause error) (InvestigationOutput, error) {
+		built := buildEscalation(invID, reason, partial, rec, history, modelID, turn, toolCalls)
 		if verr := ValidateInvestigationOutput(built); verr != nil {
 			return InvestigationOutput{}, verr
 		}
 		return built, escalationError(reason, cause)
+	}
+	fail := func(reason EscalationReason, partial *Report, turn int, cause error) (InvestigationOutput, error) {
+		return failWithRecord(reason, partial, nil, turn, cause)
 	}
 	complete := func(callCtx context.Context, req ModelRequest) (ModelResponse, error) {
 		return l.model.Complete(callCtx, req)
@@ -612,7 +618,13 @@ func executeLoop(l *Loop, ctx context.Context, known *KnownEvidence) (Investigat
 					reprompted = true
 					continue
 				}
-				return fail(EscalationInvalidOutput, submitPartial(decoded), turn, verr)
+				// APA-67: the report is rejected by a validator, so
+				// submitPartial discards it and Partial stays nil. Retain the
+				// bounded, content-free trace instead, so the denial is
+				// diagnosable in-band rather than lost. The rejection itself is
+				// unchanged: still terminal INVALID_OUTPUT, still carrying verr.
+				return failWithRecord(EscalationInvalidOutput, submitPartial(decoded),
+					buildRejectionRecord(decoded, invalidKindOf(verr)), turn, verr)
 			}
 			act = decoded
 			break
