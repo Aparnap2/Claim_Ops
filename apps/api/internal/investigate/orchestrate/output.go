@@ -71,10 +71,17 @@ type InvestigationOutput struct {
 	Report           *ModelSubmitReport `json:"report,omitempty"`
 	EscalationReason EscalationReason   `json:"escalation_reason,omitempty"`
 	Partial          *ModelSubmitReport `json:"partial,omitempty"`
-	AttemptLog       []TurnRecord       `json:"attempt_log"`
-	ModelID          string             `json:"model_id,omitempty"`
-	TurnsUsed        int                `json:"turns_used"`
-	ToolCallsUsed    int                `json:"tool_calls_used"`
+	// RejectionRecord is the APA-67 bounded trace of a DENIED submission
+	// (closed vocabulary and counts only, never text or values). It is set
+	// solely on the validator rejection path, where Partial is nil because
+	// the report failed ValidateReport. Nil everywhere else — including the
+	// grounding path, which keeps the whole report in Partial — so omitempty
+	// leaves every pre-existing wire form byte-identical.
+	RejectionRecord *RejectionRecord `json:"rejection_record,omitempty"`
+	AttemptLog      []TurnRecord     `json:"attempt_log"`
+	ModelID         string           `json:"model_id,omitempty"`
+	TurnsUsed       int              `json:"turns_used"`
+	ToolCallsUsed   int              `json:"tool_calls_used"`
 }
 
 // ValidateInvestigationOutput checks one run result standalone.
@@ -96,6 +103,9 @@ func ValidateInvestigationOutput(o InvestigationOutput) error {
 		if o.Partial != nil {
 			return fmt.Errorf("orchestrate: output REPORT_READY must not carry partial: %w", ErrModelContract)
 		}
+		if o.RejectionRecord != nil {
+			return fmt.Errorf("orchestrate: output REPORT_READY must not carry rejection_record: %w", ErrModelContract)
+		}
 	case OutcomeEscalated:
 		switch o.EscalationReason {
 		case EscalationTurnsExhausted, EscalationCallsExhausted, EscalationDeadline,
@@ -111,6 +121,12 @@ func ValidateInvestigationOutput(o InvestigationOutput) error {
 			if err := ValidateReport(*o.Partial); err != nil {
 				return fmt.Errorf("orchestrate: output partial: %v: %w", err, ErrModelContract)
 			}
+		}
+		// APA-67: the retained denial record is validated, never trusted.
+		// It is additive — it narrows what an escalation may carry, and
+		// changes no existing rule.
+		if err := ValidateRejectionRecord(o.RejectionRecord); err != nil {
+			return fmt.Errorf("orchestrate: output rejection_record: %v: %w", err, ErrModelContract)
 		}
 	default:
 		return fmt.Errorf("orchestrate: output has unknown outcome %q: %w", string(o.Outcome), ErrModelContract)
@@ -197,6 +213,7 @@ func normalizeOutputCopy(o InvestigationOutput) InvestigationOutput {
 		p := normalizeReportCopy(*out.Partial)
 		out.Partial = &p
 	}
+	out.RejectionRecord = normalizeRejectionRecordCopy(out.RejectionRecord)
 	return out
 }
 
