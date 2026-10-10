@@ -77,7 +77,7 @@ jobs:
             -e 'ghp_[A-Za-z0-9]{36,}' \
             -e 'gho_[A-Za-z0-9]{36,}' \
             -e '-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----' \
-            .; then
+            . >/dev/null; then
             echo "::error::secret-like pattern found — remove before merge (no real secrets or PII/PHI in repo, ever)"
             exit 1
           fi
