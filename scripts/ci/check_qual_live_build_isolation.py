@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -62,31 +63,61 @@ def main() -> int:
     env = os.environ.copy()
     env["GROQ" + "_API_KEY"] = "sentinel"
     env["POOLSIDE" + "_API_KEY"] = "sentinel"
-    print("Credential sentinel variables are set only for compile/list checks; test bodies are never executed.")
+    print(
+        "Credential sentinel variables are set only for compile/list checks; "
+        "test bodies are never executed."
+    )
     try:
         default_output = run_list(["go", "test", "./...", "-list", ".*"], env)
         default_names = listed_tests(default_output)
-        missing_default = sorted(name for names in DEFAULT_ONLY_TESTS.values() for name in names if name not in default_names)
+        missing_default = [
+            name
+            for names in DEFAULT_ONLY_TESTS.values()
+            for name in names
+            if name not in default_names
+        ]
         if missing_default:
-            print("Deterministic gate/transport tests were lost from the default build: " + ", ".join(missing_default), file=sys.stderr)
+            print(
+                "Deterministic gate/transport tests were lost from the default build: "
+                + ", ".join(missing_default),
+                file=sys.stderr,
+            )
             return 1
-        unexpected = sorted(name for names in LIVE_TESTS.values() for name in names if name in default_names)
+        unexpected = [
+            name
+            for names in LIVE_TESTS.values()
+            for name in names
+            if name in default_names
+        ]
         if unexpected:
-            print("Live-provider tests compiled into the default build: " + ", ".join(unexpected), file=sys.stderr)
+            print(
+                "Live-provider tests compiled into the default build: " + ", ".join(unexpected),
+                file=sys.stderr,
+            )
             return 1
 
         tagged_outputs = {
-            "orchestrate": run_list(["go", "test", "-tags", "qual_live", "./internal/investigate/orchestrate/", "-list", ".*"], env),
-            "agent": run_list(["go", "test", "-tags", "qual_live", "./cmd/agent", "-list", ".*"], env),
+            "orchestrate": run_list(
+                ["go", "test", "-tags", "qual_live", "./internal/investigate/orchestrate/", "-list", ".*"],
+                env,
+            ),
+            "agent": run_list(
+                ["go", "test", "-tags", "qual_live", "./cmd/agent", "-list", ".*"], env
+            ),
         }
         for package, expected in LIVE_TESTS.items():
             actual = listed_tests(tagged_outputs[package])
             missing = sorted(set(expected) - actual)
             if missing:
-                print("Missing qual_live tests in " + package + ": " + ", ".join(missing), file=sys.stderr)
+                print(
+                    "Missing qual_live tests in " + package + ": " + ", ".join(missing),
+                    file=sys.stderr,
+                )
                 return 1
-        print("PASS: all " + str(sum(map(len, LIVE_TESTS.values()))) +
-              " live-provider tests are absent by default and listed under qual_live; none were executed.")
+        print(
+            "PASS: all " + str(sum(map(len, LIVE_TESTS.values())))
+            + " live-provider tests are absent by default and listed under qual_live; none were executed."
+        )
         return 0
     except (OSError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)

@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "check_live_provider_workflow_secrets.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[2]
+    / "scripts"
+    / "ci"
+    / "check_live_provider_workflow_secrets.py"
+)
 
 
 def run_guard(workflows: Path) -> subprocess.CompletedProcess[str]:

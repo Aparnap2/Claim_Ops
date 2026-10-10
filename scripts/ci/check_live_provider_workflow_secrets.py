@@ -20,7 +20,11 @@ def is_pull_request_workflow(text: str) -> bool:
         if re.search(r"\bpull_request(?:_target)?\b", inline):
             return True
         for candidate in lines[index + 1 :]:
-            if candidate.strip() and not candidate.lstrip().startswith("#") and not candidate[0].isspace():
+            if (
+                candidate.strip()
+                and not candidate.lstrip().startswith("#")
+                and not candidate[0].isspace()
+            ):
                 break
             if re.match(r"^\s+pull_request(?:_target)?\s*:", candidate):
                 return True
@@ -38,7 +42,9 @@ def violations(workflows_dir: Path) -> list[str]:
         for name in FORBIDDEN_NAMES:
             for line_number, line in enumerate(text.splitlines(), start=1):
                 if name in line:
-                    failures.append(f"{path}:{line_number}: forbidden live-provider credential reference ({name})")
+                    failures.append(
+                        f"{path}:{line_number}: forbidden live-provider credential reference ({name})"
+                    )
     return failures
 
 
