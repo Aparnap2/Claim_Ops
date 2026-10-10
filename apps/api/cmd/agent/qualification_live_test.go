@@ -59,8 +59,11 @@ import (
 	"time"
 
 	"claimops-api/internal/claims"
+	"claimops-api/internal/invest"
+	"claimops-api/internal/investigate"
 	"claimops-api/internal/investigate/orchestrate"
 	"claimops-api/internal/repository/postgres"
+	"claimops-api/internal/verify"
 )
 
 // ---------------------------------------------------------------------------
@@ -533,56 +536,239 @@ func assertGroundedCitations(t *testing.T, run qualLiveRun, fx *matrixFixture) {
 // S4 — cross-tenant evidence must never leak
 // ---------------------------------------------------------------------------
 
-// TestQualificationLive_S4_CrossTenantIsolation covers scenario 4.
-//
-// The deciding deterministic assertion is tenant identity authority: the
-// request identity must come from the scope, never from the model, and a
-// foreign tenant's claim row is byte-identical afterwards. The live model
-// is given a real investigation for its own tenant; whatever it emits,
-// the invariant is that no foreign-tenant ID reaches any run surface and
-// no foreign claim is written.
-//
-// The gate half reuses the APA-38 cross-tenant construction, so the
-// specific I4-request refusal stays proven independently of the model.
+// TestQualificationGate_S4_CrossTenantIsolation pins the deterministic I4-request refusal without invoking a model.
+// The real-provider half remains TestQualificationLive_S4_CrossTenantIsolation under the qual_live build tag.
+func TestQualificationGate_S4_CrossTenantIsolation(t *testing.T) {
+	pool := liveServicePool(t)
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
+
+	// --- gate: the specific refusal, deterministic and model-free ---
+	t.Run("gate_foreign_tenant_request_refused_before_reader", func(t *testing.T) {
+		fx := newMatrixFixture(t, pool, 0)
+		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetClaim, invest.ToolGetEvidence}, 5)
+		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
+		foreign := "tnt-apa49-foreign-" + liveServiceRand(t, 4)
+		seedLiveServiceClaim(t, pool, foreign, fx.claim+"-foreign")
+		foreignBefore := snapshotLiveServiceClaim(t, pool, foreign, fx.claim+"-foreign")
+
+		m := matrixPost(t, pool, fx, [][]byte{matrixCrossTenantRequest(t, fx)})
+
+		matrixAssertEscalated(t, m, orchestrate.EscalationInvalidOutput, "I4-request")
+		matrixAssertToolCallsUsed(t, m, 0)
+		matrixAssertAttemptLen(t, m, 0)
+		after := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
+		assertNoAuthoritativeMutation(t, before, after)
+		assertNoForeignMutation(t, pool, foreign, fx.claim+"-foreign", foreignBefore)
+		t.Logf("APA49-GATE s4 cross-tenant request refused at I4-request, zero reader calls, foreign claim untouched")
+	})
+
+}
 
 // ---------------------------------------------------------------------------
 // S6 — missing required evidence -> R8 -> HITL
 // ---------------------------------------------------------------------------
 
-// TestQualificationLive_S6_MissingRequiredDocumentHITL covers scenario 6
-// on the APA-31 path: an absent required document raises R8
-// (MISSING_REQUIRED_DOCUMENT), and the investigation routes to a human
-// instead of resolving itself.
-//
-// The deciding deterministic assertion is additive-only: the R8 missing
-// item is already known open by the deterministic side, so the boundary
-// must never let a report drop it. Dropping it would be the investigation
-// quietly forgetting a document it never saw, which is precisely the
-// failure mode HITL exists to prevent.
-//
-// The gate half reuses the APA-31/APA-38 constructions; the live half
-// runs the real model against an envelope that genuinely carries an R8
-// finding and its derived missing item.
+// TestQualificationGate_S6_MissingRequiredDocumentHITL pins the additive-only R8 refusal without invoking a model.
+// The real-provider half remains TestQualificationLive_S6_MissingRequiredDocumentHITL under the qual_live build tag.
+func TestQualificationGate_S6_MissingRequiredDocumentHITL(t *testing.T) {
+	pool := liveServicePool(t)
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
+
+	// buildR8Envelope is the APA-31 shape: a rule finding at rank 8 for
+	// the absent required document, plus the derived missing item the
+	// deterministic side derived from it. Key and detail must match
+	// invest.Build's emission exactly, or the additive-only check would
+	// be testing a fixture bug rather than the boundary.
+	buildR8Envelope := func(t *testing.T, fx *matrixFixture) {
+		t.Helper()
+		env := validEnvelopeForTenant(fx.tenant, fx.claim, fx.invID, fx.exID, fx.reqID)
+		env.EvidenceRefs = []invest.EvidenceRef{{
+			EvidenceID: fx.anchor, SourceType: invest.EvidenceSourceDocument,
+			SourceID: fx.docID, TenantID: fx.tenant, ClaimID: fx.claim,
+			DocumentID: fx.docID, Page: 1,
+		}}
+		// R1 then R8, in verify emission order: the envelope's rule
+		// findings are R1-R10 emission order and are never re-sorted. R8
+		// projects to no affected fields (the document is absent, so
+		// there is no field to blame), which is the deterministic
+		// projection rather than an agent assertion.
+		env.RuleFindings = []invest.RuleFinding{{
+			Code:           invest.RulePolicyNumberConflict,
+			Severity:       invest.SeverityHigh,
+			Message:        "policy number conflict",
+			EvidenceIDs:    []string{fx.anchor},
+			AffectedFields: []string{"policy_number"},
+		}, {
+			Code:           invest.RuleMissingRequiredDocument,
+			Severity:       invest.SeverityHigh,
+			Message:        "Missing required document: " + verify.DocHospitalBill + ".",
+			EvidenceIDs:    []string{fx.anchor},
+			AffectedFields: []string{},
+		}}
+		env.MissingEvidence = []invest.MissingItem{{
+			Kind:   invest.MissingRequiredDocument,
+			Key:    verify.DocHospitalBill,
+			Detail: "R8: " + verify.DocHospitalBill + " absent",
+		}}
+		env.Scope.AllowTools = []invest.ToolName{invest.ToolGetClaim, invest.ToolGetEvidence}
+		env.Scope.MaxToolCalls = 5
+		env.Scope.DeadlineMs = 30000
+		if err := invest.Validate(env); err != nil {
+			t.Fatalf("R8 envelope invalid: %v", err)
+		}
+		if err := investigate.NewPGEnvelopeStore(pool).SaveEnvelope(t.Context(), env); err != nil {
+			t.Fatalf("SaveEnvelope: %v", err)
+		}
+	}
+
+	// --- gate: the additive-only rule refuses a dropped R8 item ---
+	t.Run("gate_dropping_the_r8_item_is_refused", func(t *testing.T) {
+		fx := newMatrixFixture(t, pool, 0)
+		buildR8Envelope(t, fx)
+		// A structurally valid report that cites only the known anchor
+		// and drops the R8 missing item. Grounding must refuse it: the
+		// missing list is additive-only.
+		report := orchestrate.Report{
+			Hypotheses: []invest.Hypothesis{{
+				ID: "h-01", Statement: "the missing bill explains the conflict",
+				Falsifier:   "a pinned hospital bill for the claim period",
+				Status:      invest.HypothesisOpen,
+				EvidenceIDs: []string{fx.anchor},
+			}},
+			Findings: []invest.Finding{{
+				ID: "f-01", HypothesisID: "h-01",
+				Summary:     "the cited evidence shows the conflict",
+				EvidenceIDs: []string{fx.anchor},
+			}},
+			Recommendation: invest.Recommendation{
+				Action: invest.RecommendReferHuman, Rationale: "human decides",
+				FindingIDs: []string{"f-01"},
+			},
+			// MissingAdditive intentionally omits the R8 item.
+			MissingAdditive: nil,
+		}
+		raw, err := json.Marshal(orchestrate.ModelAction{
+			Action: orchestrate.ActionSubmitReport, Report: &report,
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		m := matrixPost(t, pool, fx, [][]byte{raw})
+		matrixAssertEscalated(t, m, orchestrate.EscalationInvalidOutput, "I6-grounding")
+		if msg, _ := m["error"].(string); !strings.Contains(msg, "additive only") {
+			t.Fatalf("error = %q, want the additive-only cause", msg)
+		}
+		if msg, _ := m["error"].(string); !strings.Contains(msg, verify.DocHospitalBill) {
+			t.Fatalf("error = %q, want the dropped R8 document named", msg)
+		}
+		t.Logf("APA49-GATE s6 dropping the R8 required-document item refused at I6-grounding (additive only)")
+	})
+
+}
 
 // ---------------------------------------------------------------------------
 // S8 — failure and retry with no duplicate mutation
 // ---------------------------------------------------------------------------
 
-// TestQualificationLive_S8_RetryNoDuplicateMutation covers scenario 8.
-//
-// Two halves, because "tool failure/retry" and "no duplicate mutation"
-// are two different claims:
-//
-//   - retry semantics: the production Groq client's bounded retry is
-//     exercised for real over a real HTTP socket. The transport is
-//     substituted (a local endpoint that answers 503 once, then a valid
-//     completion) but the client, its retry predicate, and its backoff
-//     are the production ones. This is a transport substitution, not a
-//     provider substitution, and it is labelled as such in the log.
-//   - no duplicate mutation: the same real client against live Groq, with
-//     a real reader, where the decisive assertion is that the
-//     authoritative state is byte-identical regardless of what the model
-//     did or how many turns it burned.
+// TestQualificationS8_TransportRetryBounds proves bounded production-client retries against loopback HTTP stubs.
+// The real-provider no-duplicate-mutation half remains TestQualificationLive_S8_RetryNoDuplicateMutation under qual_live.
+func TestQualificationS8_TransportRetryBounds(t *testing.T) {
+	pool := liveServicePool(t)
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
+
+	// --- retry semantics: real client, real socket, first call 503 ---
+	t.Run("bounded_retry_recovers_and_lands_grounded", func(t *testing.T) {
+		fx := newMatrixFixture(t, pool, 2)
+		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetClaim, invest.ToolGetEvidence}, 5)
+		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
+
+		var hits int32
+		var served []int32
+		// The first request is a retryable 503; the second is a valid
+		// grounded act over the envelope's own anchor. The production
+		// client must retry exactly once and then succeed.
+		stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := atomic.AddInt32(&hits, 1)
+			served = append(served, n)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("x-request-id", fmt.Sprintf("stub-req-%d", n))
+			if n == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"message":"upstream busy","type":"server_error","code":"server_error"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"stub-ok","model":"stub-503-then-200","choices":[{"message":{"content":` +
+				quoteJSON(matrixSubmitReport(t, fx.anchor)) + `}}]}`))
+		}))
+		defer stub.Close()
+
+		client, err := orchestrate.NewGroqModelClient(qualStubKey, "", stub.URL+"/v1")
+		if err != nil {
+			t.Fatalf("NewGroqModelClient: %v", err)
+		}
+		run := qualPost(t, pool, qualApp(pool, client), fx, nil)
+		run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
+		run.Scenario, run.HTTPHits = "s8_bounded_retry", int(atomic.LoadInt32(&hits))
+		qualRecord(t, run)
+
+		// The deciding assertion: the client retried, and it retried
+		// exactly the bounded number of times.
+		if got := atomic.LoadInt32(&hits); got != 2 {
+			t.Fatalf("provider saw %d requests, want exactly 2 (one 503, one bounded retry): %v", got, served)
+		}
+		if outcome, _ := run.Body["outcome"].(string); outcome != string(orchestrate.OutcomeReportReady) {
+			t.Fatalf("outcome = %q, want REPORT_READY after a recovered retry (body %v)", outcome, run.Body)
+		}
+		assertClosedTerminal(t, run)
+		assertGroundedCitations(t, run, fx)
+		assertNoAuthoritativeMutation(t, before, run.AfterState)
+	})
+
+	// --- the retry must stay bounded when the provider never recovers ---
+	t.Run("retry_is_bounded_not_infinite", func(t *testing.T) {
+		fx := newMatrixFixture(t, pool, 0)
+		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetEvidence}, 5)
+		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
+
+		var hits int32
+		stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			atomic.AddInt32(&hits, 1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream busy","type":"server_error","code":"server_error"}}`))
+		}))
+		defer stub.Close()
+
+		client, err := orchestrate.NewGroqModelClient(qualStubKey, "", stub.URL+"/v1")
+		if err != nil {
+			t.Fatalf("NewGroqModelClient: %v", err)
+		}
+		run := qualPost(t, pool, qualApp(pool, client), fx, nil)
+		run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
+		run.Scenario, run.HTTPHits = "s8_retry_bounded", int(atomic.LoadInt32(&hits))
+		qualRecord(t, run)
+
+		// Two model calls are possible: the client's internal retry, then
+		// the loop's single upstream retry. The point is that the count
+		// is small and terminal, never unbounded, and that the run
+		// escalates deterministically instead of looping.
+		if got := atomic.LoadInt32(&hits); got < 2 || got > 4 {
+			t.Fatalf("provider saw %d requests, want a bounded 2..4 (client retry + one loop retry)", got)
+		}
+		if reason, _ := run.Body["escalation_reason"].(string); reason != string(orchestrate.EscalationModelUpstream) {
+			t.Fatalf("reason = %q, want MODEL_UPSTREAM (body %v)", reason, run.Body)
+		}
+		if msg, _ := run.Body["error"].(string); !strings.Contains(msg, "exhausted") {
+			t.Fatalf("error = %q, want the bounded-exhausted marker", msg)
+		}
+		assertClosedTerminal(t, run)
+		assertNoAuthoritativeMutation(t, before, run.AfterState)
+	})
+
+}
 
 // qualStubKey is the placeholder credential for the transport-substitution
 // halves of S8. Those halves drive the production retry predicate against
@@ -600,59 +786,6 @@ func quoteJSON(s []byte) string {
 	}
 	return string(raw)
 }
-
-// ---------------------------------------------------------------------------
-// S9 — budget exhaustion is deterministic
-// ---------------------------------------------------------------------------
-
-// TestQualificationLive_S9_BudgetExhaustion covers scenario 9.
-//
-// The deciding deterministic assertion is that a spent budget is
-// ESCALATED, never a silent stop and never a further turn. The tool
-// budget is the one the envelope controls, so a MaxToolCalls of 1 makes
-// the boundary's arithmetic the deciding factor: the run may execute at
-// most one read, and the second attempt is refused before Execute.
-
-// ---------------------------------------------------------------------------
-// S10 — deadline propagates, nothing is orphaned
-// ---------------------------------------------------------------------------
-
-// TestQualificationLive_S10_DeadlinePropagates covers scenario 10.
-//
-// What is deterministic here, and is therefore what this test asserts:
-// the run reaches a closed typed terminal, executes NO tool, and leaves
-// the authoritative state byte-identical. A deadline is an abort, not a
-// partial write, so "nothing happened" is the whole promise.
-//
-// The DEADLINE reason specifically is NOT asserted, and the reason is
-// worth recording rather than papering over. The loop's deadline is
-// turn-granular: it is checked at the top of every turn and re-checked
-// after a tool executes, because one Complete call may legitimately
-// outlive the deadline under the turn cap (loop.go package contract).
-// Turn 1 therefore always starts inside the budget, and if the model
-// fails validation on its first act the run escalates at the decode
-// boundary before any deadline re-check is reached. Against the real
-// ADR-002 model that is exactly what happens: the first act is refused as
-// I1-malformed and INVALID_OUTPUT wins the race. So DEADLINE is
-// unreachable through this boundary for this model, and the terminal
-// itself is qualified at the loop level, where a delay seam exists, in
-// TestQualification_S10_DeadlineAndCancellation and in the pre-existing
-// TestDeadlineEscalates. Asserting DEADLINE here would mean forcing an
-// outcome the production control flow does not produce, which is exactly
-// the kind of manufactured evidence this qualification forbids.
-
-// ---------------------------------------------------------------------------
-// S11 — repeated execution is stable and non-duplicating
-// ---------------------------------------------------------------------------
-
-// TestQualificationLive_S11_IdempotentExecution covers scenario 11.
-//
-// Two identical POSTs for one investigation_id. The deciding assertions
-// are: the authoritative state is byte-identical across both runs (no
-// duplicate authoritative mutation), and the outcome is stable — same
-// terminal class, and where both accept a report, byte-identical
-// reports. Stability is asserted at the terminal class and the report
-// bytes, never at the model's prose, which is allowed to vary.
 
 // mustInt reads a numeric body field, failing the test if absent.
 func mustInt(t *testing.T, v any) int {

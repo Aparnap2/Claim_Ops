@@ -5,11 +5,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync/atomic"
 	"testing"
 
 	"claimops-api/internal/invest"
@@ -22,27 +17,6 @@ func TestQualificationLive_S4_CrossTenantIsolation(t *testing.T) {
 	pool := liveServicePool(t)
 	t.Setenv("APP_ENV", "test")
 	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
-
-	// --- gate: the specific refusal, deterministic and model-free ---
-	t.Run("gate_foreign_tenant_request_refused_before_reader", func(t *testing.T) {
-		fx := newMatrixFixture(t, pool, 0)
-		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetClaim, invest.ToolGetEvidence}, 5)
-		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		foreign := "tnt-apa49-foreign-" + liveServiceRand(t, 4)
-		seedLiveServiceClaim(t, pool, foreign, fx.claim+"-foreign")
-		foreignBefore := snapshotLiveServiceClaim(t, pool, foreign, fx.claim+"-foreign")
-
-		m := matrixPost(t, pool, fx, [][]byte{matrixCrossTenantRequest(t, fx)})
-
-		matrixAssertEscalated(t, m, orchestrate.EscalationInvalidOutput, "I4-request")
-		matrixAssertToolCallsUsed(t, m, 0)
-		matrixAssertAttemptLen(t, m, 0)
-		after := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		assertNoAuthoritativeMutation(t, before, after)
-		assertNoForeignMutation(t, pool, foreign, fx.claim+"-foreign", foreignBefore)
-		t.Logf("APA49-GATE s4 cross-tenant request refused at I4-request, zero reader calls, foreign claim untouched")
-	})
-
 	// --- live: real model, real reader, no leak ---
 	t.Run("live_model_never_leaks_foreign_tenant", func(t *testing.T) {
 		model := requireLiveModel(t)
@@ -116,50 +90,6 @@ func TestQualificationLive_S6_MissingRequiredDocumentHITL(t *testing.T) {
 			t.Fatalf("SaveEnvelope: %v", err)
 		}
 	}
-
-	// --- gate: the additive-only rule refuses a dropped R8 item ---
-	t.Run("gate_dropping_the_r8_item_is_refused", func(t *testing.T) {
-		fx := newMatrixFixture(t, pool, 0)
-		buildR8Envelope(t, fx)
-		// A structurally valid report that cites only the known anchor
-		// and drops the R8 missing item. Grounding must refuse it: the
-		// missing list is additive-only.
-		report := orchestrate.Report{
-			Hypotheses: []invest.Hypothesis{{
-				ID: "h-01", Statement: "the missing bill explains the conflict",
-				Falsifier:   "a pinned hospital bill for the claim period",
-				Status:      invest.HypothesisOpen,
-				EvidenceIDs: []string{fx.anchor},
-			}},
-			Findings: []invest.Finding{{
-				ID: "f-01", HypothesisID: "h-01",
-				Summary:     "the cited evidence shows the conflict",
-				EvidenceIDs: []string{fx.anchor},
-			}},
-			Recommendation: invest.Recommendation{
-				Action: invest.RecommendReferHuman, Rationale: "human decides",
-				FindingIDs: []string{"f-01"},
-			},
-			// MissingAdditive intentionally omits the R8 item.
-			MissingAdditive: nil,
-		}
-		raw, err := json.Marshal(orchestrate.ModelAction{
-			Action: orchestrate.ActionSubmitReport, Report: &report,
-		})
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		m := matrixPost(t, pool, fx, [][]byte{raw})
-		matrixAssertEscalated(t, m, orchestrate.EscalationInvalidOutput, "I6-grounding")
-		if msg, _ := m["error"].(string); !strings.Contains(msg, "additive only") {
-			t.Fatalf("error = %q, want the additive-only cause", msg)
-		}
-		if msg, _ := m["error"].(string); !strings.Contains(msg, verify.DocHospitalBill) {
-			t.Fatalf("error = %q, want the dropped R8 document named", msg)
-		}
-		t.Logf("APA49-GATE s6 dropping the R8 required-document item refused at I6-grounding (additive only)")
-	})
-
 	// --- live: real model against a genuine R8 envelope ---
 	t.Run("live_model_cannot_forget_the_absent_document", func(t *testing.T) {
 		model := requireLiveModel(t)
@@ -202,96 +132,6 @@ func TestQualificationLive_S8_RetryNoDuplicateMutation(t *testing.T) {
 	pool := liveServicePool(t)
 	t.Setenv("APP_ENV", "test")
 	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
-
-	// --- retry semantics: real client, real socket, first call 503 ---
-	t.Run("bounded_retry_recovers_and_lands_grounded", func(t *testing.T) {
-		fx := newMatrixFixture(t, pool, 2)
-		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetClaim, invest.ToolGetEvidence}, 5)
-		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-
-		var hits int32
-		var served []int32
-		// The first request is a retryable 503; the second is a valid
-		// grounded act over the envelope's own anchor. The production
-		// client must retry exactly once and then succeed.
-		stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			n := atomic.AddInt32(&hits, 1)
-			served = append(served, n)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("x-request-id", fmt.Sprintf("stub-req-%d", n))
-			if n == 1 {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = w.Write([]byte(`{"error":{"message":"upstream busy","type":"server_error","code":"server_error"}}`))
-				return
-			}
-			_, _ = w.Write([]byte(`{"id":"stub-ok","model":"stub-503-then-200","choices":[{"message":{"content":` +
-				quoteJSON(matrixSubmitReport(t, fx.anchor)) + `}}]}`))
-		}))
-		defer stub.Close()
-
-		client, err := orchestrate.NewGroqModelClient(qualStubKey, "", stub.URL+"/v1")
-		if err != nil {
-			t.Fatalf("NewGroqModelClient: %v", err)
-		}
-		run := qualPost(t, pool, qualApp(pool, client), fx, nil)
-		run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		run.Scenario, run.HTTPHits = "s8_bounded_retry", int(atomic.LoadInt32(&hits))
-		qualRecord(t, run)
-
-		// The deciding assertion: the client retried, and it retried
-		// exactly the bounded number of times.
-		if got := atomic.LoadInt32(&hits); got != 2 {
-			t.Fatalf("provider saw %d requests, want exactly 2 (one 503, one bounded retry): %v", got, served)
-		}
-		if outcome, _ := run.Body["outcome"].(string); outcome != string(orchestrate.OutcomeReportReady) {
-			t.Fatalf("outcome = %q, want REPORT_READY after a recovered retry (body %v)", outcome, run.Body)
-		}
-		assertClosedTerminal(t, run)
-		assertGroundedCitations(t, run, fx)
-		assertNoAuthoritativeMutation(t, before, run.AfterState)
-	})
-
-	// --- the retry must stay bounded when the provider never recovers ---
-	t.Run("retry_is_bounded_not_infinite", func(t *testing.T) {
-		fx := newMatrixFixture(t, pool, 0)
-		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetEvidence}, 5)
-		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-
-		var hits int32
-		stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			atomic.AddInt32(&hits, 1)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error":{"message":"upstream busy","type":"server_error","code":"server_error"}}`))
-		}))
-		defer stub.Close()
-
-		client, err := orchestrate.NewGroqModelClient(qualStubKey, "", stub.URL+"/v1")
-		if err != nil {
-			t.Fatalf("NewGroqModelClient: %v", err)
-		}
-		run := qualPost(t, pool, qualApp(pool, client), fx, nil)
-		run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		run.Scenario, run.HTTPHits = "s8_retry_bounded", int(atomic.LoadInt32(&hits))
-		qualRecord(t, run)
-
-		// Two model calls are possible: the client's internal retry, then
-		// the loop's single upstream retry. The point is that the count
-		// is small and terminal, never unbounded, and that the run
-		// escalates deterministically instead of looping.
-		if got := atomic.LoadInt32(&hits); got < 2 || got > 4 {
-			t.Fatalf("provider saw %d requests, want a bounded 2..4 (client retry + one loop retry)", got)
-		}
-		if reason, _ := run.Body["escalation_reason"].(string); reason != string(orchestrate.EscalationModelUpstream) {
-			t.Fatalf("reason = %q, want MODEL_UPSTREAM (body %v)", reason, run.Body)
-		}
-		if msg, _ := run.Body["error"].(string); !strings.Contains(msg, "exhausted") {
-			t.Fatalf("error = %q, want the bounded-exhausted marker", msg)
-		}
-		assertClosedTerminal(t, run)
-		assertNoAuthoritativeMutation(t, before, run.AfterState)
-	})
-
 	// --- real model, real reader, no duplicate mutation ---
 	t.Run("live_model_no_duplicate_mutation", func(t *testing.T) {
 		model := requireLiveModel(t)

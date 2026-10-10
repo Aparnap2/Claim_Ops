@@ -10,6 +10,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 API = ROOT / "apps" / "api"
+DEFAULT_ONLY_TESTS = {
+    "agent": (
+        "TestQualificationGate_S4_CrossTenantIsolation",
+        "TestQualificationGate_S6_MissingRequiredDocumentHITL",
+        "TestQualificationS8_TransportRetryBounds",
+    ),
+}
+
 LIVE_TESTS = {
     "orchestrate": (
         "TestQualification_S1_NormalGroundedCase",
@@ -59,6 +67,10 @@ def main() -> int:
     try:
         default_output = run_list(["go", "test", "./...", "-list", ".*"], env)
         default_names = listed_tests(default_output)
+        missing_default = sorted(name for names in DEFAULT_ONLY_TESTS.values() for name in names if name not in default_names)
+        if missing_default:
+            print("Deterministic gate/transport tests were lost from the default build: " + ", ".join(missing_default), file=sys.stderr)
+            return 1
         unexpected = sorted(name for names in LIVE_TESTS.values() for name in names if name in default_names)
         if unexpected:
             print("Live-provider tests compiled into the default build: " + ", ".join(unexpected), file=sys.stderr)
