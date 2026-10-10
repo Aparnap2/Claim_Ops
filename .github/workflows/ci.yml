@@ -53,7 +53,7 @@ jobs:
         # Mirrors `make lint`'s gofmt gate (empty output = clean).
         run: |
           files="$(gofmt -l .)"
-          if [ -n "$files" ]; then echo "gofmt: unformatted files:"; echo "$files"; exit 1; fi
+          if [ -n "$files" ]; then echo "gofmt: unformatted files:"; echo "$files"; gofmt -d $files; exit 1; fi
           echo "gofmt: clean"
 
       - name: go vet
