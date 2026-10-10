@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/pubsub v1.51.1
 	cloud.google.com/go/storage v1.67.0
 	github.com/gofiber/fiber/v2 v2.52.15
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	google.golang.org/api v0.287.1
 	google.golang.org/grpc v1.82.1
 )
