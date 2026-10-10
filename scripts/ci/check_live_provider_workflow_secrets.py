@@ -42,9 +42,11 @@ def violations(workflows_dir: Path) -> list[str]:
         for name in FORBIDDEN_NAMES:
             for line_number, line in enumerate(text.splitlines(), start=1):
                 if name in line:
-                    failures.append(
-                        f"{path}:{line_number}: forbidden live-provider credential reference ({name})"
+                    message = (
+                        f"{path}:{line_number}: forbidden live-provider credential "
+                        f"reference ({name})"
                     )
+                    failures.append(message)
     return failures
 
 

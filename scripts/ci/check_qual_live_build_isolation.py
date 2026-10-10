@@ -98,7 +98,10 @@ def main() -> int:
 
         tagged_outputs = {
             "orchestrate": run_list(
-                ["go", "test", "-tags", "qual_live", "./internal/investigate/orchestrate/", "-list", ".*"],
+                [
+                    "go", "test", "-tags", "qual_live",
+                    "./internal/investigate/orchestrate/", "-list", ".*",
+                ],
                 env,
             ),
             "agent": run_list(
@@ -114,9 +117,10 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 1
+        live_count = sum(map(len, LIVE_TESTS.values()))
         print(
-            "PASS: all " + str(sum(map(len, LIVE_TESTS.values())))
-            + " live-provider tests are absent by default and listed under qual_live; none were executed."
+            f"PASS: all {live_count} live-provider tests are absent by default and listed "
+            "under qual_live; none were executed."
         )
         return 0
     except (OSError, RuntimeError) as exc:
