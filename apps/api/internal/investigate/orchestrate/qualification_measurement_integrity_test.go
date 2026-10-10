@@ -357,7 +357,7 @@ func TestQualMeasurement_PacedMSIsCumulativeNotPerCall(t *testing.T) {
 	rec.record(qualWireAttempt{
 		Seq: 1, Status: 429, AuthHeaderPresent: false,
 	})
-	got := rec.pacingWait(4096)
+	got := rec.pacingWait()
 	want := qualMinPacingWait + 250*time.Millisecond
 	if got != want {
 		t.Fatalf("pacingWait = %v, want %v (the floor plus the 250ms margin); the live per-call "+
