@@ -1042,7 +1042,6 @@ func apa56CausalEmptyAdditive(t *testing.T, env invest.UnresolvedException) Repo
 // end in a classified outcome, never a silent no-op, and that is the false arm
 // of apa55AssertExercised.
 
-
 // apa56CausalObs pairs one repetition's harness record with what the model
 // ACTUALLY submitted.
 //

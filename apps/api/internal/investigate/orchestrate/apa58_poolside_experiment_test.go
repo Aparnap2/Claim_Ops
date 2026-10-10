@@ -318,4 +318,3 @@ func requireLivePoolside(t *testing.T) (*qualModel, *qualWireRecorder) {
 // the production request shape at all, and records the served model id. It is
 // the capacity precondition: without it, a matrix result would be
 // indistinguishable from a quota problem.
-

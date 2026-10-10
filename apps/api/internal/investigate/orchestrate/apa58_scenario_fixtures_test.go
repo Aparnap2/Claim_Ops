@@ -486,7 +486,6 @@ func psOutcomeNeedsTool(t *testing.T, evs []qualEvidence) {
 	t.Logf("APA58-B1 runs=%d attempted_a_tool=%d executed_a_tool=%d", len(evs), attempted, executed)
 }
 
-
 // TestAPA58_SeededScenariosAreDistinct is the anti-duplication gate.
 //
 // It renders the model-facing prompt for every registered scenario and requires

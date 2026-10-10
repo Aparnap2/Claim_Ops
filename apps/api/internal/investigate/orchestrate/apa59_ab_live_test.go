@@ -72,4 +72,3 @@ func (r *abActionRecorder) count(action string) int {
 
 // TestAPA59ABDecisiveToolTrajectory runs both arms over ps_b1_valid_tool and
 // enforces the causal decision rule on the measured trajectories.
-

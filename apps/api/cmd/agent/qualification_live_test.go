@@ -545,7 +545,6 @@ func assertGroundedCitations(t *testing.T, run qualLiveRun, fx *matrixFixture) {
 // The gate half reuses the APA-38 cross-tenant construction, so the
 // specific I4-request refusal stays proven independently of the model.
 
-
 // ---------------------------------------------------------------------------
 // S6 — missing required evidence -> R8 -> HITL
 // ---------------------------------------------------------------------------
@@ -564,7 +563,6 @@ func assertGroundedCitations(t *testing.T, run qualLiveRun, fx *matrixFixture) {
 // The gate half reuses the APA-31/APA-38 constructions; the live half
 // runs the real model against an envelope that genuinely carries an R8
 // finding and its derived missing item.
-
 
 // ---------------------------------------------------------------------------
 // S8 — failure and retry with no duplicate mutation
@@ -585,7 +583,6 @@ func assertGroundedCitations(t *testing.T, run qualLiveRun, fx *matrixFixture) {
 //     a real reader, where the decisive assertion is that the
 //     authoritative state is byte-identical regardless of what the model
 //     did or how many turns it burned.
-
 
 // qualStubKey is the placeholder credential for the transport-substitution
 // halves of S8. Those halves drive the production retry predicate against
@@ -616,7 +613,6 @@ func quoteJSON(s []byte) string {
 // the boundary's arithmetic the deciding factor: the run may execute at
 // most one read, and the second attempt is refused before Execute.
 
-
 // ---------------------------------------------------------------------------
 // S10 — deadline propagates, nothing is orphaned
 // ---------------------------------------------------------------------------
@@ -645,7 +641,6 @@ func quoteJSON(s []byte) string {
 // outcome the production control flow does not produce, which is exactly
 // the kind of manufactured evidence this qualification forbids.
 
-
 // ---------------------------------------------------------------------------
 // S11 — repeated execution is stable and non-duplicating
 // ---------------------------------------------------------------------------
@@ -658,7 +653,6 @@ func quoteJSON(s []byte) string {
 // terminal class, and where both accept a report, byte-identical
 // reports. Stability is asserted at the terminal class and the report
 // bytes, never at the model's prose, which is allowed to vary.
-
 
 // mustInt reads a numeric body field, failing the test if absent.
 func mustInt(t *testing.T, v any) int {

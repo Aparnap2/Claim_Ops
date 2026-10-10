@@ -116,7 +116,6 @@ func apa55AssertExercised(t *testing.T, r qualRun, requireToolMediation bool) {
 // key present, each scenario asserts its premise offline first and only then
 // spends provider calls.
 
-
 // ---------------------------------------------------------------------------
 // Offline audit — runs with no provider, no quota
 // ---------------------------------------------------------------------------

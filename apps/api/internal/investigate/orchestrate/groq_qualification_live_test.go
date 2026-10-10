@@ -2513,7 +2513,6 @@ func requireHeld(t *testing.T, r qualRun) qualEvidence {
 // and pacer stay shared because the provider's token budget does not reset
 // between repetitions.
 
-
 // assertS1Authoritative is the S1-specific gate: the run must have been
 // measured against real PostgreSQL, and the real rows must say what the
 // record claims they say.
@@ -2608,7 +2607,6 @@ func assertS1Authoritative(t *testing.T, ar s1AuthoritativeRun) {
 // hypothesis stayed unproven, and did not drop the ambiguity. The live
 // part is that the boundary held for whatever the model produced.
 
-
 // TestQualification_S3_FabricatedEvidence covers scenario 3 in both
 // halves.
 //
@@ -2623,7 +2621,6 @@ func assertS1Authoritative(t *testing.T, ar s1AuthoritativeRun) {
 // (INV-6). Repeated, because fabrication is exactly the case whose rate
 // varies with sampling.
 
-
 // TestQualification_S5_UnauthorizedEvidence covers scenario 5: evidence
 // the model was not given must be rejected.
 //
@@ -2637,7 +2634,6 @@ func assertS1Authoritative(t *testing.T, ar s1AuthoritativeRun) {
 // live: no ID outside the authorized set reaches a run surface (INV-5),
 // and every attempt-log ID is one a real tool response produced (INV-5).
 
-
 // TestQualification_S7_MalformedOutput covers scenario 7: malformed
 // model output must fail closed, never crash.
 //
@@ -2650,7 +2646,6 @@ func assertS1Authoritative(t *testing.T, ar s1AuthoritativeRun) {
 // live, repeated, because malformed output is the case whose rate varies
 // most with sampling: a model that reliably emits valid JSON would make
 // this scenario vacuous, so the distribution is reported explicitly.
-
 
 // countOutcome returns how many records have the given outcome.
 // countOutcome returns how many records have the given outcome.
@@ -2702,7 +2697,6 @@ func countTrue(evs []qualEvidence, pred func(qualEvidence) bool) int {
 //     leaves nothing behind. This is the "context propagates" half.
 //   - live: with the real model, a deadline short enough to expire during
 //     inference still yields a closed terminal with no mutation.
-
 
 // ---------------------------------------------------------------------------
 // RED proof: the recorder wiring, and the false INV-5 it used to produce
