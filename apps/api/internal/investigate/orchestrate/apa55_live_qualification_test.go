@@ -49,7 +49,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -116,52 +115,6 @@ func apa55AssertExercised(t *testing.T, r qualRun, requireToolMediation bool) {
 // this file costs no quota when the credential is absent or exhausted. With the
 // key present, each scenario asserts its premise offline first and only then
 // spends provider calls.
-func TestAPA55_LiveQualification(t *testing.T) {
-	// Cross-tenant is deliberately absent; see the file comment. Recording it
-	// here keeps the omission from looking like an oversight if the matrix is
-	// ever diffed against the old labels.
-	t.Run("cross_tenant_not_live", func(t *testing.T) {
-		t.Log("cross-tenant reads are refused by the envelope builder and cannot be provoked " +
-			"at this layer; the real proof is TestAPA58_CrossTenantIsNotExpressibleAtThisLayer")
-	})
-
-	repeats := qualRepeats(t)
-
-	for _, sc := range psAllScenarios() {
-		sc := sc
-		t.Run(sc.name, func(t *testing.T) {
-			m, wire := requireLiveGroq(t)
-
-			// Correction 2: the premise is asserted BEFORE the model is called, so a
-			// fixture that does not carry its claimed condition fails without
-			// spending quota.
-			env, scope, forbidden := sc.build(t)
-			sc.premises(t, env)
-
-			// The scenario needs tool mediation only when its premise makes a
-			// grounded report impossible without one.
-			needsTool := sc.name == "ps_b1_valid_tool"
-
-			var evs []qualEvidence
-			for i := 1; i <= repeats; i++ {
-				r := qualMeasureRepeat(t, m, wire, func(rm *qualModel, rw qualWireLog) qualRun {
-					return runLiveSeeded(t, sc.name, i, rm, rw, env, scope, forbidden)
-				})
-				// Correction 3, applied per repetition, before any verdict.
-				apa55AssertExercised(t, r, needsTool)
-				evs = append(evs, requireHeld(t, r))
-				time.Sleep(400 * time.Millisecond)
-			}
-
-			// Correction 4: a precise expected outcome for THIS scenario.
-			sc.outcome(t, evs)
-			t.Logf("APA55 %s repeats=%d report_ready=%d escalated=%d",
-				sc.name, repeats,
-				countOutcome(evs, string(OutcomeReportReady)),
-				countOutcome(evs, string(OutcomeEscalated)))
-		})
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Offline audit — runs with no provider, no quota

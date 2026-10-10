@@ -53,12 +53,18 @@ jobs:
         # Mirrors `make lint`'s gofmt gate (empty output = clean).
         run: |
           files="$(gofmt -l .)"
-          if [ -n "$files" ]; then echo "gofmt: unformatted files:"; echo "$files"; exit 1; fi
+          if [ -n "$files" ]; then echo "gofmt: unformatted files:"; echo "$files"; gofmt -d $files; exit 1; fi
           echo "gofmt: clean"
 
       - name: go vet
         working-directory: apps/api
         run: go vet ./...
+
+      - name: Guard live-provider credentials out of PR workflows
+        run: python3 scripts/ci/check_live_provider_workflow_secrets.py
+
+      - name: Prove live-provider tests are build-tag isolated
+        run: python3 scripts/ci/check_qual_live_build_isolation.py
 
       - name: go test (includes internal/parser/... contract tests)
         working-directory: apps/api

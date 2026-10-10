@@ -31,15 +31,13 @@ package orchestrate
 import (
 	"slices"
 	"testing"
-	"time"
 
 	"claimops-api/internal/assemble"
 	"claimops-api/internal/extract"
 	"claimops-api/internal/invest"
+	"claimops-api/internal/investigate"
 	"claimops-api/internal/verify"
 	"claimops-api/internal/verifywrap"
-
-	"claimops-api/internal/investigate"
 )
 
 // psPhantomEvidenceID is advertised by the envelope but deliberately absent
@@ -486,44 +484,6 @@ func psOutcomeNeedsTool(t *testing.T, evs []qualEvidence) {
 			"ran, so tool-mediated evidence was never obtained", len(evs), attempted)
 	}
 	t.Logf("APA58-B1 runs=%d attempted_a_tool=%d executed_a_tool=%d", len(evs), attempted, executed)
-}
-func TestAPA58_ScenarioFixtures_Matrix(t *testing.T) {
-	// Opt in ONCE, at the parent.
-	//
-	// Every case calls requireLivePoolside, which skips without
-	// POOLSIDE_API_KEY, so the parent previously ran and produced five skipped
-	// children. That shape passes today, but it reports a five-case matrix as
-	// run-and-skipped on a machine that has no Poolside credential at all,
-	// which reads like the matrix was attempted and found nothing. Skipping
-	// once at the parent makes "this run had no alternate-provider coverage"
-	// a single unambiguous line, and keeps PG-only qualification honest about
-	// what it covered.
-	if !psLiveOptIn() {
-		t.Skip("POOLSIDE_API_KEY unset; the alternate-provider matrix requires live " +
-			"inference. PG-only qualification is unaffected.")
-	}
-	for _, tc := range psAllScenarios() {
-		t.Run(tc.name, func(t *testing.T) {
-			m, wire := requireLivePoolside(t)
-			env, scope, forbidden := tc.build(t)
-			tc.premises(t, env)
-
-			repeats := qualRepeats(t)
-			var evs []qualEvidence
-			for i := 1; i <= repeats; i++ {
-				r := qualMeasureRepeat(t, m, wire, func(rm *qualModel, rw qualWireLog) qualRun {
-					return runLiveSeeded(t, tc.name, i, rm, rw, env, scope, forbidden)
-				})
-				evs = append(evs, requireHeld(t, r))
-				time.Sleep(400 * time.Millisecond)
-			}
-			tc.outcome(t, evs)
-			t.Logf("APA58 %s repeats=%d report_ready=%d escalated=%d",
-				tc.name, repeats,
-				countOutcome(evs, string(OutcomeReportReady)),
-				countOutcome(evs, string(OutcomeEscalated)))
-		})
-	}
 }
 
 // TestAPA58_SeededScenariosAreDistinct is the anti-duplication gate.

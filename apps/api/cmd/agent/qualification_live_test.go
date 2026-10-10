@@ -45,6 +45,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	fiber "github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -62,10 +65,6 @@ import (
 	"claimops-api/internal/investigate/orchestrate"
 	"claimops-api/internal/repository/postgres"
 	"claimops-api/internal/verify"
-
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/recover"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ---------------------------------------------------------------------------
@@ -538,18 +537,9 @@ func assertGroundedCitations(t *testing.T, run qualLiveRun, fx *matrixFixture) {
 // S4 — cross-tenant evidence must never leak
 // ---------------------------------------------------------------------------
 
-// TestQualificationLive_S4_CrossTenantIsolation covers scenario 4.
-//
-// The deciding deterministic assertion is tenant identity authority: the
-// request identity must come from the scope, never from the model, and a
-// foreign tenant's claim row is byte-identical afterwards. The live model
-// is given a real investigation for its own tenant; whatever it emits,
-// the invariant is that no foreign-tenant ID reaches any run surface and
-// no foreign claim is written.
-//
-// The gate half reuses the APA-38 cross-tenant construction, so the
-// specific I4-request refusal stays proven independently of the model.
-func TestQualificationLive_S4_CrossTenantIsolation(t *testing.T) {
+// TestQualificationGate_S4_CrossTenantIsolation pins the deterministic I4-request refusal without invoking a model.
+// The real-provider half remains TestQualificationLive_S4_CrossTenantIsolation under the qual_live build tag.
+func TestQualificationGate_S4_CrossTenantIsolation(t *testing.T) {
 	pool := liveServicePool(t)
 	t.Setenv("APP_ENV", "test")
 	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
@@ -574,47 +564,15 @@ func TestQualificationLive_S4_CrossTenantIsolation(t *testing.T) {
 		t.Logf("APA49-GATE s4 cross-tenant request refused at I4-request, zero reader calls, foreign claim untouched")
 	})
 
-	// --- live: real model, real reader, no leak ---
-	t.Run("live_model_never_leaks_foreign_tenant", func(t *testing.T) {
-		model := requireLiveModel(t)
-		fx := newMatrixFixture(t, pool, 2)
-		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetClaim, invest.ToolGetEvidence}, 5)
-		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		foreign := "tnt-apa49-foreign-" + liveServiceRand(t, 4)
-		seedLiveServiceClaim(t, pool, foreign, fx.claim+"-foreign")
-		foreignBefore := snapshotLiveServiceClaim(t, pool, foreign, fx.claim+"-foreign")
-
-		run := qualPost(t, pool, qualApp(pool, model), fx, nil)
-		run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		run.Scenario = "s4_cross_tenant"
-		qualRecord(t, run)
-
-		assertClosedTerminal(t, run)
-		assertGroundedCitations(t, run, fx)
-		assertNoAuthoritativeMutation(t, before, run.AfterState)
-		assertNoForeignMutation(t, pool, foreign, fx.claim+"-foreign", foreignBefore)
-	})
 }
 
 // ---------------------------------------------------------------------------
 // S6 — missing required evidence -> R8 -> HITL
 // ---------------------------------------------------------------------------
 
-// TestQualificationLive_S6_MissingRequiredDocumentHITL covers scenario 6
-// on the APA-31 path: an absent required document raises R8
-// (MISSING_REQUIRED_DOCUMENT), and the investigation routes to a human
-// instead of resolving itself.
-//
-// The deciding deterministic assertion is additive-only: the R8 missing
-// item is already known open by the deterministic side, so the boundary
-// must never let a report drop it. Dropping it would be the investigation
-// quietly forgetting a document it never saw, which is precisely the
-// failure mode HITL exists to prevent.
-//
-// The gate half reuses the APA-31/APA-38 constructions; the live half
-// runs the real model against an envelope that genuinely carries an R8
-// finding and its derived missing item.
-func TestQualificationLive_S6_MissingRequiredDocumentHITL(t *testing.T) {
+// TestQualificationGate_S6_MissingRequiredDocumentHITL pins the additive-only R8 refusal without invoking a model.
+// The real-provider half remains TestQualificationLive_S6_MissingRequiredDocumentHITL under the qual_live build tag.
+func TestQualificationGate_S6_MissingRequiredDocumentHITL(t *testing.T) {
 	pool := liveServicePool(t)
 	t.Setenv("APP_ENV", "test")
 	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
@@ -709,64 +667,15 @@ func TestQualificationLive_S6_MissingRequiredDocumentHITL(t *testing.T) {
 		t.Logf("APA49-GATE s6 dropping the R8 required-document item refused at I6-grounding (additive only)")
 	})
 
-	// --- live: real model against a genuine R8 envelope ---
-	t.Run("live_model_cannot_forget_the_absent_document", func(t *testing.T) {
-		model := requireLiveModel(t)
-		fx := newMatrixFixture(t, pool, 2)
-		buildR8Envelope(t, fx)
-		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-
-		run := qualPost(t, pool, qualApp(pool, model), fx, nil)
-		run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		run.Scenario = "s6_missing_required_document"
-		qualRecord(t, run)
-
-		assertClosedTerminal(t, run)
-		assertGroundedCitations(t, run, fx)
-		assertNoAuthoritativeMutation(t, before, run.AfterState)
-
-		// The deciding assertion. If the run accepted a report, the R8
-		// item must still be in its missing list. If it escalated, the
-		// open question was never closed at all, which is the other
-		// acceptable terminal. What must never happen is a REPORT_READY
-		// whose missing_additive dropped the absent document.
-		if rep, ok := run.Body["report"]; ok {
-			rm, _ := rep.(map[string]any)
-			items, _ := rm["missing_additive"].([]any)
-			found := false
-			for _, it := range items {
-				im, _ := it.(map[string]any)
-				if k, _ := im["key"].(string); k == verify.DocHospitalBill {
-					found = true
-				}
-			}
-			if !found {
-				t.Fatalf("accepted report dropped the R8 required document %q from missing_additive: %v", verify.DocHospitalBill, items)
-			}
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
 // S8 — failure and retry with no duplicate mutation
 // ---------------------------------------------------------------------------
 
-// TestQualificationLive_S8_RetryNoDuplicateMutation covers scenario 8.
-//
-// Two halves, because "tool failure/retry" and "no duplicate mutation"
-// are two different claims:
-//
-//   - retry semantics: the production Groq client's bounded retry is
-//     exercised for real over a real HTTP socket. The transport is
-//     substituted (a local endpoint that answers 503 once, then a valid
-//     completion) but the client, its retry predicate, and its backoff
-//     are the production ones. This is a transport substitution, not a
-//     provider substitution, and it is labelled as such in the log.
-//   - no duplicate mutation: the same real client against live Groq, with
-//     a real reader, where the decisive assertion is that the
-//     authoritative state is byte-identical regardless of what the model
-//     did or how many turns it burned.
-func TestQualificationLive_S8_RetryNoDuplicateMutation(t *testing.T) {
+// TestQualificationS8_TransportRetryBounds proves bounded production-client retries against loopback HTTP stubs.
+// The real-provider no-duplicate-mutation half remains TestQualificationLive_S8_RetryNoDuplicateMutation under qual_live.
+func TestQualificationS8_TransportRetryBounds(t *testing.T) {
 	pool := liveServicePool(t)
 	t.Setenv("APP_ENV", "test")
 	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
@@ -860,29 +769,6 @@ func TestQualificationLive_S8_RetryNoDuplicateMutation(t *testing.T) {
 		assertNoAuthoritativeMutation(t, before, run.AfterState)
 	})
 
-	// --- real model, real reader, no duplicate mutation ---
-	t.Run("live_model_no_duplicate_mutation", func(t *testing.T) {
-		model := requireLiveModel(t)
-		fx := newMatrixFixture(t, pool, 3)
-		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetEvidence}, 5)
-		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-
-		run := qualPost(t, pool, qualApp(pool, model), fx, nil)
-		run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		run.Scenario = "s8_live_no_duplicate_mutation"
-		qualRecord(t, run)
-
-		assertClosedTerminal(t, run)
-		assertGroundedCitations(t, run, fx)
-		assertNoAuthoritativeMutation(t, before, run.AfterState)
-		// A repeated call must not execute twice: the attempt log is the
-		// executed-call record, and every row must carry real evidence.
-		for _, a := range matrixAttemptLog(t, run.Body) {
-			if tool, _ := a["tool"].(string); tool == "" {
-				t.Errorf("attempt log row without a tool: %v", a)
-			}
-		}
-	})
 }
 
 // qualStubKey is the placeholder credential for the transport-substitution
@@ -900,190 +786,6 @@ func quoteJSON(s []byte) string {
 		return `""`
 	}
 	return string(raw)
-}
-
-// ---------------------------------------------------------------------------
-// S9 — budget exhaustion is deterministic
-// ---------------------------------------------------------------------------
-
-// TestQualificationLive_S9_BudgetExhaustion covers scenario 9.
-//
-// The deciding deterministic assertion is that a spent budget is
-// ESCALATED, never a silent stop and never a further turn. The tool
-// budget is the one the envelope controls, so a MaxToolCalls of 1 makes
-// the boundary's arithmetic the deciding factor: the run may execute at
-// most one read, and the second attempt is refused before Execute.
-func TestQualificationLive_S9_BudgetExhaustion(t *testing.T) {
-	pool, model := requireLiveQualification(t)
-	t.Setenv("APP_ENV", "test")
-	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
-
-	t.Run("tool_budget_is_calls_exhausted", func(t *testing.T) {
-		fx := newMatrixFixture(t, pool, 3)
-		fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetEvidence}, 1)
-		before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-
-		run := qualPost(t, pool, qualApp(pool, model), fx, nil)
-		run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-		run.Scenario = "s9_tool_budget"
-		qualRecord(t, run)
-
-		assertClosedTerminal(t, run)
-		// The deciding assertion: the envelope's budget is authoritative
-		// and the run respected it, whatever the model asked for.
-		if used, _ := run.Body["tool_calls_used"].(float64); int(used) > 1 {
-			t.Errorf("tool_calls_used = %d, want <= 1 (the envelope budget)", int(used))
-		}
-		if reason, _ := run.Body["escalation_reason"].(string); reason != "" {
-			if reason != string(orchestrate.EscalationCallsExhausted) && reason != string(orchestrate.EscalationTurnsExhausted) {
-				t.Errorf("reason = %q, want a budget class (the model may have been refused earlier)", reason)
-			}
-		}
-		if len(matrixAttemptLog(t, run.Body)) > 1 {
-			t.Errorf("attempt log has %d rows, want <= 1: the budget must refuse before Execute", len(matrixAttemptLog(t, run.Body)))
-		}
-		assertGroundedCitations(t, run, fx)
-		assertNoAuthoritativeMutation(t, before, run.AfterState)
-	})
-}
-
-// ---------------------------------------------------------------------------
-// S10 — deadline propagates, nothing is orphaned
-// ---------------------------------------------------------------------------
-
-// TestQualificationLive_S10_DeadlinePropagates covers scenario 10.
-//
-// What is deterministic here, and is therefore what this test asserts:
-// the run reaches a closed typed terminal, executes NO tool, and leaves
-// the authoritative state byte-identical. A deadline is an abort, not a
-// partial write, so "nothing happened" is the whole promise.
-//
-// The DEADLINE reason specifically is NOT asserted, and the reason is
-// worth recording rather than papering over. The loop's deadline is
-// turn-granular: it is checked at the top of every turn and re-checked
-// after a tool executes, because one Complete call may legitimately
-// outlive the deadline under the turn cap (loop.go package contract).
-// Turn 1 therefore always starts inside the budget, and if the model
-// fails validation on its first act the run escalates at the decode
-// boundary before any deadline re-check is reached. Against the real
-// ADR-002 model that is exactly what happens: the first act is refused as
-// I1-malformed and INVALID_OUTPUT wins the race. So DEADLINE is
-// unreachable through this boundary for this model, and the terminal
-// itself is qualified at the loop level, where a delay seam exists, in
-// TestQualification_S10_DeadlineAndCancellation and in the pre-existing
-// TestDeadlineEscalates. Asserting DEADLINE here would mean forcing an
-// outcome the production control flow does not produce, which is exactly
-// the kind of manufactured evidence this qualification forbids.
-func TestQualificationLive_S10_DeadlinePropagates(t *testing.T) {
-	pool, model := requireLiveQualification(t)
-	t.Setenv("APP_ENV", "test")
-	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
-
-	fx := newMatrixFixture(t, pool, 3)
-	// 100ms is the hard floor Scope.Validate accepts.
-	env := validEnvelopeForTenant(fx.tenant, fx.claim, fx.invID, fx.exID, fx.reqID)
-	env.EvidenceRefs = []invest.EvidenceRef{{
-		EvidenceID: fx.anchor, SourceType: invest.EvidenceSourceDocument,
-		SourceID: fx.docID, TenantID: fx.tenant, ClaimID: fx.claim,
-		DocumentID: fx.docID, Page: 1,
-	}}
-	env.RuleFindings[0].EvidenceIDs = []string{fx.anchor}
-	env.Scope.AllowTools = []invest.ToolName{invest.ToolGetEvidence}
-	env.Scope.MaxToolCalls = 5
-	env.Scope.DeadlineMs = 100
-	if err := invest.Validate(env); err != nil {
-		t.Fatalf("deadline envelope invalid: %v", err)
-	}
-	if err := investigate.NewPGEnvelopeStore(pool).SaveEnvelope(t.Context(), env); err != nil {
-		t.Fatalf("SaveEnvelope: %v", err)
-	}
-	before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-
-	run := qualPost(t, pool, qualApp(pool, model), fx, nil)
-	run.BeforeState, run.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-	run.Scenario = "s10_deadline"
-	qualRecord(t, run)
-
-	// The deciding assertions: a closed typed terminal, no read past the
-	// deadline, and no orphan mutation.
-	assertClosedTerminal(t, run)
-	if used, _ := run.Body["tool_calls_used"].(float64); used != 0 {
-		t.Errorf("tool_calls_used = %d, want 0: a deadline must not leave an executed read", int(used))
-	}
-	if n := len(matrixAttemptLog(t, run.Body)); n != 0 {
-		t.Errorf("attempt log has %d rows, want 0: nothing may be recorded past the deadline", n)
-	}
-	if reason, _ := run.Body["escalation_reason"].(string); reason != string(orchestrate.EscalationDeadline) {
-		t.Logf("APA49-NOTE s10 terminal was %q, not DEADLINE: the loop's deadline is turn-granular "+
-			"and the model's first act failed validation before any deadline re-check. "+
-			"DEADLINE itself is qualified at the loop level. This is a containment PASS, not a miss.",
-			reason)
-	}
-	assertNoAuthoritativeMutation(t, before, run.AfterState)
-}
-
-// ---------------------------------------------------------------------------
-// S11 — repeated execution is stable and non-duplicating
-// ---------------------------------------------------------------------------
-
-// TestQualificationLive_S11_IdempotentExecution covers scenario 11.
-//
-// Two identical POSTs for one investigation_id. The deciding assertions
-// are: the authoritative state is byte-identical across both runs (no
-// duplicate authoritative mutation), and the outcome is stable — same
-// terminal class, and where both accept a report, byte-identical
-// reports. Stability is asserted at the terminal class and the report
-// bytes, never at the model's prose, which is allowed to vary.
-func TestQualificationLive_S11_IdempotentExecution(t *testing.T) {
-	pool, model := requireLiveQualification(t)
-	t.Setenv("APP_ENV", "test")
-	t.Setenv("ALLOW_INLINE_ENVELOPE", "false")
-
-	fx := newMatrixFixture(t, pool, 3)
-	fx.saveMatrixEnvelope(t, []invest.ToolName{invest.ToolGetClaim, invest.ToolGetEvidence}, 5)
-	before := readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-	app := qualApp(pool, model)
-
-	first := qualPost(t, pool, app, fx, nil)
-	first.BeforeState, first.AfterState = before, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-	first.Scenario = "s11_repeat_1"
-	qualRecord(t, first)
-
-	second := qualPost(t, pool, app, fx, nil)
-	second.BeforeState, second.AfterState = first.AfterState, readAuthoritativeState(t, pool, fx.tenant, fx.claim)
-	second.Scenario = "s11_repeat_2"
-	qualRecord(t, second)
-
-	assertClosedTerminal(t, first)
-	assertClosedTerminal(t, second)
-	assertGroundedCitations(t, first, fx)
-	assertGroundedCitations(t, second, fx)
-
-	// The decisive assertion: the claim, its reports, its outbox events,
-	// and its workflow launches are all unchanged, and unchanged again by
-	// the second run. A duplicate authoritative mutation is the exact
-	// failure this scenario exists to catch.
-	assertNoAuthoritativeMutation(t, before, second.AfterState)
-
-	// Stability at the class level. The model may answer differently on
-	// the second pass; what must not differ is which decision the
-	// boundary reached, and if it accepted, the accepted bytes.
-	out1, _ := first.Body["outcome"].(string)
-	out2, _ := second.Body["outcome"].(string)
-	if out1 != out2 {
-		t.Logf("APA49-NOTE s11 terminal class varied across repeats: %s then %s (model variability, not a boundary failure)", out1, out2)
-	} else if out1 == string(orchestrate.OutcomeReportReady) {
-		rep1, _ := json.Marshal(first.Body["report"])
-		rep2, _ := json.Marshal(second.Body["report"])
-		if !bytes.Equal(rep1, rep2) {
-			t.Errorf("two REPORT_READY runs accepted different reports:\n1=%s\n2=%s", rep1, rep2)
-		}
-	}
-	if used1, _ := first.Body["tool_calls_used"].(float64); int(used1) != int(mustInt(t, second.Body["tool_calls_used"])) {
-		t.Logf("APA49-NOTE s11 tool_calls_used varied across repeats: %v then %v (model variability)", used1, second.Body["tool_calls_used"])
-	}
-	t.Logf("APA49-SVC s11 authoritative state identical after both runs: claim=%q reports=%d outbox=%d launches=%d",
-		second.AfterState.ClaimRow, second.AfterState.ReportRows, second.AfterState.OutboxRows, second.AfterState.WorkflowLaunch)
 }
 
 // mustInt reads a numeric body field, failing the test if absent.
