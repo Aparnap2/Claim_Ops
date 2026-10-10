@@ -1,3 +1,4 @@
+# NEGATIVE CONTROL: GROQ_API_KEY must be rejected in pull_request workflows.
 # Layer A — fast deterministic CI. No services by construction: there is no
 # `services:` block and no Postgres / Mockoon / localgcp steps in this file.
 #
