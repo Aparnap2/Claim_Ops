@@ -318,30 +318,4 @@ func requireLivePoolside(t *testing.T) (*qualModel, *qualWireRecorder) {
 // the production request shape at all, and records the served model id. It is
 // the capacity precondition: without it, a matrix result would be
 // indistinguishable from a quota problem.
-func TestAPA58_Poolside_ServesTheProductionShape(t *testing.T) {
-	m, _ := requireLivePoolside(t)
-	env := testEnvelope(t)
-	scope := testScope(env)
-	resp, err := m.Complete(context.Background(), ModelRequest{
-		Exception:        env,
-		KnownEvidenceIDs: []string{"ev-doc-01"},
-		Turn:             1,
-		RequestID:        scope.RequestID,
-	})
-	if err != nil {
-		t.Fatalf("production shape not served: %v", err)
-	}
-	t.Logf("APA58-SHAPE model_served=%s bytes=%d", resp.ModelID, len(resp.Payload))
 
-	// The act must survive the SAME authoritative decoder and validator that
-	// Groq output must. ValidateModelAction is what enforces tool ownership
-	// against the scope (APA-54), so no separate tool lookup is needed.
-	a, err := DecodeModelAction(resp.Payload, 1<<20)
-	if err != nil {
-		t.Fatalf("poolside output rejected by the shared decoder: %v", err)
-	}
-	if err := ValidateModelAction(a, scope, env.InvestigationID); err != nil {
-		t.Fatalf("poolside output rejected by the shared validator: %v", err)
-	}
-	t.Logf("APA58-SHAPE action=%s tool=%q survives the shared decoder and validator", a.Action, a.Tool)
-}

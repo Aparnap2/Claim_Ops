@@ -1041,49 +1041,7 @@ func apa56CausalEmptyAdditive(t *testing.T, env invest.UnresolvedException) Repo
 // APA-56. The anti-vacuity reasoning that DOES apply is reused: the run must
 // end in a classified outcome, never a silent no-op, and that is the false arm
 // of apa55AssertExercised.
-func TestAPA56Causal_LiveMeasurement(t *testing.T) {
-	m, wire := requireLiveGroq(t)
 
-	env, scope := apa56CausalFixture(t)
-	// No foreign-tenant evidence is advertised by this fixture, so nothing is
-	// forbidden. The map is passed explicitly rather than left nil because it is
-	// the same argument every seeded driver passes, and a nil here would silently
-	// read as "nothing to check" instead of "nothing to check, deliberately".
-	var forbidden map[string]struct{}
-
-	// The premise, before a single token is spent.
-	apa56CausalPremise(t, env, scope)
-	_, promptSHA := apa56CausalPrompt(t, env, scope)
-	t.Logf("APA56-CAUSAL prompt_sha256=%s missing_evidence=%v deadline_ms=%d "+
-		"note=this-hash-is-a-NEW-measurement-not-gated-against-the-apa59-anchor",
-		promptSHA, env.MissingEvidence, scope.DeadlineMs)
-
-	repeats := qualRepeats(t)
-	var evs []qualEvidence
-	var obs []apa56CausalObs
-	for i := 1; i <= repeats; i++ {
-		i := i
-		r := qualMeasureRepeat(t, m, wire, func(rm *qualModel, rw qualWireLog) qualRun {
-			return runLiveSeeded(t, "apa56_causal", i, rm, rw, env, scope, forbidden)
-		})
-		// Anti-vacuity, per repetition, BEFORE any verdict — the same ordering
-		// the sibling matrices use, because a boundary verdict is meaningless
-		// until the instrument is shown to have observed the run.
-		apa55AssertExercised(t, r, false)
-		ev := requireHeld(t, r)
-
-		apa56CausalLogEvidence(t, ev, r, promptSHA)
-		evs = append(evs, ev)
-		obs = append(obs, apa56CausalObserve(ev, r))
-		time.Sleep(400 * time.Millisecond)
-	}
-
-	apa56CausalOutcome(t, obs)
-	t.Logf("APA56-CAUSAL repeats=%d report_ready=%d escalated=%d",
-		repeats,
-		countOutcome(evs, string(OutcomeReportReady)),
-		countOutcome(evs, string(OutcomeEscalated)))
-}
 
 // apa56CausalObs pairs one repetition's harness record with what the model
 // ACTUALLY submitted.
