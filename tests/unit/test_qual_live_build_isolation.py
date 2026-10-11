@@ -47,6 +47,31 @@ func TestDirectProviderConstruction(t *testing.T) {
     assert "NewGroqModelClientFromEnv" in findings[0]
 
 
+def test_loopback_constructor_contract_remains_allowed() -> None:
+    path = "/repo/apps/api/qualification_test.go"
+    source = """package main
+func TestLoopbackContract(t *testing.T) {
+    origin := runStub(t)
+    t.Setenv("GROQ_BASE_URL", origin.URL())
+    _ = groqClientFromEnv(t)
+}
+func runStub(t *testing.T) { _ = httptest.NewServer(nil) }
+func groqClientFromEnv(t *testing.T) { _ = NewGroqModelClientFromEnv() }
+"""
+    assert CHECKER.find_reachable_live_calls({path: source}, {path}) == []
+
+
+def test_explicit_empty_key_contract_remains_allowed() -> None:
+    path = "/repo/apps/api/qualification_test.go"
+    source = """package main
+func TestNoKeyFailsClosed(t *testing.T) {
+    t.Setenv("GROQ_API_KEY", "")
+    _ = NewGroqModelClientFromEnv()
+}
+"""
+    assert CHECKER.find_reachable_live_calls({path: source}, {path}) == []
+
+
 def test_unreachable_live_helper_does_not_fail_deterministic_test() -> None:
     path = "/repo/apps/api/qualification_test.go"
     source = """package main
