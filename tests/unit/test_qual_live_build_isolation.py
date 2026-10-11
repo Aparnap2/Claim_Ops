@@ -113,3 +113,43 @@ func useInlineEnvelope(t *testing.T) {
 func groqClientFromEnv(t *testing.T) { _ = NewGroqModelClientFromEnv() }
 """
     assert CHECKER.find_reachable_live_calls({path: source}, {path}) == []
+
+def test_unrelated_setenv_and_key_allowlist_in_separate_helpers_is_rejected() -> None:
+    path = "/repo/apps/api/qualification_test.go"
+    source = """package main
+func TestBlankKeyRejectedLikeAbsent(t *testing.T) {
+    clearUnrelatedEnv(t)
+    listProviderEnv()
+    _ = groqClientFromEnv(t)
+}
+func clearUnrelatedEnv(t *testing.T) {
+    t.Setenv("HTTP_PROXY", "")
+}
+func listProviderEnv() {
+    _ = []string{"MODEL_PROVIDER", "GROQ_API_KEY", "GROQ_MODEL"}
+}
+func groqClientFromEnv(t *testing.T) { _ = NewGroqModelClientFromEnv() }
+"""
+    findings = CHECKER.find_reachable_live_calls({path: source}, {path})
+    assert len(findings) == 1
+    assert "NewGroqModelClientFromEnv" in findings[0]
+
+
+def test_allowlist_loop_must_clear_the_ranged_key_variable() -> None:
+    path = "/repo/apps/api/qualification_test.go"
+    source = """package main
+func TestBlankKeyRejectedLikeAbsent(t *testing.T) {
+    clearProviderEnv(t)
+    _ = groqClientFromEnv(t)
+}
+func clearProviderEnv(t *testing.T) {
+    for _, k := range []string{"GROQ_API_KEY", "GROQ_MODEL"} {
+        t.Setenv("HTTP_PROXY", "")
+    }
+}
+func groqClientFromEnv(t *testing.T) { _ = NewGroqModelClientFromEnv() }
+"""
+    findings = CHECKER.find_reachable_live_calls({path: source}, {path})
+    assert len(findings) == 1
+    assert "NewGroqModelClientFromEnv" in findings[0]
+
