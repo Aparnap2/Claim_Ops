@@ -175,6 +175,19 @@ def find_reachable_live_calls(
             explicit_no_key = any(
                 re.search(r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*"GROQ_API_KEY"\s*,\s*""\s*\)', raw)
                 or re.search(r'\bos\.Unsetenv\(\s*"GROQ_API_KEY"\s*\)', raw)
+                or (
+                    # Allow a helper that iterates over an explicit provider-env
+                    # allowlist and clears each variable (e.g. useInlineEnvelope).
+                    re.search(
+                        r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*([A-Za-z_]\w*)\s*,\s*""\s*\)',
+                        raw,
+                    )
+                    and re.search(
+                        r'\[\]string\s*\{[^}]*"GROQ_API_KEY"[^}]*\}',
+                        raw,
+                        re.DOTALL,
+                    )
+                )
                 for raw in raw_reachable
             )
             if has_live_gate:
