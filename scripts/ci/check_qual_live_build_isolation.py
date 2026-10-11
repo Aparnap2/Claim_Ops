@@ -107,6 +107,25 @@ def extract_go_functions(source: str) -> list[tuple[str, str, str]]:
     return functions
 
 
+def _clears_groq_key_from_allowlist(raw_body: str) -> bool:
+    """Accept only a same-function loop that clears its ranged provider-env key."""
+    loop = re.search(
+        r'\bfor\s+_,\s*(?P<key_var>[A-Za-z_]\w*)\s*:=\s*range\s+'
+        r'\[\]string\s*\{(?P<keys>[^}]*)\}\s*\{(?P<body>.*?)\}',
+        raw_body,
+        re.DOTALL,
+    )
+    if not loop or not re.search(r'"GROQ_API_KEY"', loop.group("keys")):
+        return False
+    key_var = re.escape(loop.group("key_var"))
+    return bool(
+        re.search(
+            r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*' + key_var + r'\s*,\s*""\s*\)',
+            loop.group("body"),
+        )
+    )
+
+
 def find_reachable_live_calls(
     sources: dict[str, str], default_test_files: set[str]
 ) -> list[str]:
@@ -175,19 +194,7 @@ def find_reachable_live_calls(
             explicit_no_key = any(
                 re.search(r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*"GROQ_API_KEY"\s*,\s*""\s*\)', raw)
                 or re.search(r'\bos\.Unsetenv\(\s*"GROQ_API_KEY"\s*\)', raw)
-                or (
-                    # Allow a helper that iterates over an explicit provider-env
-                    # allowlist and clears each variable (e.g. useInlineEnvelope).
-                    re.search(
-                        r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*([A-Za-z_]\w*)\s*,\s*""\s*\)',
-                        raw,
-                    )
-                    and re.search(
-                        r'\[\]string\s*\{[^}]*"GROQ_API_KEY"[^}]*\}',
-                        raw,
-                        re.DOTALL,
-                    )
-                )
+                or _clears_groq_key_from_allowlist(raw)
                 for raw in raw_reachable
             )
             if has_live_gate:
