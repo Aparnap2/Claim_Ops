@@ -121,8 +121,8 @@ def find_reachable_live_calls(
         group = (str(Path(path).parent), package_match.group(1))
         file_groups[path] = group
         functions = grouped.setdefault(group, {})
-        for name, body in extract_go_functions(source):
-            functions.setdefault(name, []).append((path, body))
+        for name, body, raw_body in extract_go_functions(source):
+            functions.setdefault(name, []).append((path, body, raw_body))
 
     findings: list[str] = []
     for test_path in sorted(default_test_files):
