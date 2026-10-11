@@ -68,10 +68,10 @@ def mask_go_non_code(source: str) -> str:
     return NON_CODE_RE.sub(blank, source)
 
 
-def extract_go_functions(source: str) -> list[tuple[str, str]]:
+def extract_go_functions(source: str) -> list[tuple[str, str, str]]:
     """Extract function names and masked bodies for a lightweight call-graph check."""
     masked = mask_go_non_code(source)
-    functions: list[tuple[str, str]] = []
+    functions: list[tuple[str, str, str]] = []
     for match in FUNCTION_RE.finditer(masked):
         name = match.group(1)
         open_paren = masked.find("(", match.start(), match.end())
@@ -101,7 +101,9 @@ def extract_go_functions(source: str) -> list[tuple[str, str]]:
                     body_end = index
                     break
         if body_end >= 0:
-            functions.append((name, masked[body_open + 1 : body_end]))
+            functions.append(
+                (name, masked[body_open + 1 : body_end], source[body_open + 1 : body_end])
+            )
     return functions
 
 
@@ -109,7 +111,7 @@ def find_reachable_live_calls(
     sources: dict[str, str], default_test_files: set[str]
 ) -> list[str]:
     """Return live-provider calls reachable from default-build test functions."""
-    grouped: dict[tuple[str, str], dict[str, list[tuple[str, str]]]] = {}
+    grouped: dict[tuple[str, str], dict[str, list[tuple[str, str, str]]]] = {}
     file_groups: dict[str, tuple[str, str]] = {}
     for path, source in sources.items():
         masked = mask_go_non_code(source)
@@ -129,33 +131,61 @@ def find_reachable_live_calls(
             continue
         functions = grouped[group]
         roots = [
-            (name, body)
+            name
             for name, definitions in functions.items()
-            for path, body in definitions
+            for path, _body, _raw_body in definitions
             if path == test_path and name.startswith("Test") and name != "TestMain"
         ]
-        for root_name, _ in roots:
+        for root_name in roots:
             pending: list[tuple[str, tuple[str, ...]]] = [(root_name, (root_name,))]
             visited: set[str] = set()
+            reachable_bodies: list[tuple[str, str, str, tuple[str, ...]]] = []
             while pending:
                 function_name, chain = pending.pop()
                 if function_name in visited:
                     continue
                 visited.add(function_name)
                 definitions = functions.get(function_name, [])
-                for path, body in definitions:
-                    marker_calls = list(LIVE_GATE_CALL_RE.finditer(body))
-                    if path in default_test_files:
-                        marker_calls.extend(TEST_CLIENT_CONSTRUCTOR_RE.finditer(body))
-                    for call in marker_calls:
-                        marker = call.group(0).strip().removesuffix("(")
-                        findings.append(
-                            f"{path}:{root_name} reaches {marker} via {' -> '.join(chain)}"
-                        )
+                for path, body, raw_body in definitions:
+                    reachable_bodies.append((path, body, raw_body, chain))
                     for call in BARE_CALL_RE.finditer(body):
                         target = call.group(1)
                         if target in functions and target not in visited:
                             pending.append((target, chain + (target,)))
+
+            has_live_gate = any(
+                LIVE_GATE_CALL_RE.search(body)
+                for _path, body, _raw, _chain in reachable_bodies
+            )
+            has_env_client = any(
+                TEST_CLIENT_CONSTRUCTOR_RE.search(body)
+                for _path, body, _raw, _chain in reachable_bodies
+            )
+            raw_reachable = [raw for _path, _body, raw, _chain in reachable_bodies]
+            safe_loopback_override = (
+                any(
+                    re.search(r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*"GROQ_BASE_URL"\s*,', raw)
+                    for raw in raw_reachable
+                )
+                and any(
+                    re.search(r'\b(?:httptest\.NewServer|newGroqOrigin|runStub|requireLoopback)\b', raw)
+                    for raw in raw_reachable
+                )
+            )
+            explicit_no_key = any(
+                re.search(r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*"GROQ_API_KEY"\s*,\s*""\s*\)', raw)
+                or re.search(r'\bos\.Unsetenv\(\s*"GROQ_API_KEY"\s*\)', raw)
+                for raw in raw_reachable
+            )
+            if has_live_gate:
+                findings.append(
+                    f"{test_path}:{root_name} reaches a provider-specific requireLive gate"
+                )
+            if has_env_client and not (safe_loopback_override or explicit_no_key):
+                findings.append(
+                    f"{test_path}:{root_name} reaches an environment-backed provider client "
+                    "without a visible loopback override or explicit empty-key guard"
+                )
     return sorted(set(findings))
 
 
