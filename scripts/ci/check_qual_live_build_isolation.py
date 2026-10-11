@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Prove live-provider tests are absent by default and list only under qual_live."""
+"""Prove live-provider tests are excluded by build tags and unreachable by default tests."""
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +44,220 @@ LIVE_TESTS = {
     ),
 }
 
+# A test-name inventory is useful for the positive/negative -list proof, but
+# must not be the only exclusion control. Follow calls from every default-build
+# Test* function through same-package helpers and reject live-provider gates or
+# environment-backed client constructors reachable along that path.
+NON_CODE_RE = re.compile(
+    r"//[^\n]*|/\*.*?\*/|\"(?:\\.|[^\"\\])*\"|`[^`]*`|'(?:\\.|[^'\\])*'",
+    re.DOTALL,
+)
+FUNCTION_RE = re.compile(r"\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(")
+BARE_CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_]\w*)\s*\(")
+LIVE_GATE_CALL_RE = re.compile(
+    r"\brequireLive(?:Groq|Poolside|Model|Qualification)[A-Za-z0-9_]*\s*\("
+)
+TEST_CLIENT_CONSTRUCTOR_RE = re.compile(r"\bNew[A-Za-z0-9_]*ClientFromEnv\s*\(")
+
+
+def mask_go_non_code(source: str) -> str:
+    """Blank comments and literals while preserving offsets and newlines."""
+    def blank(match: re.Match[str]) -> str:
+        return "".join("\n" if char == "\n" else " " for char in match.group(0))
+
+    return NON_CODE_RE.sub(blank, source)
+
+
+def extract_go_functions(source: str) -> list[tuple[str, str, str]]:
+    """Extract function names and masked bodies for a lightweight call-graph check."""
+    masked = mask_go_non_code(source)
+    functions: list[tuple[str, str, str]] = []
+    for match in FUNCTION_RE.finditer(masked):
+        name = match.group(1)
+        open_paren = masked.find("(", match.start(), match.end())
+        depth = 0
+        close_paren = -1
+        for index in range(open_paren, len(masked)):
+            if masked[index] == "(":
+                depth += 1
+            elif masked[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    close_paren = index
+                    break
+        if close_paren < 0:
+            continue
+        body_open = masked.find("{", close_paren + 1)
+        if body_open < 0:
+            continue
+        body_depth = 0
+        body_end = -1
+        for index in range(body_open, len(masked)):
+            if masked[index] == "{":
+                body_depth += 1
+            elif masked[index] == "}":
+                body_depth -= 1
+                if body_depth == 0:
+                    body_end = index
+                    break
+        if body_end >= 0:
+            functions.append(
+                (name, masked[body_open + 1 : body_end], source[body_open + 1 : body_end])
+            )
+    return functions
+
+
+def _clears_groq_key_from_allowlist(raw_body: str) -> bool:
+    """Accept only a same-function loop that clears its ranged provider-env key."""
+    loop = re.search(
+        r'\bfor\s+_,\s*(?P<key_var>[A-Za-z_]\w*)\s*:=\s*range\s+'
+        r'\[\]string\s*\{(?P<keys>[^}]*)\}\s*\{(?P<body>.*?)\}',
+        raw_body,
+        re.DOTALL,
+    )
+    if not loop or not re.search(r'"GROQ_API_KEY"', loop.group("keys")):
+        return False
+    key_var = re.escape(loop.group("key_var"))
+    return bool(
+        re.search(
+            r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*' + key_var + r'\s*,\s*""\s*\)',
+            loop.group("body"),
+        )
+    )
+
+
+def find_reachable_live_calls(
+    sources: dict[str, str], default_test_files: set[str]
+) -> list[str]:
+    """Return live-provider calls reachable from default-build test functions."""
+    grouped: dict[tuple[str, str], dict[str, list[tuple[str, str, str]]]] = {}
+    file_groups: dict[str, tuple[str, str]] = {}
+    for path, source in sources.items():
+        masked = mask_go_non_code(source)
+        package_match = re.search(r"\bpackage\s+([A-Za-z_]\w*)", masked)
+        if not package_match:
+            continue
+        group = (str(Path(path).parent), package_match.group(1))
+        file_groups[path] = group
+        functions = grouped.setdefault(group, {})
+        for name, body, raw_body in extract_go_functions(source):
+            functions.setdefault(name, []).append((path, body, raw_body))
+
+    findings: list[str] = []
+    for test_path in sorted(default_test_files):
+        group = file_groups.get(test_path)
+        if group is None:
+            continue
+        functions = grouped[group]
+        roots = [
+            name
+            for name, definitions in functions.items()
+            for path, _body, _raw_body in definitions
+            if path == test_path and name.startswith("Test") and name != "TestMain"
+        ]
+        for root_name in roots:
+            pending: list[tuple[str, tuple[str, ...]]] = [(root_name, (root_name,))]
+            visited: set[str] = set()
+            reachable_bodies: list[tuple[str, str, str, tuple[str, ...]]] = []
+            while pending:
+                function_name, chain = pending.pop()
+                if function_name in visited:
+                    continue
+                visited.add(function_name)
+                definitions = functions.get(function_name, [])
+                for path, body, raw_body in definitions:
+                    reachable_bodies.append((path, body, raw_body, chain))
+                    for call in BARE_CALL_RE.finditer(body):
+                        target = call.group(1)
+                        if target in functions and target not in visited:
+                            pending.append((target, chain + (target,)))
+
+            live_gate_details = sorted({
+                f"{match.group(0).rstrip('(')} via {' -> '.join(chain)}"
+                for _path, body, _raw, chain in reachable_bodies
+                if (match := LIVE_GATE_CALL_RE.search(body))
+            })
+            env_client_details = sorted({
+                f"{match.group(0).rstrip('(')} via {' -> '.join(chain)}"
+                for _path, body, _raw, chain in reachable_bodies
+                if (match := TEST_CLIENT_CONSTRUCTOR_RE.search(body))
+            })
+            raw_reachable = [raw for _path, _body, raw, _chain in reachable_bodies]
+            safe_loopback_override = (
+                any(
+                    re.search(r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*"GROQ_BASE_URL"\s*,', raw)
+                    for raw in raw_reachable
+                )
+                and any(
+                    re.search(
+                        r'\b(?:httptest\.NewServer|newGroqOrigin|'
+                        r'runStub|requireLoopback)\b',
+                        raw,
+                    )
+                    for raw in raw_reachable
+                )
+            )
+            explicit_no_key = any(
+                re.search(r'\b(?:t|[A-Za-z_]\w*)\.Setenv\(\s*"GROQ_API_KEY"\s*,\s*""\s*\)', raw)
+                or re.search(r'\bos\.Unsetenv\(\s*"GROQ_API_KEY"\s*\)', raw)
+                or _clears_groq_key_from_allowlist(raw)
+                for raw in raw_reachable
+            )
+            if live_gate_details:
+                findings.append(
+                    f"{test_path}:{root_name} reaches provider-specific live gate(s): "
+                    + "; ".join(live_gate_details)
+                )
+            if env_client_details and not (safe_loopback_override or explicit_no_key):
+                findings.append(
+                    f"{test_path}:{root_name} reaches environment-backed provider client(s): "
+                    + "; ".join(env_client_details)
+                    + "; no visible loopback override or explicit empty-key guard"
+                )
+    return sorted(set(findings))
+
+
+def default_go_test_sources() -> tuple[dict[str, str], set[str]]:
+    """Ask Go which files actually participate in the default test build."""
+    result = subprocess.run(
+        ["go", "list", "-test", "-json", "./..."],
+        cwd=API,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError("go list -test failed: " + result.stderr.strip())
+
+    decoder = json.JSONDecoder()
+    packages: list[dict[str, object]] = []
+    offset = 0
+    while offset < len(result.stdout):
+        while offset < len(result.stdout) and result.stdout[offset].isspace():
+            offset += 1
+        if offset >= len(result.stdout):
+            break
+        package, offset = decoder.raw_decode(result.stdout, offset)
+        packages.append(package)
+
+    source_paths: set[str] = set()
+    test_paths: set[str] = set()
+    for package in packages:
+        directory = Path(str(package["Dir"]))
+        for key in ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles"):
+            for filename in package.get(key, []):
+                source_paths.add(str(directory / str(filename)))
+        for key in ("TestGoFiles", "XTestGoFiles"):
+            for filename in package.get(key, []):
+                test_paths.add(str(directory / str(filename)))
+
+    sources = {
+        path: Path(path).read_text(encoding="utf-8")
+        for path in sorted(source_paths)
+        if Path(path).is_file()
+    }
+    return sources, test_paths
+
 
 def run_list(args: list[str], env: dict[str, str]) -> str:
     print("+ " + " ".join(args), flush=True)
@@ -68,6 +284,16 @@ def main() -> int:
         "test bodies are never executed."
     )
     try:
+        sources, default_test_files = default_go_test_sources()
+        reachable = find_reachable_live_calls(sources, default_test_files)
+        if reachable:
+            print(
+                "Live-provider entry point reachable from the default test build:\n- "
+                + "\n- ".join(reachable),
+                file=sys.stderr,
+            )
+            return 1
+
         default_output = run_list(["go", "test", "./...", "-list", ".*"], env)
         default_names = listed_tests(default_output)
         missing_default = [
@@ -120,7 +346,7 @@ def main() -> int:
         live_count = sum(map(len, LIVE_TESTS.values()))
         print(
             f"PASS: all {live_count} live-provider tests are absent by default and listed "
-            "under qual_live; none were executed."
+            "under qual_live; no live test bodies were executed."
         )
         return 0
     except (OSError, RuntimeError) as exc:
