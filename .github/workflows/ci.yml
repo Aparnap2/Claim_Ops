@@ -113,6 +113,9 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check .
 
+      - name: Type check (mypy strict, packages + scripts/ci)
+        run: uv run mypy packages scripts/ci
+
   terraform:
     runs-on: ubuntu-latest
     timeout-minutes: 10

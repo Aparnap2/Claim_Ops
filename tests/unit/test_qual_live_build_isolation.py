@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 SCRIPT = (
     Path(__file__).resolve().parents[2]
     / "scripts"
@@ -152,4 +154,40 @@ func groqClientFromEnv(t *testing.T) { _ = NewGroqModelClientFromEnv() }
     findings = CHECKER.find_reachable_live_calls({path: source}, {path})
     assert len(findings) == 1
     assert "NewGroqModelClientFromEnv" in findings[0]
+
+
+def test_go_file_names_accepts_a_well_formed_list_and_absent_key() -> None:
+    """Normal shapes keep working: a real list, an empty list, and a missing key."""
+    assert CHECKER.go_file_names({"GoFiles": ["a.go", "b.go"]}, "GoFiles") == [
+        "a.go",
+        "b.go",
+    ]
+    assert CHECKER.go_file_names({"GoFiles": []}, "GoFiles") == []
+    # An absent key must stay [] so packages without the field are skipped,
+    # matching the previous .get(key, []) behavior.
+    assert CHECKER.go_file_names({"Dir": "/x"}, "GoFiles") == []
+
+
+def test_go_file_names_rejects_a_non_list_field() -> None:
+    with pytest.raises(RuntimeError, match="unexpected type"):
+        CHECKER.go_file_names({"GoFiles": "a.go"}, "GoFiles")
+
+
+def test_go_file_names_rejects_non_string_elements() -> None:
+    """A non-string entry must fail closed.
+
+    An outer-only list check would let ``[42]`` through; that entry resolves to
+    a path which is not a real file and is then dropped from the default-build
+    set, which could hide a reachable live-provider call.
+    """
+    with pytest.raises(RuntimeError, match=r"unexpected entry type at GoFiles\[0\]"):
+        CHECKER.go_file_names({"GoFiles": [42]}, "GoFiles")
+    with pytest.raises(RuntimeError, match=r"unexpected entry type at GoFiles\[0\]"):
+        CHECKER.go_file_names({"GoFiles": [None]}, "GoFiles")
+
+
+def test_go_file_names_reports_the_offending_index() -> None:
+    """The index is reported so a mixed list identifies the bad entry."""
+    with pytest.raises(RuntimeError, match=r"GoFiles\[1\]"):
+        CHECKER.go_file_names({"GoFiles": ["a.go", None]}, "GoFiles")
 

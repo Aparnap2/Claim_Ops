@@ -59,8 +59,8 @@ format:
 	$(UV_RUN) ruff format --check . || true
 
 typecheck:
-	@echo "typecheck: mypy packages (per [tool.mypy] strict in pyproject.toml)"
-	$(UV_RUN) mypy packages
+	@echo "typecheck: mypy packages scripts/ci (per [tool.mypy] strict in pyproject.toml)"
+	$(UV_RUN) mypy packages scripts/ci
 	@echo "typecheck: go vet ./... in $(GO_DIR)"
 	cd $(GO_DIR) && go vet ./...
 
