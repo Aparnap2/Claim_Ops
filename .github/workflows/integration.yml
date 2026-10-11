@@ -177,21 +177,20 @@ jobs:
           MOCKOON_URL: http://localhost:3001
         run: make integration
 
-      - name: Assert services actually ran tests (anti-fake-green)
-        # Layer B's sole purpose is providing services. A 100%-skipped run
-        # means infra failed, not "no services by design" — fail loudly so
-        # a green check always proves PG-backed tests executed. Mockoon has
-        # no equivalent gate (probe above is informational by design).
+      - name: Assert Postgres-gated packages actually ran tests (anti-fake-green)
+        # Layer B's sole purpose is providing services. A 100%-skipped run means
+        # infra failed, not "no services by design" — fail loudly so a green
+        # check always proves PG-backed tests executed.
+        #
+        # APA-83 P10: this previously counted `--- PASS` for
+        # internal/repository/postgres only. Eight other packages gate on
+        # TEST_POSTGRES_DSN and self-skip when it is absent, so a single
+        # aggregate count could be satisfied by unrelated tests. This asserts
+        # every gated package ran. Mockoon is deliberately excluded here and
+        # tracked separately as APA-83 P12.
         env:
           TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
-        working-directory: apps/api
-        run: |
-          passes="$(go test ./internal/repository/postgres/ -v -count=1 2>&1 | grep -c '^--- PASS' || true)"
-          echo "postgres-backed passing tests: $passes"
-          if [ "$passes" -lt 1 ]; then
-            echo "::error::zero postgres-backed tests ran — services layer failed (not a skip)"
-            exit 1
-          fi
+        run: python3 scripts/ci/check_pg_gated_packages.py
 
       - name: Teardown Mockoon
         # Postgres service container is torn down automatically by the runner.
