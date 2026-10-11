@@ -54,9 +54,10 @@ NON_CODE_RE = re.compile(
 )
 FUNCTION_RE = re.compile(r"\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(")
 BARE_CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_]\w*)\s*\(")
-LIVE_CALL_RE = re.compile(
-    r"\b(?:requireLive[A-Za-z0-9_]*|New[A-Za-z0-9_]*ClientFromEnv)\s*\("
+LIVE_GATE_CALL_RE = re.compile(
+    r"\brequireLive(?:Groq|Poolside|Model|Qualification)[A-Za-z0-9_]*\s*\("
 )
+TEST_CLIENT_CONSTRUCTOR_RE = re.compile(r"\bNew[A-Za-z0-9_]*ClientFromEnv\s*\(")
 
 
 def mask_go_non_code(source: str) -> str:
@@ -143,7 +144,10 @@ def find_reachable_live_calls(
                 visited.add(function_name)
                 definitions = functions.get(function_name, [])
                 for path, body in definitions:
-                    for call in LIVE_CALL_RE.finditer(body):
+                    marker_calls = list(LIVE_GATE_CALL_RE.finditer(body))
+                    if path in default_test_files:
+                        marker_calls.extend(TEST_CLIENT_CONSTRUCTOR_RE.finditer(body))
+                    for call in marker_calls:
                         marker = call.group(0).strip().removesuffix("(")
                         findings.append(
                             f"{path}:{root_name} reaches {marker} via {' -> '.join(chain)}"
