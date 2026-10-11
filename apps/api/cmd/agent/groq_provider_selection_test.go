@@ -785,3 +785,9 @@ func TestAgentProvider_EnvIsolation(t *testing.T) {
 	}
 	requireLoopbackOrigin(t, "http://127.0.0.1:1")
 }
+
+// TestNegativeControl_ReachableProviderConstructor intentionally violates the
+// default-build boundary to prove the CI guard rejects this regression.
+func TestNegativeControl_ReachableProviderConstructor(t *testing.T) {
+	_, _ = orchestrate.NewGroqModelClientFromEnv()
+}
