@@ -172,14 +172,16 @@ def find_reachable_live_calls(
                         if target in functions and target not in visited:
                             pending.append((target, chain + (target,)))
 
-            has_live_gate = any(
-                LIVE_GATE_CALL_RE.search(body)
-                for _path, body, _raw, _chain in reachable_bodies
-            )
-            has_env_client = any(
-                TEST_CLIENT_CONSTRUCTOR_RE.search(body)
-                for _path, body, _raw, _chain in reachable_bodies
-            )
+            live_gate_details = sorted({
+                f"{match.group(0).rstrip('(')} via {' -> '.join(chain)}"
+                for _path, body, _raw, chain in reachable_bodies
+                if (match := LIVE_GATE_CALL_RE.search(body))
+            })
+            env_client_details = sorted({
+                f"{match.group(0).rstrip('(')} via {' -> '.join(chain)}"
+                for _path, body, _raw, chain in reachable_bodies
+                if (match := TEST_CLIENT_CONSTRUCTOR_RE.search(body))
+            })
             raw_reachable = [raw for _path, _body, raw, _chain in reachable_bodies]
             safe_loopback_override = (
                 any(
@@ -197,14 +199,16 @@ def find_reachable_live_calls(
                 or _clears_groq_key_from_allowlist(raw)
                 for raw in raw_reachable
             )
-            if has_live_gate:
+            if live_gate_details:
                 findings.append(
-                    f"{test_path}:{root_name} reaches a provider-specific requireLive gate"
+                    f"{test_path}:{root_name} reaches provider-specific live gate(s): "
+                    + "; ".join(live_gate_details)
                 )
-            if has_env_client and not (safe_loopback_override or explicit_no_key):
+            if env_client_details and not (safe_loopback_override or explicit_no_key):
                 findings.append(
-                    f"{test_path}:{root_name} reaches an environment-backed provider client "
-                    "without a visible loopback override or explicit empty-key guard"
+                    f"{test_path}:{root_name} reaches environment-backed provider client(s): "
+                    + "; ".join(env_client_details)
+                    + "; no visible loopback override or explicit empty-key guard"
                 )
     return sorted(set(findings))
 
