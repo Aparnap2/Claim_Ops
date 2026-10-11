@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 API = ROOT / "apps" / "api"
@@ -126,6 +127,32 @@ def _clears_groq_key_from_allowlist(raw_body: str) -> bool:
     )
 
 
+def go_file_names(package: dict[str, Any], key: str) -> list[str]:
+    """Return a Go package file-list field, failing closed on an unexpected shape.
+
+    `go list -json` always emits a list of strings for these keys. Anything else
+    means the toolchain contract changed; raise rather than silently accept it,
+    because a malformed entry would resolve to a path that is not a real file and
+    be dropped from the default-build set, which could hide a reachable
+    live-provider call.
+
+    Both the outer container and every element are checked: a list containing
+    ``42`` would otherwise pass an outer-only check and still drop that entry.
+    """
+    value = package.get(key, [])
+    if not isinstance(value, list):
+        raise RuntimeError(
+            f"unexpected type for {key!r} in go list output: {type(value).__name__}"
+        )
+    for index, entry in enumerate(value):
+        if not isinstance(entry, str):
+            raise RuntimeError(
+                f"unexpected entry type at {key}[{index}] in go list output: "
+                f"{type(entry).__name__}"
+            )
+    return value
+
+
 def find_reachable_live_calls(
     sources: dict[str, str], default_test_files: set[str]
 ) -> list[str]:
@@ -145,10 +172,10 @@ def find_reachable_live_calls(
 
     findings: list[str] = []
     for test_path in sorted(default_test_files):
-        group = file_groups.get(test_path)
-        if group is None:
+        test_group = file_groups.get(test_path)
+        if test_group is None:
             continue
-        functions = grouped[group]
+        functions = grouped[test_group]
         roots = [
             name
             for name, definitions in functions.items()
@@ -245,11 +272,11 @@ def default_go_test_sources() -> tuple[dict[str, str], set[str]]:
     for package in packages:
         directory = Path(str(package["Dir"]))
         for key in ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles"):
-            for filename in package.get(key, []):
-                source_paths.add(str(directory / str(filename)))
+            for filename in go_file_names(package, key):
+                source_paths.add(str(directory / filename))
         for key in ("TestGoFiles", "XTestGoFiles"):
-            for filename in package.get(key, []):
-                test_paths.add(str(directory / str(filename)))
+            for filename in go_file_names(package, key):
+                test_paths.add(str(directory / filename))
 
     sources = {
         path: Path(path).read_text(encoding="utf-8")
