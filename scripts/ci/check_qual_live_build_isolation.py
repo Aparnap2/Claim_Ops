@@ -189,7 +189,11 @@ def find_reachable_live_calls(
                     for raw in raw_reachable
                 )
                 and any(
-                    re.search(r'\b(?:httptest\.NewServer|newGroqOrigin|runStub|requireLoopback)\b', raw)
+                    re.search(
+                        r'\b(?:httptest\.NewServer|newGroqOrigin|'
+                        r'runStub|requireLoopback)\b',
+                        raw,
+                    )
                     for raw in raw_reachable
                 )
             )
