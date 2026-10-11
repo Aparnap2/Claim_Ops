@@ -39,6 +39,56 @@ def test_required_packages_cover_every_postgres_gated_package() -> None:
     assert not missing, f"Postgres-gated packages absent from the gate: {missing}"
 
 
+def all_results(**overrides: object) -> dict[str, object]:
+    """A healthy result for every required package, with optional overrides."""
+    results = {
+        package: GATE.PackageResult(0, ["TestX"], []) for package in GATE.REQUIRED_PACKAGES
+    }
+    results.update(overrides)
+    return results  # type: ignore[return-value]
+
+
+def test_nonzero_exit_with_passing_tests_still_fails_the_gate() -> None:
+    """The defect this gate must never have again.
+
+    A package can report passing tests and still exit nonzero because another
+    test failed. Counting passes alone classified such a package as healthy and
+    let a real Postgres-backed failure through a green gate.
+    """
+    results = all_results(
+        **{"./internal/ingest": GATE.PackageResult(1, ["TestA", "TestB"], [])}
+    )
+    problems = GATE.evaluate(results)
+    assert len(problems) == 1
+    assert "./internal/ingest" in problems[0]
+    assert "exited 1" in problems[0]
+
+
+def test_build_error_is_reported_not_swallowed() -> None:
+    """A compile error exits nonzero with no passing tests at all."""
+    results = all_results(
+        **{"./internal/worker": GATE.PackageResult(2, [], [])}
+    )
+    problems = GATE.evaluate(results)
+    assert len(problems) == 1
+    assert "./internal/worker" in problems[0]
+    assert "exited 2" in problems[0]
+
+
+def test_all_skipped_package_is_still_reported() -> None:
+    """The original failure mode: service down, everything skipped, exit 0."""
+    results = all_results(
+        **{"./internal/repository/postgres": GATE.PackageResult(0, [], ["TestA"])}
+    )
+    problems = GATE.evaluate(results)
+    assert len(problems) == 1
+    assert "executed no tests" in problems[0]
+
+
+def test_healthy_run_reports_no_problems() -> None:
+    assert GATE.evaluate(all_results()) == []
+
+
 def test_count_results_reads_verbose_pass_and_skip_lines() -> None:
     output = (
         "=== RUN   TestAlpha\n"
@@ -52,40 +102,20 @@ def test_count_results_reads_verbose_pass_and_skip_lines() -> None:
     assert skipped == ["TestBeta"]
 
 
-def test_a_package_whose_tests_all_skipped_is_underrun() -> None:
-    """The whole point: 0 passes with N skips must not read as covered."""
-    counts = {package: 1 for package in GATE.REQUIRED_PACKAGES}
-    counts["./internal/repository/postgres"] = 0
-    underrun = GATE.underrun_packages(counts)
-    assert underrun == ["./internal/repository/postgres"]
-
-
 def test_a_busy_package_cannot_mask_a_silent_one() -> None:
-    """Aggregate counting would pass here; per-package must not.
-
-    532 aggregate passes with Postgres fully down is the measured shape of this
-    failure — most packages have unrelated tests that pass regardless.
-    """
-    counts = {package: 50 for package in GATE.REQUIRED_PACKAGES}
-    counts["./internal/repository/postgres"] = 0
-    assert sum(counts.values()) >= 100
-    assert GATE.underrun_packages(counts) == ["./internal/repository/postgres"]
+    """Aggregate counting would pass here; per-package must not."""
+    results = all_results()
+    results["./internal/repository/postgres"] = GATE.PackageResult(0, [], ["TestA"])
+    assert len(GATE.evaluate(results)) == 1
 
 
-def test_a_missing_package_entry_is_treated_as_underrun() -> None:
+def test_a_missing_package_entry_is_reported() -> None:
     """A package that produced no output must not be assumed healthy."""
-    counts = {
-        package: 5
-        for package in GATE.REQUIRED_PACKAGES
-        if package != "./internal/ingest"
-    }
-    underrun = GATE.underrun_packages(counts)
-    assert underrun == ["./internal/ingest"]
-
-
-def test_all_packages_covered_means_no_underrun() -> None:
-    counts = {package: 3 for package in GATE.REQUIRED_PACKAGES}
-    assert GATE.underrun_packages(counts) == []
+    results = all_results()
+    del results["./internal/ingest"]
+    problems = GATE.evaluate(results)
+    assert len(problems) == 1
+    assert "./internal/ingest" in problems[0]
 
 
 def test_missing_dsn_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:

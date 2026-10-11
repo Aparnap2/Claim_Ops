@@ -50,12 +50,36 @@ PASS_RE = re.compile(r"^--- PASS: (\S+)", re.MULTILINE)
 SKIP_RE = re.compile(r"^--- SKIP: (\S+)", re.MULTILINE)
 
 
+class PackageResult:
+    """Outcome of one `go test -v` run.
+
+    `returncode` is retained deliberately: a package can report passing tests and
+    still exit nonzero because another test failed or the build broke. Counting
+    passes alone would classify a package with a real failure as healthy.
+    """
+
+    def __init__(self, returncode: int, passed: list[str], skipped: list[str]) -> None:
+        self.returncode = returncode
+        self.passed = passed
+        self.skipped = skipped
+
+    @property
+    def failed_to_run(self) -> bool:
+        """True when the package executed no passing test (all skipped)."""
+        return len(self.passed) < MIN_PASSES
+
+    @property
+    def failed_tests(self) -> bool:
+        """True when go test itself reported failure, build error, or timeout."""
+        return self.returncode != 0
+
+
 def count_results(output: str) -> tuple[list[str], list[str]]:
     """Return (passed, skipped) test names from `go test -v` output."""
     return PASS_RE.findall(output), SKIP_RE.findall(output)
 
 
-def run_package(package: str, env: dict[str, str]) -> tuple[list[str], list[str]]:
+def run_package(package: str, env: dict[str, str]) -> PackageResult:
     result = subprocess.run(
         ["go", "test", "-v", "-count=1", package],
         cwd=API,
@@ -67,20 +91,35 @@ def run_package(package: str, env: dict[str, str]) -> tuple[list[str], list[str]
     # Intentionally examine stdout+stderr regardless of exit code: a build or
     # compile error must also be reported, not silently read as "zero passes
     # because nothing ran" with no explanation.
-    return count_results(result.stdout + result.stderr)
+    passed, skipped = count_results(result.stdout + result.stderr)
+    return PackageResult(result.returncode, passed, skipped)
 
 
-def underrun_packages(pass_counts: dict[str, int]) -> list[str]:
-    """Return required packages that ran fewer than MIN_PASSES tests.
+def evaluate(results: dict[str, PackageResult]) -> list[str]:
+    """Return human-readable problems; empty means the gate may pass.
 
-    Split out from `main` so the rule itself is unit-testable: a package whose
-    entire suite skipped is the exact case a green `go test` exit code hides.
+    Two independent failures, both of which must block:
+    - a package that ran no tests (everything skipped, or the service is down);
+    - a package whose `go test` exited nonzero (a real failure, build error, or
+      panic), even when other tests in that package passed.
     """
-    return [
-        package
-        for package in REQUIRED_PACKAGES
-        if pass_counts.get(package, 0) < MIN_PASSES
-    ]
+    problems: list[str] = []
+    for package in REQUIRED_PACKAGES:
+        result = results.get(package)
+        if result is None:
+            problems.append(f"{package}: no result (package did not run)")
+            continue
+        if result.failed_tests:
+            problems.append(
+                f"{package}: go test exited {result.returncode} "
+                f"(pass={len(result.passed)} skip={len(result.skipped)})"
+            )
+        elif result.failed_to_run:
+            problems.append(
+                f"{package}: executed no tests "
+                f"(pass={len(result.passed)} skip={len(result.skipped)})"
+            )
+    return problems
 
 
 def main() -> int:
@@ -98,19 +137,27 @@ def main() -> int:
     env.pop("POOLSIDE_API_KEY", None)
 
     print(f"Postgres-gated package coverage (minimum {MIN_PASSES} passing test per package)")
-    pass_counts: dict[str, int] = {}
+    results: dict[str, PackageResult] = {}
     for package in REQUIRED_PACKAGES:
-        passed, skipped = run_package(package, env)
-        pass_counts[package] = len(passed)
-        status = "ok" if len(passed) >= MIN_PASSES else "UNDER-RUN"
-        print(f"  {status:>9}  {package}  pass={len(passed)} skip={len(skipped)}")
-
-    underran = underrun_packages(pass_counts)
-
-    if underran:
+        result = run_package(package, env)
+        results[package] = result
+        if result.failed_tests:
+            status = "FAILED"
+        elif result.failed_to_run:
+            status = "UNDER-RUN"
+        else:
+            status = "ok"
         print(
-            "the following Postgres-gated packages executed no tests (they skipped, or "
-            "the service is unreachable): " + ", ".join(underran),
+            f"  {status:>9}  {package}  "
+            f"pass={len(result.passed)} skip={len(result.skipped)} exit={result.returncode}"
+        )
+
+    problems = evaluate(results)
+    if problems:
+        for problem in problems:
+            print(f"::error::{problem}", file=sys.stderr)
+        print(
+            f"FAIL: {len(problems)} Postgres-gated package(s) did not run clean.",
             file=sys.stderr,
         )
         return 1
