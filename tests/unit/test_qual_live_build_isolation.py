@@ -96,3 +96,20 @@ func TestCommentOnly(t *testing.T) {
 }
 '''
     assert CHECKER.find_reachable_live_calls({path: source}, {path}) == []
+
+
+def test_explicit_provider_env_allowlist_cleared_by_helper_is_allowed() -> None:
+    path = "/repo/apps/api/qualification_test.go"
+    source = """package main
+func TestBlankKeyRejectedLikeAbsent(t *testing.T) {
+    useInlineEnvelope(t)
+    _ = groqClientFromEnv(t)
+}
+func useInlineEnvelope(t *testing.T) {
+    for _, k := range []string{"MODEL_PROVIDER", "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL"} {
+        t.Setenv(k, "")
+    }
+}
+func groqClientFromEnv(t *testing.T) { _ = NewGroqModelClientFromEnv() }
+"""
+    assert CHECKER.find_reachable_live_calls({path: source}, {path}) == []
