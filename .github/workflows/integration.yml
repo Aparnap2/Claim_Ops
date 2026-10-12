@@ -180,8 +180,6 @@ jobs:
             docker logs claimops-mockoon 2>&1 | tail -30 || true
             exit 1
           fi
-            sleep 2
-          done
 
       - name: make integration (the gate)
         env:
