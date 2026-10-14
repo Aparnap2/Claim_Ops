@@ -122,26 +122,30 @@ Legend: *E.S.* = evidence status (verified-at-baseline / PR-head / documented-ga
 - CI/staging: cloud workflow credential absent / emulator blocked (manual validation only).
 - Evidence status: **blocked** (KL-02).
 
-### Row 6 — Unknown-product: workflow recovery vs emulator (beyond KL-01)
+### Row 6 — Claim workflow envelope and transition ownership
 
-- Not a gap by itself? `internal/workflow` (51 tests) exercises state machine; skip boundary needs definition.
-- Status: deferred — matrix covers only explicit cross-producer; GCW-specific is KL-01 and separate from this doc.
+- Existing coverage: `internal/workflow` (51 unit tests); `claims.CanTransition`; generic driver `workflow.Apply`.
+- Execution: unit surface **passed** at baseline.
+- Missing scenario: enumerate which production caller initiates each transition. Per APA-91 baseline, production callers are currently absent for the human-authority chain.
+- Expected durable state: versioned claim update plus one `claim.transitioned` event per transition once `APA-91` lands.
+- CI/staging: PostgreSQL plus tenant context; no localgcp dependency for the new producer once designed.
+- Evidence status: **documented-gap** (state machine exercised; production ownership not yet traced).
 
 ### Row 7 — PII leakage + secret redaction
 
 - Invariant: raw `pii` / un-redacted fields never leave the system plane.
-- Existing coverage: `internal/observability` package; APA-89 added `pii_test.go` + mypy + 4 new cases; APA-86 open; KL-??.
+- Existing coverage: `internal/observability` package; APA-89 added `pii_test.go` plus 4 new mypy cases (merged); APA-86 open.
 - Execution: passed (unit) when covered; APA-86 stays to report; matrix treats it as gap.
 - Missing scenario: structural lint driven by golden + static string search for literal leaked forms; coverage absent.
 - Expected durable state: no persistence of unmasked fields.
-- CI/staging: unit + secret guard P5 (`gilevellylint` — see `../infra`), may run in CI.
+- CI/staging: unit tests plus the APA-83 P5 secret guard under ordinary CI; no external services.
 - Evidence status: **documented-gap** (APA-86). (PR #156/P8 added race on concurrency.)
 
 ### Row 8 — Audit integrity / decision actor attribution
 
 - Invariant: every decision carries an auditable actor Id and signet-pinnned HMAC.
-- Existing coverage: `decision.go` uses signed requests + HMAC; `event_store` (unknown file coverage PM) — tbd.
-- Execution: covered when the test path lands; absent today (unit-aggregate must enumerate).
+- Existing coverage: `decision.go` uses signed Webhook/HMAC requests and a RLS transaction; persisted audit relies on the event-store path still to be inventoried.
+- Execution: unit/contract surfaces passed at baseline; the PG-backed `decision_integration_test.go` is skipped without `TEST_POSTGRES_DSN`.
 - Missing scenario: persistent actor audit query with user / timestamp / source; no test shown.
 - Expected durable state: no mutation without attribution.
 - CI/staging: requires PG + DSN; no live provider.
@@ -150,11 +154,11 @@ Legend: *E.S.* = evidence status (verified-at-baseline / PR-head / documented-ga
 
 ### Row 9 — Deployment compatibility, rollback, operational recovery
 
-- Invariant: hostage driver reliable after image rollback without silently losing data; post-deploy smoke passes `/health`.
+- Invariant: an image rollback leaves no uncommitted or partially committed business state, and post-deploy smoke confirms server health.
 - Existing coverage: CI `.github/workflows/deploy.yml` template shows post-deploy blog smoke but has not been proven to match the app.
 - Execution: **no running-proof** — deployment remains deferred (P2).
-- Missing scenario: post-deploy smoke + penguin validation.
-- Expected durable state: no loss; deterministic build<|message|>.
+- Missing scenario: post-deploy smoke and one controlled rollback rehearsal; external deployment pipeline required.
+- Expected durable state: no unexplained state drift; deterministic artifact reference.
 - Release impact: external gating, not code-internal alone.
 - Evidence status: **not-run** baseline.
 
@@ -164,7 +168,7 @@ Legend: *E.S.* = evidence status (verified-at-baseline / PR-head / documented-ga
 - Existing coverage: gate checks declared `skipped()` and aborts.
 - Execution: passed (0f33724 Actions, #38511713891).
 - Missing scenario: extends internal/app once localgcp exists.
-- Evidence status: **verified at baseline** (on CI; 82 passes + 8? explanation required by P12 negative controls proven before merge).
+- Evidence status: **verified at baseline** (on CI; 82 mock-required cases executed and fail-closed controls verified before merge).
 
 ### Row 11 — Live-provider build isolation (qual path)
 
@@ -173,10 +177,10 @@ Legend: *E.S.* = evidence status (verified-at-baseline / PR-head / documented-ga
 - Execution: suite passed in prior cycle (`9625199`).
 - Evidence status: **verified at baseline** (no new live investigation; unchanged scripts/functions).
 
-### Row 12 — Groq output safety // fail-closed test-no-wrapper.io
+### Row 12 — Live-provider fail-closed and strict type/hint gate
 
 - Invariant: only deterministic mode for provider; bounded fallback.
-- Covered: `--strict` (`mypy-agents`) is post-mypy; APA-89.
+- Existing coverage: APA-89 (merged at `e68cf7e`) plus strict mypy under APA-83 P9 (file-level typing closure). Groq behaviour itself lives in the live-qualified suite, not this baseline.
 - Evidence: merged `fa8b98f`; refer docs.
 
 ---
@@ -189,7 +193,7 @@ Legend: *E.S.* = evidence status (verified-at-baseline / PR-head / documented-ga
 2. **Missing connected test**: APA-88 (corrected scope, dependency APA-91).
 3. **Unresolved rule authority**: APA-87 (validation vs verify, transitions/NCGuard offset).
 4. **PII/untested**: APA-86 + a missing redaction structural sweep.
-5. **Blocked**: APA-37, APA-40, APA-48 (GCW/regauledinal-deployment image).
+5. **Blocked**: APA-37, APA-40, APA-48 (GCW retry/409 semantics; worker image rollout).
 6. **Live low-capacity / definition**: KL-04/KL-09 429s, APA-55 1/5 run; APA-56 causal half (MissingEvidence not observed).
 7. **Deployment path**: deferred P2, matrix row 9 not yet exercised (no real deployment).
 
