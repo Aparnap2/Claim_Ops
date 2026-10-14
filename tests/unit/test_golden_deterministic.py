@@ -76,7 +76,11 @@ def test_01_happy_valid_claim_docs_transition_audit():
             trace_id="t-happy",
         )
     )
-    assert nxt.status == ClaimStatus.REGISTERED or str(nxt.status) == "REGISTERED"
+    # Pin the enum identity exactly. The previous
+    # `... == ClaimStatus.REGISTERED or str(...) == "REGISTERED"` accepted
+    # either representation, so it could not distinguish the enum member from a
+    # bare string carrying the same value.
+    assert nxt.status is ClaimStatus.REGISTERED
     assert nxt.version == 2
     assert len(log.for_claim(str(nxt.tenant_id), str(nxt.id))) == 1
 
@@ -85,7 +89,13 @@ def test_02_missing_document_no_state_mutation():
     claim = _make_claim()
     r = validate_required_docs(["CLAIM_FORM", "HOSPITAL_FINAL_BILL"])
     assert not r.passed
-    assert ExceptionCode.MISSING_REQUIRED_DOCUMENT.value in ("MISSING_REQUIRED_DOCUMENT")
+    assert ExceptionCode.MISSING_REQUIRED_DOCUMENT.value == "MISSING_REQUIRED_DOCUMENT"
+    # The previous `... .value in ("MISSING_REQUIRED_DOCUMENT")` was equivalent
+    # to this equality but read like set membership. Keep the explicit form and
+    # additionally pin what the validator actually reported, so the test proves
+    # behaviour rather than restating the enum definition.
+    assert r.rule_id == "REQUIRED_DOCS"
+    assert r.message == "Missing: DISCHARGE_SUMMARY."
     assert claim.status == "RECEIVED" and claim.version == 1
 
 
@@ -123,10 +133,44 @@ def test_05_duplicate_sha_idempotent_repo():
 def test_06_amount_mismatch_decimal_only():
     r = validate_amount_reconciliation("85000.00", "0.00", "79500.00")
     assert not r.passed
-    assert isinstance(r.message, str)
+    assert r.rule_id == "AMOUNT_RECONCILIATION"
+    assert r.message == "Expected 85000.00, got 79500.00."
     # exact decimal: 85000.00 - 0.00 != 79500.00
     ok = validate_amount_reconciliation("85000.00", "5500.00", "79500.00")
     assert ok.passed
+
+
+def test_06b_amount_tolerance_boundary_is_pinned_and_diverges_from_go():
+    """Pin this side's tolerance boundary explicitly.
+
+    APA-87 split slice. The authoritative Go implementation
+    (`internal/validation.ValidateAmountPaise`) is exact: it accepts only
+    `gross - discount == net`, and its table already pins
+    `{"off by one paise", 8500000, 550000, 7950001, false}`.
+
+    This spec-side implementation applies a one-cent tolerance, so it ACCEPTS
+    the same off-by-one-paise input. That divergence is real and intentional in
+    neither direction yet — the authority question is tracked separately in
+    APA-87 and is NOT resolved by this test. What this test does is make the
+    divergence explicit and un-driftable in either direction, so neither side
+    can change silently.
+
+    Go counterpart: apps/api/internal/validation/validation_test.go:185
+    """
+    # Within tolerance (off by exactly 0.01) -> accepted here.
+    assert validate_amount_reconciliation("85000.00", "5500.00", "79500.01").passed
+
+    # One cent beyond tolerance -> rejected.
+    assert not validate_amount_reconciliation("85000.00", "5500.00", "79500.02").passed
+
+    # Exact reconciliation -> accepted.
+    assert validate_amount_reconciliation("85000.00", "5500.00", "79500.00").passed
+
+    # An explicit zero tolerance makes this side behave like the Go one.
+    strict = validate_amount_reconciliation(
+        "85000.00", "5500.00", "79500.01", tolerance=Decimal("0")
+    )
+    assert not strict.passed
 
 
 def test_07_illegal_transition_rejected_version_unchanged():
