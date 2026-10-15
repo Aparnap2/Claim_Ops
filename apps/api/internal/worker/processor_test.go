@@ -105,6 +105,10 @@ func (f *fakeClaimLoader) LoadClaim(_ context.Context, _, _ string) (ClaimView, 
 	return f.view, f.err
 }
 
+func (f *fakeClaimLoader) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) (bool, error) {
+	return false, nil
+}
+
 // fakePolicyChecker returns canned PolicyData.
 type fakePolicyChecker struct {
 	data PolicyData
