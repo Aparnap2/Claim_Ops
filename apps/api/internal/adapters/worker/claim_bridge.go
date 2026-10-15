@@ -5,8 +5,8 @@ import (
 
 	"claimops-api/internal/claims"
 	"claimops-api/internal/repository/postgres"
-	"claimops-api/internal/workflow"
 	"claimops-api/internal/worker"
+	"claimops-api/internal/workflow"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -49,11 +49,11 @@ func (b *ClaimBridge) LoadClaim(ctx context.Context, tenant, claimID string) (wo
 // fields are always empty (identity rules evaluate policy-side data).
 func ToClaimView(c claims.Claim) worker.ClaimView {
 	return worker.ClaimView{
-		PolicyNumber:  string(c.Policy),
-		ClaimVersion:   c.Version,
-		PatientName:    "",
-		HospitalName:   "",
-		ClaimedPaise:   int64(c.AmountPaise),
+		PolicyNumber: string(c.Policy),
+		ClaimVersion: c.Version,
+		PatientName:  "",
+		HospitalName: "",
+		ClaimedPaise: int64(c.AmountPaise),
 		Admission:    c.AdmissionDate,
 		Discharge:    c.DischargeDate,
 		HasAdmission: !c.AdmissionDate.IsZero(),
