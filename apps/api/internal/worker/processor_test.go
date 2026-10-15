@@ -95,17 +95,33 @@ func (s *fakeStore) counts() (docCalls, evCalls, evRows int) {
 	return s.insertDocCalls, s.insertEvCalls, len(s.ev)
 }
 
-// fakeClaimLoader returns a canned ClaimView.
+// fakeClaimLoader returns a canned ClaimView and records ADR 010 producer
+// calls so the Parser-gated (runNewPipeline) tests can prove the durable
+// boundary fires exactly once, on the owning tenant, with the loaded claim
+// version — and can inject a store error to prove the fail-closed path.
 type fakeClaimLoader struct {
 	view ClaimView
 	err  error
+
+	recTenants  []string
+	recClaimIDs []string
+	recVersions []int
+	recEventIDs []string
+	recErr      error
 }
 
 func (f *fakeClaimLoader) LoadClaim(_ context.Context, _, _ string) (ClaimView, error) {
 	return f.view, f.err
 }
 
-func (f *fakeClaimLoader) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) (bool, error) {
+func (f *fakeClaimLoader) RecordInsufficientEvidenceTransition(_ context.Context, tenant, claimID string, expectedVersion int, eventID string) (bool, error) {
+	f.recTenants = append(f.recTenants, tenant)
+	f.recClaimIDs = append(f.recClaimIDs, claimID)
+	f.recVersions = append(f.recVersions, expectedVersion)
+	f.recEventIDs = append(f.recEventIDs, eventID)
+	if f.recErr != nil {
+		return false, f.recErr
+	}
 	return false, nil
 }
 

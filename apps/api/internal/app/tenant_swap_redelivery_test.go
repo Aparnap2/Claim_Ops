@@ -102,10 +102,24 @@ func (s *tswapStore) writes(tenant string) (docs, ev int) {
 	return s.docWritesByTenant[tenant], s.evWritesByTenant[tenant]
 }
 
-type tswapClaims struct{}
+// tswapClaims is a tenant-agnostic read model double for the Tier-1 (legacy)
+// pipeline. It records producer calls so tests can prove the ADR 010 durable
+// boundary is never consulted on the Parser-nil Tier-1 path (tenant swap is
+// rejected in Handle before the pipeline).
+type tswapClaims struct {
+	recTenants []string
+}
 
-func (tswapClaims) LoadClaim(context.Context, string, string) (worker.ClaimView, error) {
+func (c *tswapClaims) LoadClaim(context.Context, string, string) (worker.ClaimView, error) {
 	return worker.ClaimView{PolicyNumber: "POL-1", PatientName: "Alice", HospitalName: "City Hospital", ClaimedPaise: 5000}, nil
+}
+
+// RecordInsufficientEvidenceTransition implements worker.ClaimLoader. A call
+// here would mean the Tier-1 path reached the new-pipeline durable boundary,
+// which it must not; tests assert the recording stays empty.
+func (c *tswapClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) (bool, error) {
+	c.recTenants = append(c.recTenants, tenant)
+	return false, nil
 }
 
 type tswapPolicy struct{}
@@ -116,11 +130,12 @@ func (tswapPolicy) CheckPolicy(context.Context, string, string) (worker.PolicyDa
 
 // tswapRig wires the REAL DocumentOutcomeHandler over the REAL
 // worker.Processor (Tier-1, deterministic) with counting fakes.
-func tswapRig() (func(ctx context.Context, event []byte) worker.Outcome, *tswapFetcher, *tswapStore) {
+func tswapRig() (func(ctx context.Context, event []byte) worker.Outcome, *tswapFetcher, *tswapStore, *tswapClaims) {
 	fetch := &tswapFetcher{}
 	store := newTswapStore()
-	proc := worker.NewProcessor(fetch, store, tswapClaims{}, tswapPolicy{})
-	return DocumentOutcomeHandler(proc), fetch, store
+	claimsDB := &tswapClaims{}
+	proc := worker.NewProcessor(fetch, store, claimsDB, tswapPolicy{})
+	return DocumentOutcomeHandler(proc), fetch, store, claimsDB
 }
 
 func tswapEvent(t *testing.T, tenant string) []byte {
@@ -139,7 +154,7 @@ func tswapEvent(t *testing.T, tenant string) []byte {
 }
 
 func TestTenantSwap_TransportSeam_TerminalRejection(t *testing.T) {
-	handle, fetch, store := tswapRig()
+	handle, fetch, store, claimsDB := tswapRig()
 	ctxA := postgres.WithTenant(context.Background(), claims.TenantID("tA"))
 	ctxB := postgres.WithTenant(context.Background(), claims.TenantID("tB"))
 	evA := tswapEvent(t, "tA")
@@ -188,6 +203,13 @@ func TestTenantSwap_TransportSeam_TerminalRejection(t *testing.T) {
 	if err := DocumentEventHandler(newTswapPullProc(t))(ctxB, evA); err != nil {
 		t.Errorf("pull handler on tenant-swapped event = %v, want nil (terminal acks, no poison spin)", err)
 	}
+
+	// The owning tenant's Tier-1 run never reaches the ADR 010 durable
+	// boundary, and the swapped/redelivered deliveries are rejected before
+	// the pipeline — so the producer stays untouched throughout.
+	if len(claimsDB.recTenants) != 0 {
+		t.Errorf("producer consulted on Tier-1 swap path = %v, want none", claimsDB.recTenants)
+	}
 }
 
 // TestTenantSwap_PushPath_TerminalRejection drives the full Pub/Sub push wiring
@@ -196,7 +218,7 @@ func TestTenantSwap_TransportSeam_TerminalRejection(t *testing.T) {
 // (acked as 200 per terminal-ack semantics, never hidden as success or
 // duplicate), and the processor must stay untouched.
 func TestTenantSwap_PushPath_TerminalRejection(t *testing.T) {
-	handle, fetch, _ := tswapRig()
+	handle, fetch, _, claimsDB := tswapRig()
 	var kinds []worker.OutcomeKind
 	capturing := func(ctx context.Context, event []byte) worker.Outcome {
 		out := handle(ctx, event)
@@ -248,6 +270,11 @@ func TestTenantSwap_PushPath_TerminalRejection(t *testing.T) {
 	if got := fetch.count(); got != fetchAfterSeed {
 		t.Errorf("fetch calls moved %d -> %d on swapped push, want processor never invoked", fetchAfterSeed, got)
 	}
+	// The Tier-1 seed and the tenant-swapped push both stay on the legacy
+	// path: the ADR 010 durable producer is never consulted.
+	if len(claimsDB.recTenants) != 0 {
+		t.Errorf("producer consulted on Tier-1 push path = %v, want none", claimsDB.recTenants)
+	}
 }
 
 func assertTswapTerminal(t *testing.T, name string, out worker.Outcome) {
@@ -284,7 +311,7 @@ func mustTswapWritesB(t *testing.T, store *tswapStore) int {
 // its outcome is irrelevant — only the nil/ack mapping is observed.
 func newTswapPullProc(t *testing.T) *worker.Processor {
 	t.Helper()
-	return worker.NewProcessor(&tswapFetcher{}, newTswapStore(), tswapClaims{}, tswapPolicy{})
+	return worker.NewProcessor(&tswapFetcher{}, newTswapStore(), &tswapClaims{}, tswapPolicy{})
 }
 
 var _ = ports.DocumentIngestedSchemaVersion

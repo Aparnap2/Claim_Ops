@@ -133,14 +133,24 @@ func (s *restartStore) writes(tenant string) (docs, ev int) {
 // requesting tenant resolve (claim_bridge.go:29-36 → workflow.ErrNotFound
 // under another scope, claim_repository.go:138-141).
 type restartClaims struct {
-	views map[string]worker.ClaimView
+	views      map[string]worker.ClaimView
+	recTenants []string
 }
 
-func (c restartClaims) LoadClaim(_ context.Context, tenant, claimID string) (worker.ClaimView, error) {
+func (c *restartClaims) LoadClaim(_ context.Context, tenant, claimID string) (worker.ClaimView, error) {
 	if v, ok := c.views[tenant+"|"+claimID]; ok {
 		return v, nil
 	}
 	return worker.ClaimView{}, fmt.Errorf("restartclaims: claim %q absent under tenant %q", claimID, tenant)
+}
+
+// RecordInsufficientEvidenceTransition implements worker.ClaimLoader. It
+// records the tenant scope of each call so the test can prove the durable
+// boundary is never consulted under the swapped tenant; it performs no
+// durable mutation and reports no replay.
+func (c *restartClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) (bool, error) {
+	c.recTenants = append(c.recTenants, tenant)
+	return false, nil
 }
 
 func TestRestartConsistentSwap_DurableBoundaryRejectsNoFalseAck(t *testing.T) {
@@ -148,7 +158,7 @@ func TestRestartConsistentSwap_DurableBoundaryRejectsNoFalseAck(t *testing.T) {
 		"tA|CLM-X|doc-X": {fileName: "claim_form.pdf", mime: "application/pdf", content: "patient_name: Alice\npolicy_number: POL-1\n"},
 	}}
 	store := newRestartStore()
-	claimsDB := restartClaims{views: map[string]worker.ClaimView{
+	claimsDB := &restartClaims{views: map[string]worker.ClaimView{
 		"tA|CLM-X": {PolicyNumber: "POL-1", PatientName: "Alice", HospitalName: "City Hospital", ClaimedPaise: 5000},
 	}}
 	newProc := func() *worker.Processor {
@@ -230,6 +240,12 @@ func TestRestartConsistentSwap_DurableBoundaryRejectsNoFalseAck(t *testing.T) {
 	}
 	if d, e := store.writes("tB"); d != 0 || e != 0 {
 		t.Errorf("writes under tenant B after push = docs %d evidence %d, want 0/0", d, e)
+	}
+
+	// Tier-1 (Parser nil) never enters runNewPipeline, so neither tenant A
+	// nor the swapped tenant B touches the ADR 010 durable boundary.
+	if len(claimsDB.recTenants) != 0 {
+		t.Errorf("producer consulted on Tier-1 restart/swap path = %v, want none", claimsDB.recTenants)
 	}
 }
 
