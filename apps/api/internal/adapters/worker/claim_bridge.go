@@ -2,6 +2,7 @@ package workeradapter
 
 import (
 	"context"
+	"encoding/json"
 
 	"claimops-api/internal/claims"
 	"claimops-api/internal/repository/postgres"
@@ -62,10 +63,17 @@ func ToClaimView(c claims.Claim) worker.ClaimView {
 }
 
 // RecordInsufficientEvidenceTransition durably writes the ADR 010 producer
-// boundary (VALIDATING -> EXCEPTION) in one tenant-scoped transaction. On a
-// version conflict it returns replay==false plus the store error (which the
-// caller treats as retryable). On idempotent replay (already processed)
-// replay==true and no new mutation/audit event is appended.
+// boundary (VALIDATING -> EXCEPTION) in one tenant-scoped transaction.
+//
+// Disposition:
+//   - replay==false, nil  a new VALIDATING -> EXCEPTION transition was
+//     stamped: an event row + audit row were appended.
+//   - replay==true, nil   the event identity was already recorded and the
+//     claim is still at EXCEPTION: an idempotent no-op (crash recovery /
+//     redelivery) — nothing new is written.
+//   - worker.ErrTransitionSuperseded  the event was recorded but the claim
+//     has since advanced past EXCEPTION: refuse to re-authorize.
+//   - postgres.ErrVersionConflict  the caller's expected version is stale.
 func (b *ClaimBridge) RecordInsufficientEvidenceTransition(ctx context.Context, tenant, claimID string, expectedVersion int, eventID string) (bool, error) {
 	ctx = postgres.WithTenant(ctx, claims.TenantID(tenant))
 	tx, err := postgres.BeginTenantTx(ctx, b.Pool)
@@ -84,22 +92,48 @@ func (b *ClaimBridge) RecordInsufficientEvidenceTransition(ctx context.Context, 
 		return false, postgres.ErrVersionConflict
 	}
 	loaded := c
-	rows, _ := tx.Query(ctx, `SELECT event_id FROM claim_events WHERE tenant_id = $1 AND claim_id = $2`, tenant, claimID)
-	events := make(map[string]bool)
-	if rows != nil {
-		for rows.Next() {
-			var eid string
-			_ = rows.Scan(&eid)
-			events[eid] = true
-		}
-		rows.Close()
+
+	// Rebuild the recorded-event set (idempotency) and derive the next
+	// per-claim sequence in one pass. Query/Scan/Err are propagated: a
+	// failed replay-set load must fail closed, never silently degrade to
+	// replayEvent=false and re-stamp the transition.
+	rows, err := tx.Query(ctx, `SELECT event_id, seq FROM claim_events WHERE tenant_id = $1 AND claim_id = $2`, tenant, claimID)
+	if err != nil {
+		return false, err
 	}
+	events := make(map[string]bool)
+	nextSeq := 1
+	for rows.Next() {
+		var eid string
+		var seq int
+		if err := rows.Scan(&eid, &seq); err != nil {
+			rows.Close()
+			return false, err
+		}
+		events[eid] = true
+		if seq >= nextSeq {
+			nextSeq = seq + 1
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	rows.Close()
 	c.ProcessedEvents = events
 
-	replayEvent := false
 	if events[eventID] {
-		replayEvent = true
+		// The event identity is already durable. If the claim is still at
+		// EXCEPTION this is an idempotent replay (safe recovery); if it has
+		// advanced anywhere else, the initial exception was superseded and
+		// must not be re-authorized.
+		if c.Status == claims.ClaimStatusException {
+			_ = tx.Rollback(ctx)
+			return true, nil
+		}
+		return false, worker.ErrTransitionSuperseded
 	}
+
 	next, tErr := claims.Transition(c, claims.ClaimStatusException, eventID, expectedVersion, claims.TenantID(tenant))
 	if tErr != nil {
 		return false, tErr
@@ -111,26 +145,39 @@ func (b *ClaimBridge) RecordInsufficientEvidenceTransition(ctx context.Context, 
 	if err := b.Repo.SaveClaim(ctx, tx, next); err != nil {
 		return false, err
 	}
-	if !replayEvent {
-		if err := b.Repo.AppendEvent(ctx, tx, workflow.Event{
-			Seq:     1,
-			Type:    "claim.transitioned",
-			ClaimID: claims.ClaimID(claimID),
-			Tenant:  claims.TenantID(tenant),
-			From:    loaded.Status,
-			To:      claims.ClaimStatusException,
-			EventID: eventID,
-		}); err != nil {
-			return false, err
-		}
+	if err := b.Repo.AppendEvent(ctx, tx, workflow.Event{
+		Seq:     nextSeq,
+		Type:    "claim.transitioned",
+		ClaimID: claims.ClaimID(claimID),
+		Tenant:  claims.TenantID(tenant),
+		From:    loaded.Status,
+		To:      claims.ClaimStatusException,
+		EventID: eventID,
+	}); err != nil {
+		return false, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO audit_log (tenant_id, claim_id, actor_type, actor_id, action, entity, entity_id, "before", "after", trace_id) VALUES ($1,$2,$3,$4,$5,$6,$7,'{}','{}',$8)`,
-		tenant, claimID, "system", "worker", "transition.insufficient_to_exception", "claim", claimID, eventID)
+	before, err := json.Marshal(insufficientTransitionImage{Status: string(loaded.Status), Version: loaded.Version})
 	if err != nil {
+		return false, err
+	}
+	after, err := json.Marshal(insufficientTransitionImage{Status: string(claims.ClaimStatusException), Version: next.Version})
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_log (tenant_id, claim_id, actor_type, actor_id, action, entity, entity_id, "before", "after", trace_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		tenant, claimID, "system", "worker", "transition.insufficient_to_exception", "claim", claimID, string(before), string(after), eventID); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
-	return replayEvent || next.Version == loaded.Version, nil
+	return false, nil
+}
+
+// insufficientTransitionImage is the audit before/after image for the ADR 010
+// transition: the decision-bearing status + version only — no values, no
+// PII/PHI, fixed field order via struct marshal.
+type insufficientTransitionImage struct {
+	Status  string `json:"status"`
+	Version int    `json:"version"`
 }

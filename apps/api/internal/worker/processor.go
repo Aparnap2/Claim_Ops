@@ -282,6 +282,15 @@ type Outcome struct {
 // match the cause with errors.Is.
 var ErrTenantMismatch = errors.New("worker: tenant mismatch")
 
+// ErrTransitionSuperseded marks a redelivery whose insufficient-evidence
+// event was already durably recorded AND whose claim has since advanced past
+// the initial EXCEPTION state (a human/lifecycle decision moved it on). ADR
+// 010 authorizes the producer for the initial VALIDATING -> EXCEPTION edge
+// only, so the redelivery must NOT re-open an exception envelope or launch a
+// workflow. It is non-retryable: replaying can never restore the superseded
+// state. Callers match it with errors.Is and ack the duplicate.
+var ErrTransitionSuperseded = errors.New("worker: insufficient transition superseded")
+
 // documentIngestedEvent mirrors ingest.BuildUploadPayload, the JSON
 // payload consumed from ports.TopicDocumentIngested.
 type documentIngestedEvent struct {
@@ -962,9 +971,25 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 	sufficiencyEventID := ""
 	if suffInsufficient {
 		sufficiencyEventID = fmt.Sprintf("sufficiency-insufficient:%s:%s:%s", tenant, claimID, docID)
-		replay, err := p.Claims.RecordInsufficientEvidenceTransition(ctx, tenant, claimID, view.ClaimVersion, sufficiencyEventID)
-		_ = replay
+		// replay==true means the durable transition already exists for this
+		// event identity and the claim is still at EXCEPTION: the envelope
+		// build + EnsureLaunched below are idempotent (S6), so fall through.
+		_, err := p.Claims.RecordInsufficientEvidenceTransition(ctx, tenant, claimID, view.ClaimVersion, sufficiencyEventID)
 		if err != nil {
+			// ADR 010: a redelivery whose event was already recorded but
+			// whose claim has since advanced past EXCEPTION must not
+			// re-authorize an envelope or a launch. Ack the duplicate with
+			// no side effects (the original delivery owns the envelope; S6
+			// owns launch convergence).
+			if errors.Is(err, ErrTransitionSuperseded) {
+				return Outcome{
+					DocumentID: docID,
+					Status:     documents.StProcessed,
+					Extraction: documents.ExtractionNotAttempted,
+					Kind:       OutcomeSuccess,
+					Attempts:   1,
+				}, effective
+			}
 			if out, stop := abortedByCtx(ctx, docID, 1, err); stop {
 				return out, effective
 			}
@@ -980,7 +1005,6 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 				Err:        fmt.Errorf("worker: insufficient claim transition: %w", err),
 			}, effective
 		}
-		_ = replay
 	}
 
 	in, unresolved, err := verifywrap.Map(claim, verifywrap.Externals{
