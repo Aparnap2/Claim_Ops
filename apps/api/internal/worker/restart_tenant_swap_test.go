@@ -139,6 +139,9 @@ func (c *restartClaims) LoadClaim(_ context.Context, tenant, claimID string) (Cl
 	}
 	return v, nil
 }
+func (c *restartClaims) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) (bool, error) {
+	return false, nil
+}
 
 // restartPolicy is a static upstream stub that records the tenant it was
 // consulted under (the Mockoon policy source is not a tenant-isolation
