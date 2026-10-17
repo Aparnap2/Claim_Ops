@@ -1,4 +1,5 @@
-# Static security checks only — no services, no network-dependent scanners.
+# Security checks — no services required; CVE scanners are network-dependent
+# by design (advisory databases).
 #
 # - GitGuardian already runs as a repo check (secret detection on push/PR,
 #   including history). It is NOT duplicated here.
@@ -6,9 +7,12 @@
 #   meaningful offline and would duplicate GitGuardian. GitHub-side
 #   GitGuardian remains the secret-history backstop.
 # - This workflow covers: dependency-integrity audit (go mod verify +
-#   uv pip check) and a repo-tree secret-pattern guard that fails on hits.
-# - No CVE database is consulted here (integrity, not vulnerability
-#   scanning). Tracked follow-up: #39 (govulncheck + pip-audit).
+#   uv pip check), a repo-tree secret-pattern guard that fails on hits,
+#   and dependency CVE scanning (#39): govulncheck (Go, reachable
+#   vulnerabilities) and pip-audit (Python, PyPI advisory DB over the
+#   locked dependency set). The CVE scanners are separate additive jobs;
+#   they report findings by failing the job and never auto-fix or
+#   upgrade dependencies.
 
 name: security
 
@@ -26,6 +30,60 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  govulncheck:
+    # #39: dependency CVE scanning for Go. Fails on any reachable
+    # vulnerability reported by the Go vulnerability database. The finding
+    # IS the report; no suppression, no auto-remediation, no dependency
+    # change in this gate — remediation is a separate, reviewed commit.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          # Matches the `go 1.27` directive in apps/api/go.mod.
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: govulncheck (Go vulnerability database)
+        working-directory: apps/api
+        # Pinned: v1.1.4 crashes on the go1.27 toolchain (old x/tools SSA
+        # builder); v1.9.0 is the first version verified against this repo.
+        # Exits non-zero on reachable findings — that is the report.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  pip-audit:
+    # #39: dependency CVE scanning for Python. Audits the locked runtime
+    # and dev dependencies (uv.lock is the source of truth) against the
+    # PyPI advisory database. Findings fail the job; no upgrades here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          # Matches the requires-python floor (>=3.12) in pyproject.toml.
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+
+      - name: Export locked requirements
+        # --frozen pins to uv.lock (reproducible per lockfile);
+        # --no-emit-project drops the local package itself (no advisory
+        # entry exists for it); --no-hashes keeps a file pip-audit accepts.
+        run: uv export --frozen --no-emit-project --no-hashes -o /tmp/locked-requirements.txt
+
+      - name: pip-audit (PyPI advisory database)
+        # Fails on any known advisory affecting a locked dependency.
+        # No --ignore-vuln, no auto-upgrade: remediation is a separate,
+        # reviewed commit.
+        run: uvx pip-audit -r /tmp/locked-requirements.txt
+
   static:
     runs-on: ubuntu-latest
     timeout-minutes: 10
