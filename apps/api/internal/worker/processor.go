@@ -970,7 +970,15 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 	// the workflow when the durable claim state could not be recorded.
 	sufficiencyEventID := ""
 	if suffInsufficient {
-		sufficiencyEventID = fmt.Sprintf("sufficiency-insufficient:%s:%s:%s", tenant, claimID, docID)
+		// ADR 010: event identity must be deterministic and scoped to the
+		// sufficiency outcome, not just the document. Two materially
+		// different insufficiency results for the same document must not
+		// collide into one event identity (which would silently replay the
+		// first as an idempotent no-op). ReasonCodes and Missing are already
+		// sorted by sufficiency.Evaluate, so the canonical form is stable.
+		reasons := strings.Join(suffRes.ReasonCodes, ",")
+		missing := strings.Join(suffRes.Missing, ",")
+		sufficiencyEventID = fmt.Sprintf("sufficiency-insufficient:%s:%s:%s:%s|%s", tenant, claimID, docID, reasons, missing)
 		// replay==true means the durable transition already exists for this
 		// event identity and the claim is still at EXCEPTION: the envelope
 		// build + EnsureLaunched below are idempotent (S6), so fall through.

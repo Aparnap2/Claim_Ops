@@ -111,3 +111,81 @@ func TestProcessor_InsufficientEvidence_SupersededAckedNoLaunch(t *testing.T) {
 		t.Fatal("a superseded replay must not re-open an exception envelope")
 	}
 }
+
+// TestProcessor_InsufficientEvidence_EventIdentityIsReasonScoped proves the
+// ADR 010 event identity is scoped to the sufficiency outcome, not just the
+// document: two different insufficiency reasons for the same document yield
+// distinct event IDs, so a reprocessed document with a materially different
+// insufficiency result cannot be silently replayed as the first.
+func TestProcessor_InsufficientEvidence_EventIdentityIsReasonScoped(t *testing.T) {
+	const tenant, claim, version = "t-apa91", "c-1", 7
+
+	// Case A: missing required field (hospital_name dropped) -> MISSING_REQUIRED_FIELD.
+	factsA := suffSufficientClaimForm("doc-apa91-id")
+	delete(factsA.Fields, "hospital_name")
+	factsA.Fields["hospital_name"] = suffMissingField("hospital_name")
+
+	// Case B: ambiguous field (policy_number ambiguous) -> AMBIGUOUS_FIELD,
+	// a materially different insufficiency reason set.
+	factsB := suffSufficientClaimForm("doc-apa91-id")
+	f := factsB.Fields["policy_number"]
+	f.Status = extract.StatusAmbiguous
+	f.Normalized = ""
+	factsB.Fields["policy_number"] = f
+
+	loaderA := &fakeClaimLoader{view: ClaimView{PolicyNumber: "POL-1", ClaimVersion: version}}
+	pA := insuffProducerProcessor(factsA, "CLAIM_FORM", loaderA)
+	outA, _ := pA.runNewPipeline(context.Background(), tenant, claim, "abc123", "doc-apa91-id", "CLAIM_FORM")
+	if outA.Status != documents.StProcessed {
+		t.Fatalf("case A status=%q, want PROCESSED (err=%v)", outA.Status, outA.Err)
+	}
+	if len(loaderA.recEventIDs) != 1 {
+		t.Fatalf("case A producer calls = %d, want 1", len(loaderA.recEventIDs))
+	}
+	idA := loaderA.recEventIDs[0]
+
+	loaderB := &fakeClaimLoader{view: ClaimView{PolicyNumber: "POL-1", ClaimVersion: version}}
+	pB := insuffProducerProcessor(factsB, "CLAIM_FORM", loaderB)
+	outB, _ := pB.runNewPipeline(context.Background(), tenant, claim, "abc123", "doc-apa91-id", "CLAIM_FORM")
+	if outB.Status != documents.StProcessed {
+		t.Fatalf("case B status=%q, want PROCESSED (err=%v)", outB.Status, outB.Err)
+	}
+	if len(loaderB.recEventIDs) != 1 {
+		t.Fatalf("case B producer calls = %d, want 1", len(loaderB.recEventIDs))
+	}
+	idB := loaderB.recEventIDs[0]
+
+	if idA == idB {
+		t.Fatalf("event IDs must differ for materially different insufficiency outcomes; both = %q", idA)
+	}
+	for _, id := range []string{idA, idB} {
+		if !strings.Contains(id, tenant) || !strings.Contains(id, claim) || !strings.Contains(id, "doc-apa91-id") {
+			t.Fatalf("event id %q missing tenant/claim/doc identity", id)
+		}
+	}
+}
+
+// TestProcessor_InsufficientEvidence_IdenticalBundleReplays verifies that two
+// runs with the same insufficiency outcome produce the same event identity,
+// so redelivery is idempotent at the producer level.
+func TestProcessor_InsufficientEvidence_IdenticalBundleReplays(t *testing.T) {
+	const tenant, claim, version = "t-apa91", "c-1", 7
+	makeFacts := func() extract.DocumentFacts {
+		facts := suffSufficientClaimForm("doc-apa91-replay")
+		delete(facts.Fields, "hospital_name")
+		facts.Fields["hospital_name"] = suffMissingField("hospital_name")
+		return facts
+	}
+	loader1 := &fakeClaimLoader{view: ClaimView{PolicyNumber: "POL-1", ClaimVersion: version}}
+	p1 := insuffProducerProcessor(makeFacts(), "CLAIM_FORM", loader1)
+	p1.runNewPipeline(context.Background(), tenant, claim, "abc123", "doc-apa91-replay", "CLAIM_FORM")
+	loader2 := &fakeClaimLoader{view: ClaimView{PolicyNumber: "POL-1", ClaimVersion: version}}
+	p2 := insuffProducerProcessor(makeFacts(), "CLAIM_FORM", loader2)
+	p2.runNewPipeline(context.Background(), tenant, claim, "abc123", "doc-apa91-replay", "CLAIM_FORM")
+	if len(loader1.recEventIDs) != 1 || len(loader2.recEventIDs) != 1 {
+		t.Fatalf("producer calls = %d/%d, want 1/1", len(loader1.recEventIDs), len(loader2.recEventIDs))
+	}
+	if loader1.recEventIDs[0] != loader2.recEventIDs[0] {
+		t.Fatalf("identical insufficiency outcomes produced different event IDs: %q vs %q", loader1.recEventIDs[0], loader2.recEventIDs[0])
+	}
+}
