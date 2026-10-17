@@ -24,21 +24,3 @@ func WriteError(c *fiber.Ctx, status int, code, message string) error {
 func Health(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true, "service": "claimops-api"})
 }
-
-// ClaimSubmit is an edge stub: strict JSON validation only.
-// Authoritative lifecycle, persistence, and workflow dispatch arrive in
-// later phases; this stub proves malformed rejection + tenant gating.
-func ClaimSubmit(c *fiber.Ctx) error {
-	var body struct {
-		ClaimReference string `json:"claim_reference"`
-		PolicyID       string `json:"policy_id"`
-	}
-	if err := c.BodyParser(&body); err != nil {
-		return WriteError(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "malformed JSON body")
-	}
-	if body.ClaimReference == "" || body.PolicyID == "" {
-		return WriteError(c, fiber.StatusBadRequest, "VALIDATION_ERROR",
-			"claim_reference and policy_id are required")
-	}
-	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"ok": true, "status": "RECEIVED"})
-}

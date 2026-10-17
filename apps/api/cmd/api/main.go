@@ -67,7 +67,7 @@ func main() {
 			log.Printf("decision: pool unavailable (%v); HITL decision will fail closed", err)
 		}
 	}
-	fiberApp := app.NewWithDeps(uploader)
+	fiberApp := app.NewWithDeps(uploader, decisionPool)
 	if decisionPool != nil {
 		// APA-9: HMAC secret is mandatory fail-closed at request time.
 		// An empty secret keeps boot alive but every decision request
