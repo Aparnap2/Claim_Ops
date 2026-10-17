@@ -198,3 +198,19 @@ Legend: *E.S.* = evidence status (verified-at-baseline / PR-head / documented-ga
 7. **Deployment path**: deferred P2, matrix row 9 not yet exercised (no real deployment).
 
 This matrix is the baseline only; PR #159 must be folded into evidence once it merges.
+
+---
+
+## Post-baseline open work (added 2026-10-17)
+
+Pointer list only — none of these is folded into the baseline numbers above. Re-anchor this
+document when each merges, using the same convention as the PR #159 carve-out.
+
+- **PR #172** — durable claim submission (one PG transaction for claim + event + outbox; idempotent replay; tenant isolation). On merge, the claims path must be re-audited against the new route rather than the retired validation-only stub, and register KL-16 closes.
+- **PR #169 (issue #39)** — `govulncheck` + `pip-audit` jobs in `security.yml`. Red on its own head by design until PR #173 lands; non-required checks per the documented adoption criteria.
+- **PR #170** — KNOWN_LIMITATIONS reconciliation: adds KL-16 (claim durability) and KL-17 (GCS call deadlines), relocates KL-15 into the register table, adds the Linear→GitHub tracker mapping. Current release blockers live there.
+- **PR #171** — PR-triggered `integration.yml` with concurrency control. Stability is a three-run requirement; run 1/3 recorded on the PR. Rebase-triggered or superseded runs do not count toward the final head.
+- **PR #173 (issue #168)** — dependency remediation: x/text v0.42.0, x/net v0.60.0, otel/sdk v1.45.0, grpc v1.83.1, `toolchain go1.27.2`; pypdf locked v6.21.0. Local evidence: `govulncheck` reports **zero reachable** vulnerabilities — narrower than "the dependency tree is clean" (2 import-only and 2 require-only findings remain, unreached) — and `pip-audit` reports none. Merge before #169 so main's security workflow does not go red.
+
+Independent human review remains the merge gate for everything above; green required checks
+are necessary but not approval.
