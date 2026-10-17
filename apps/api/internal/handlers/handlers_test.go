@@ -87,6 +87,11 @@ func TestTenantContextMissingRejected(t *testing.T) {
 }
 
 func TestValidClaimAcceptedWithTenant(t *testing.T) {
+	// app.New() has a nil claim-submit pool: the durable handler must
+	// fail closed with 503 NO_DB after validation — never a 202 that
+	// would acknowledge non-durable work (issue #61, KL-16). The
+	// durable 202 path is covered by claim_submit_integration_test.go
+	// against real PostgreSQL.
 	app := app.New()
 	req := httptest.NewRequest(http.MethodPost, "/claims",
 		strings.NewReader(`{"claim_reference":"CLM-1","policy_id":"P-1"}`))
@@ -94,7 +99,11 @@ func TestValidClaimAcceptedWithTenant(t *testing.T) {
 	req.Header.Set("X-Tenant-ID", "t-apollo")
 	resp := do(t, app, req)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (fail-closed no-DB), got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "NO_DB") {
+		t.Fatalf("expected NO_DB envelope, got %s", body)
 	}
 }

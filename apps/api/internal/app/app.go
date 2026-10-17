@@ -15,6 +15,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // PendingUploader is a fail-closed handlers.Uploader for stacks without a
@@ -31,15 +32,20 @@ func (PendingUploader) Upload(_ context.Context, _, _, _, _ string, _ []byte) (d
 var _ handlers.Uploader = PendingUploader{}
 
 // New wires middleware, tenant enforcement, and routes with a fail-closed
-// document uploader. Tests use New for non-document routes; document tests
-// build their own stack via NewWithDeps with a stub uploader.
+// document uploader and a nil claim-submit pool (202 withheld; valid
+// bodies get 503 NO_DB — durability is never faked). Tests use New for
+// non-document routes; document tests build their own stack via
+// NewWithDeps with a stub uploader.
 func New() *fiber.App {
-	return NewWithDeps(PendingUploader{})
+	return NewWithDeps(PendingUploader{}, nil)
 }
 
 // NewWithDeps wires the stack with the uploader serving
-// POST /claims/:id/documents (usually *ingest.Service).
-func NewWithDeps(uploader handlers.Uploader) *fiber.App {
+// POST /claims/:id/documents (usually *ingest.Service) and the pool
+// serving durable POST /claims (issue #61). A nil claimPool keeps the
+// submit endpoint fail-closed (503 after validation) rather than
+// acknowledging non-durable work.
+func NewWithDeps(uploader handlers.Uploader, claimPool *pgxpool.Pool) *fiber.App {
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		BodyLimit:             10 << 20,
@@ -64,7 +70,7 @@ func NewWithDeps(uploader handlers.Uploader) *fiber.App {
 		c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4")
 		return metrics.WritePrometheus(c.Response().BodyWriter())
 	})
-	app.Post("/claims", handlers.ClaimSubmit)
+	app.Post("/claims", handlers.ClaimSubmitHandler(claimPool))
 	app.Post("/claims/:id/documents", handlers.PostDocument(uploader))
 	return app
 }
