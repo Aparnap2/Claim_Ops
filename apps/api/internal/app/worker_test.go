@@ -38,10 +38,11 @@ func TestStartDocumentWorkerDispatchAndStop(t *testing.T) {
 
 func TestDocumentEventHandlerScopesTenant(t *testing.T) {
 	store := &mapStore{docs: map[string]documents.Document{}}
+	claimsDB := &stubClaims{}
 	proc := worker.NewProcessor(
 		&mapFetcher{files: map[string]string{"doc-9": "discharge summary"}},
 		store,
-		stubClaims{},
+		claimsDB,
 		stubPolicy{},
 	)
 	h := DocumentEventHandler(proc)
@@ -57,6 +58,15 @@ func TestDocumentEventHandlerScopesTenant(t *testing.T) {
 	}
 	if store.tenantSeen != "t-scope" {
 		t.Fatalf("expected tenant-scoped ctx t-scope, saw %q", store.tenantSeen)
+	}
+	// Tier-1 (NewProcessor leaves Parser nil) never enters runNewPipeline,
+	// where the ADR 010 durable producer lives. This negative control pins
+	// that: the durable boundary must stay untouched on the legacy path
+	// (a future accidental wiring of the producer into Tier-1 would fail
+	// here). The producer's positive path is proven in the worker package
+	// against the Parser-gated pipeline.
+	if len(claimsDB.recTenants) != 0 {
+		t.Fatalf("Tier-1 path must not consult the durable producer, got %v", claimsDB.recTenants)
 	}
 }
 
@@ -93,10 +103,23 @@ func (m *mapStore) ListEvidence(_ context.Context, _ claims.ClaimID) ([]evidence
 	return nil, nil
 }
 
-type stubClaims struct{}
+// stubClaims is a tenant-agnostic read model double for the Tier-1 (legacy)
+// pipeline. It records producer calls so tests can prove the ADR 010 durable
+// boundary is never consulted on the Parser-nil Tier-1 path.
+type stubClaims struct {
+	recTenants []string
+}
 
-func (stubClaims) LoadClaim(_ context.Context, _, _ string) (worker.ClaimView, error) {
+func (s *stubClaims) LoadClaim(_ context.Context, _, _ string) (worker.ClaimView, error) {
 	return worker.ClaimView{PolicyNumber: "POL-1", ClaimedPaise: 100}, nil
+}
+
+// RecordInsufficientEvidenceTransition implements worker.ClaimLoader. A
+// call here would mean the Tier-1 path reached the new-pipeline durable
+// boundary, which it must not; tests assert the recording stays empty.
+func (s *stubClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) (bool, error) {
+	s.recTenants = append(s.recTenants, tenant)
+	return false, nil
 }
 
 type stubPolicy struct{}

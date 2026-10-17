@@ -25,20 +25,20 @@ func (f *transientFetcher) Fetch(_ context.Context, _, _, _ string) (string, str
 	return "", "", "", f.err
 }
 
-func transientProc() *worker.Processor {
+func transientProc(claimsDB *stubClaims) *worker.Processor {
 	return worker.NewProcessor(
 		&transientFetcher{err: errors.New("boom: store unavailable")},
 		&mapStore{docs: map[string]documents.Document{}},
-		stubClaims{},
+		claimsDB,
 		stubPolicy{},
 	)
 }
 
-func successProc() *worker.Processor {
+func successProc(claimsDB *stubClaims) *worker.Processor {
 	return worker.NewProcessor(
 		&mapFetcher{files: map[string]string{"doc-apa30": "discharge summary"}},
 		&mapStore{docs: map[string]documents.Document{}},
-		stubClaims{},
+		claimsDB,
 		stubPolicy{},
 	)
 }
@@ -56,23 +56,35 @@ func validEvent(t *testing.T) []byte {
 }
 
 func TestPullCallbackTransientNacks(t *testing.T) {
-	cb := PullCallback(DocumentEventHandler(transientProc()))
+	claimsDB := &stubClaims{}
+	cb := PullCallback(DocumentEventHandler(transientProc(claimsDB)))
 	if err := cb(context.Background(), validEvent(t), map[string]string{"tenant_id": "t-apa30"}); err == nil {
 		t.Fatalf("TRANSIENT outcome returned nil from pull wiring: work silently dropped, want non-nil (Nack/redeliver)")
+	}
+	// Tier-1 (Parser nil) never enters runNewPipeline, so the ADR 010
+	// durable producer stays untouched on the TRANSIENT fetch path.
+	if len(claimsDB.recTenants) != 0 {
+		t.Fatalf("producer consulted on Tier-1 TRANSIENT path: %v, want none", claimsDB.recTenants)
 	}
 }
 
 func TestPullCallbackTerminalAcks(t *testing.T) {
-	cb := PullCallback(DocumentEventHandler(transientProc()))
+	cb := PullCallback(DocumentEventHandler(transientProc(&stubClaims{})))
 	if err := cb(context.Background(), []byte("{malformed"), map[string]string{"tenant_id": "t-apa30"}); err != nil {
 		t.Fatalf("TERMINAL outcome returned non-nil from pull wiring: poison risk, want nil (Ack), got %v", err)
 	}
 }
 
 func TestPullCallbackSuccessAcks(t *testing.T) {
-	cb := PullCallback(DocumentEventHandler(successProc()))
+	claimsDB := &stubClaims{}
+	cb := PullCallback(DocumentEventHandler(successProc(claimsDB)))
 	if err := cb(context.Background(), validEvent(t), map[string]string{"tenant_id": "t-apa30"}); err != nil {
 		t.Fatalf("SUCCESS outcome returned non-nil from pull wiring, want nil (Ack), got %v", err)
+	}
+	// Tier-1 success path: the durable producer must not be consulted
+	// (Parser nil skips runNewPipeline, where the ADR 010 boundary lives).
+	if len(claimsDB.recTenants) != 0 {
+		t.Fatalf("producer consulted on Tier-1 SUCCESS path: %v, want none", claimsDB.recTenants)
 	}
 }
 
