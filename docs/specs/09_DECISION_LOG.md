@@ -487,7 +487,7 @@ Two decisions this entry locks in:
    scenarios were provider-throttled with zero measurements. `violations=0`
    is not a pass. APA-64 supplies Cause 1 (see above); Cause 2 is Groq
    quota (KL-04).
-Run was at `main@6a308c6`; current base is `main@dffa160`.
+Run was at `main@6a308c6`; base as of the 2026-10-21 reconciliation is `main@c971727`.
 
 ### #32 evidence (LiteParse 2.14.4, 45 cases, deterministic)
 - 45/45 parse_ok. Fields 280 exact / 27 normalized / 150 missing. Tables 27 pass / 13 partial / 3 missed.
