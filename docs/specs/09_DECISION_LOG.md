@@ -507,7 +507,7 @@ expiry requires an explicit new decision/round, never an implicit edge. The Go e
 is authoritative; the demoted Python specification artefact
 `packages/domain/state_machine.py` is superseded for lifecycle semantics and is NOT a
 mirror (it defines 13 statuses and no `EXPIRED`) — registered as `KL-18` rather than
-silently reconciled. The cross-language fixture (`fixtures/golden_cases.json`, nine
+silently reconciled. The cross-language fixture (`fixtures/golden_cases.json`, nineteen
 cases) still contains no `EXPIRED` case; that gap is tracked, not closed by ADR-011.
 **No lifecycle behaviour changed by ADR-011** — it records what the implementation
 already did, and `statemachine.go` changed only in a header comment that described a

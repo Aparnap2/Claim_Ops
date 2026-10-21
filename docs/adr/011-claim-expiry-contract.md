@@ -1,8 +1,8 @@
 # ADR 011 — Claim Expiry Contract (HITL-wait timeout)
 
 * Status: Accepted 2026-10-21 (S5 / APA-26)
-* Base: `main@254c4b92dddf59a758a133c1edbf7618dcc011b2`
-* Context: `EXPIRED` has been implemented, wired and tested in the authoritative Go edge for a long time, but **no document in this repository ever ratified it**. Its semantics were attested only by code comments citing a Linear id this repo does not record. Meanwhile the file that calls itself the specification of this lifecycle did not contain the status at all, and the cross-language fixture did not cover it.
+* Base: `main@7ad446c3235d6b77a672270763f70470a87225da` (rebased after #180 and #179)
+* Context: `EXPIRED` has been implemented, wired and tested in the authoritative Go edge for a long time, but **no document in this repository ratified it before this ADR**. Its semantics were attested only by code comments citing a Linear id this repo does not record. Meanwhile the file that calls itself the specification of this lifecycle did not contain the status at all, and the cross-language fixture did not cover it.
 
 ## Context
 
@@ -21,8 +21,8 @@ Tests that already pin this behaviour:
 
 Two documentation facts made the gap dangerous:
 
-* `apps/api/internal/claims/statemachine.go:3-7` described the file as *"the Go port of the Python specification in packages/domain/state_machine.py"*. That specification has 13 statuses and **no `EXPIRED`** (`packages/domain/state_machine.py:28-63`), so the file claimed parity it did not have.
-* `fixtures/golden_cases.json` — the cross-language behavioral contract designated by ADR-001 — contains nine cases and **none of them covers `EXPIRED`**. The one status on which the two implementations disagree was exactly the status the contract did not cover.
+* `apps/api/internal/claims/statemachine.go` described the file (before this ADR) as *"the Go port of the Python specification in packages/domain/state_machine.py"*. That specification has 13 statuses and **no `EXPIRED`** (`packages/domain/state_machine.py:28-63`), so the file claimed parity it did not have.
+* `fixtures/golden_cases.json` — the cross-language behavioral contract designated by ADR-001 — contains nineteen cases and **none of them covers `EXPIRED`**. The one status on which the two implementations disagree was exactly the status the contract did not cover.
 
 ## Decision
 
