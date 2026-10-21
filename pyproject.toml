@@ -5,7 +5,7 @@ description = "ClaimOps AI — governed health-insurance reimbursement intake + 
 requires-python = ">=3.12"
 dependencies = [
   "liteparse==2.14.4",
-  "pillow>=12.3.0",
+  "pillow>=13.0.0",
   "pydantic>=2.7",
   "pydantic-settings>=2.0",
   "pypdf>=6.19.0",
