@@ -495,3 +495,22 @@ Run was at `main@6a308c6`; current base is `main@dffa160`.
 - Table cells carry no block-id by contract (unavailable-by-design, not parser failure).
 - Vendor-silent confidence 1.0 is uncalibrated; never rewarded by the scorer.
 - Full evidence: docs/evaluations/parser/v1-report.md. Input to #33 recorded as questions, not decisions.
+
+### S5/APA-26 claim expiry contract (ADR-011, accepted 2026-10-21)
+`EXPIRED` is an approved state of the authoritative Go lifecycle: terminal-for-round
+(no out-edges; terminality is enforced by absence from `claims.Transitions`), and
+reachable only as `HITL → EXPIRED` or `ACTION_PENDING → EXPIRED` (HITL-wait timeout).
+Timeout expiry can never approve, reject, close, escalate or otherwise decide a
+claim: post-expiry `APPROVE`/`REJECT`/`ESCALATE`/`HOLD` are illegal, and `APPROVE`
+from `HITL` was already illegal (`HITL` has no `VERIFIED` edge). Re-drive after
+expiry requires an explicit new decision/round, never an implicit edge. The Go edge
+is authoritative; the demoted Python specification artefact
+`packages/domain/state_machine.py` is superseded for lifecycle semantics and is NOT a
+mirror (it defines 13 statuses and no `EXPIRED`) — registered as `KL-18` rather than
+silently reconciled. The cross-language fixture (`fixtures/golden_cases.json`, nine
+cases) still contains no `EXPIRED` case; that gap is tracked, not closed by ADR-011.
+**No lifecycle behaviour changed by ADR-011** — it records what the implementation
+already did, and `statemachine.go` changed only in a header comment that described a
+parity which did not exist. Detail: `docs/adr/011-claim-expiry-contract.md`.
+Regression: `claims/expiry_red_test.go` (S5/APA-26 contract), `handlers/decision_expiry_test.go`
+(4 PG-gated), `repository/postgres/hitl_expiry_test.go` (`TestHITL_ExpiredExcludedFromPending`).
