@@ -106,17 +106,31 @@ func (s *memStore) ListEvidence(_ context.Context, _ claims.ClaimID) ([]evidence
 	return nil, nil
 }
 
-// agreeLoader returns a claim view matching the canned fetcher content.
-type agreeLoader struct{}
+// agreeLoader returns a claim view matching the canned fetcher content and
+// counts producer calls. It lets tests prove the ADR 010 durable boundary is
+// never consulted on the Parser-nil Tier-1 path exercised here. The
+// producer's positive and fail-closed paths are proven in the worker package
+// against the Parser-gated pipeline.
+type agreeLoader struct {
+	recCalls int
+}
 
 // LoadClaim implements worker.ClaimLoader.
-func (agreeLoader) LoadClaim(_ context.Context, _, _ string) (worker.ClaimView, error) {
+func (l *agreeLoader) LoadClaim(_ context.Context, _, _ string) (worker.ClaimView, error) {
 	return worker.ClaimView{
 		PolicyNumber: "POL-1",
 		PatientName:  "Alice",
 		HospitalName: "City Hospital",
 		ClaimedPaise: 5000,
 	}, nil
+}
+
+// RecordInsufficientEvidenceTransition implements worker.ClaimLoader: it
+// records the call and reports a first-time write with no replay and no
+// durable mutation (the app/retrybudget doubles never mutate durable state).
+func (l *agreeLoader) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) (bool, error) {
+	l.recCalls++
+	return false, nil
 }
 
 // agreeChecker returns an active policy matching the canned content.
@@ -339,7 +353,8 @@ func TestRetryComposition_WorkerTier1PerDeliveryBudget(t *testing.T) {
 		mime:      "application/pdf",
 		content:   "patient_name: Alice\npolicy_number: POL-1\n",
 	}
-	proc := worker.NewProcessor(fetch, seedStore(), agreeLoader{}, agreeChecker{})
+	claimsDB := &agreeLoader{}
+	proc := worker.NewProcessor(fetch, seedStore(), claimsDB, agreeChecker{})
 	investigation := eventDoc(t, "doc-f9-worker")
 
 	first := proc.Handle(ctx, investigation)
@@ -349,6 +364,11 @@ func TestRetryComposition_WorkerTier1PerDeliveryBudget(t *testing.T) {
 	if got := fetch.Calls(); got != worker.MaxAttempts {
 		t.Fatalf("delivery 1 fetch calls = %d, want %d (Tier-1 spends its per-delivery budget)", got, worker.MaxAttempts)
 	}
+	// The outage is upstream of sufficiency: the durable producer must not be
+	// consulted on the failed delivery.
+	if claimsDB.recCalls != 0 {
+		t.Fatalf("producer calls on TRANSIENT delivery = %d, want 0", claimsDB.recCalls)
+	}
 
 	fetch.Heal()
 	second := proc.Handle(ctx, investigation)
@@ -357,6 +377,13 @@ func TestRetryComposition_WorkerTier1PerDeliveryBudget(t *testing.T) {
 	}
 	if second.Duplicate {
 		t.Fatal("TRANSIENT delivery must not be remembered: redelivery must reprocess, not report DUPLICATE")
+	}
+	// The healed redelivery runs Tier-1 (Parser nil) and stays on the legacy
+	// path, which never enters runNewPipeline — so the ADR 010 durable
+	// producer is not consulted here either. The producer's positive path is
+	// proven in the worker package against the Parser-gated pipeline.
+	if claimsDB.recCalls != 0 {
+		t.Fatalf("producer calls on healed Tier-1 redelivery = %d, want 0", claimsDB.recCalls)
 	}
 }
 

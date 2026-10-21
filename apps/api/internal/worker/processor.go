@@ -106,6 +106,7 @@ type DocumentStore interface {
 // adapt it into this view.
 type ClaimView struct {
 	PolicyNumber string
+	ClaimVersion int
 	PatientName  string
 	HospitalName string
 	ClaimedPaise int64
@@ -117,8 +118,18 @@ type ClaimView struct {
 
 // ClaimLoader loads the claim read model. Tenant is passed explicitly;
 // ctx carries deadline/cancellation only.
+// ClaimLoader loads the claim read model. Tenant is passed explicitly;
+// ctx carries deadline/cancellation only. A returned error is either
+// terminal or transient depending on retryableStoreErr.
+//
+// RecordInsufficientEvidenceTransition durably persists the initial
+// insufficiency exception transition (ADR 010: VALIDATING -> EXCEPTION)
+// inside a single tenant-scoped transaction and reports whether the
+// event was replayed. Implementations must fail closed; a returned error
+// means no durable state change is presumed.
 type ClaimLoader interface {
 	LoadClaim(ctx context.Context, tenant, claimID string) (ClaimView, error)
+	RecordInsufficientEvidenceTransition(ctx context.Context, tenant, claimID string, expectedVersion int, eventID string) (replay bool, err error)
 }
 
 // PolicyData is the worker-local policy read model.
@@ -270,6 +281,15 @@ type Outcome struct {
 // tenant boundary. No new outcome kind: callers see OutcomeTerminal and
 // match the cause with errors.Is.
 var ErrTenantMismatch = errors.New("worker: tenant mismatch")
+
+// ErrTransitionSuperseded marks a redelivery whose insufficient-evidence
+// event was already durably recorded AND whose claim has since advanced past
+// the initial EXCEPTION state (a human/lifecycle decision moved it on). ADR
+// 010 authorizes the producer for the initial VALIDATING -> EXCEPTION edge
+// only, so the redelivery must NOT re-open an exception envelope or launch a
+// workflow. It is non-retryable: replaying can never restore the superseded
+// state. Callers match it with errors.Is and ack the duplicate.
+var ErrTransitionSuperseded = errors.New("worker: insufficient transition superseded")
 
 // documentIngestedEvent mirrors ingest.BuildUploadPayload, the JSON
 // payload consumed from ports.TopicDocumentIngested.
@@ -942,6 +962,57 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 			Attempts:   1,
 			Err:        fmt.Errorf("worker: check policy: %w", err),
 		}, effective
+	}
+
+	// ADR 010 producer (APA-91 slice): on insufficient evidence, persist the
+	// initial durable exception transition before any envelope/launch work.
+	// Fail closed on store/version/tenant errors; do not proceed or launch
+	// the workflow when the durable claim state could not be recorded.
+	sufficiencyEventID := ""
+	if suffInsufficient {
+		// ADR 010: event identity must be deterministic and scoped to the
+		// sufficiency outcome, not just the document. Two materially
+		// different insufficiency results for the same document must not
+		// collide into one event identity (which would silently replay the
+		// first as an idempotent no-op). ReasonCodes and Missing are already
+		// sorted by sufficiency.Evaluate, so the canonical form is stable.
+		reasons := strings.Join(suffRes.ReasonCodes, ",")
+		missing := strings.Join(suffRes.Missing, ",")
+		sufficiencyEventID = fmt.Sprintf("sufficiency-insufficient:%s:%s:%s:%s|%s", tenant, claimID, docID, reasons, missing)
+		// replay==true means the durable transition already exists for this
+		// event identity and the claim is still at EXCEPTION: the envelope
+		// build + EnsureLaunched below are idempotent (S6), so fall through.
+		_, err := p.Claims.RecordInsufficientEvidenceTransition(ctx, tenant, claimID, view.ClaimVersion, sufficiencyEventID)
+		if err != nil {
+			// ADR 010: a redelivery whose event was already recorded but
+			// whose claim has since advanced past EXCEPTION must not
+			// re-authorize an envelope or a launch. Ack the duplicate with
+			// no side effects (the original delivery owns the envelope; S6
+			// owns launch convergence).
+			if errors.Is(err, ErrTransitionSuperseded) {
+				return Outcome{
+					DocumentID: docID,
+					Status:     documents.StProcessed,
+					Extraction: documents.ExtractionNotAttempted,
+					Kind:       OutcomeSuccess,
+					Attempts:   1,
+				}, effective
+			}
+			if out, stop := abortedByCtx(ctx, docID, 1, err); stop {
+				return out, effective
+			}
+			if !retryableStoreErr(err) {
+				return failTerminal(documents.DocType(effective), fmt.Errorf("worker: insufficient claim transition: %w", err))
+			}
+			return Outcome{
+				DocumentID: docID,
+				Status:     documents.StFailed,
+				Extraction: documents.ExtractionNotAttempted,
+				Kind:       OutcomeTransient,
+				Attempts:   1,
+				Err:        fmt.Errorf("worker: insufficient claim transition: %w", err),
+			}, effective
+		}
 	}
 
 	in, unresolved, err := verifywrap.Map(claim, verifywrap.Externals{

@@ -30,6 +30,7 @@ API = ROOT / "apps" / "api"
 # a newly gated package cannot silently join the set without a decision here.
 REQUIRED_PACKAGES: tuple[str, ...] = (
     "./cmd/agent",
+    "./internal/adapters/worker",
     "./internal/app",
     "./internal/handlers",
     "./internal/ingest",
