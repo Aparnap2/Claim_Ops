@@ -22,9 +22,9 @@ Deterministic systems first; LLM only where semantic reasoning is required.
 # Python spec suite (no network)
 uv sync --group dev
 uv run ruff check .
-uv run pytest tests/ -q
+uv run pytest tests/unit -q
 
-# Go backend
+# Go backend (the golden contract is enforced here)
 cd apps/api && go build ./... && go test ./...
 
 # Local services (one at a time, never compose for dev)
@@ -53,20 +53,33 @@ apps/api/               Go Fiber edge + deterministic core + investigate (author
     repository/postgres pgx repo, txn-local tenant context, RLS
     evidence/           source-grounded evidence model
     middleware/         request ID, tenant gate; handlers/; config/; observability/
-packages/domain/        Python specification artifacts (Pydantic strict)
+packages/domain/        Python specification artifacts (Pydantic strict, demoted per ADR-001)
+tools/                  Python tooling that is NOT spec artifacts:
+  parsers/liteparse/    production parse shim — executed by the Go adapter, copied
+                        into the worker image; a Python runtime is required in prod
+  corpus/               generator for fixtures/parser_eval/ (sole reproducer)
 fixtures/               golden_cases.json — language-independent behavior contract
+fixtures/parser_eval/   45-case parser corpus, committed and sha256-verified
 mocks/mockoon/          claims-systems.json — 4 systems × 7 scenarios
-infra/postgres/         migrations 001 (schema+RLS) 002 (grants) 003 (evidence) 009 (investigations)
-tests/unit/             Python golden suite (no network, untouched by Go work)
+infra/postgres/         migrations 001–010 (schema+RLS, grants, evidence, documents,
+                        outbox, roles, reports, investigations, workflow launches)
+scripts/ci/             anti-fake-green + credential-isolation gates run by CI
+tests/unit/             Python golden suite (no network)
 workflows/              claim-investigation.yaml (durable business coordination, GCW)
-docs/adr/               001 go-first, 002 groq provider, 004 external boundary, 008 agent mutation boundary, 009 ocr-confidence-hitl
+docs/adr/               001 go-first, 002 groq provider, 004 external boundary,
+                        005 document intelligence, 006 push worker deploy,
+                        007 parser policy, 008 agent mutation boundary,
+                        009 ocr-confidence-hitl, 011 claim expiry contract
 ```
 
 ## Phase progression
 - ✅ Deterministic domain + Postgres RLS + external contracts/Mockoon
 - ✅ Parser contract → corpus → LiteParse → benchmark → report → ADR
 - ✅ Deterministic chain #44-#47 + ordering #50 + contracts #53 + tools #54 + orchestration #66 → eval v1 ✓
-- Next: Groq qualification on frozen harness → Phase-3 E2E remainder
+- ✅ Durable claim submission — claim row + `claim.submitted` event + outbox record committed in one tenant-scoped transaction (#172)
+- ✅ Golden behavioral contract expanded to 19 cases; the Go coverage registry fails a fixture case that has no Go assertion
+- ✅ Claim expiry contract ratified (ADR-011); supply-chain advisory cleared (pillow 13.0.0)
+- Next: release-qualification gate (release is **NOT QUALIFIED**) → Phase-3 E2E remainder → Groq live qualification
 
 ## Standing rules
 - Deterministic > structured > rules > retrieval > LLM. No LLM for

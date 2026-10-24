@@ -1,7 +1,12 @@
 # ClaimOps — Living Progress Tracker
 
 Last updated: 2026-10-21
-Current base: main@254c4b9
+Current base: main@c971727
+
+`Current base` records the commit whose content this file reflects. A
+documentation-only merge advances `main` afterwards, so the pointer trails by
+its own merge — that is expected, not drift. Historical baseline records
+elsewhere (`docs/KNOWN_LIMITATIONS.md`, `docs/adr/`) are left as written.
 
 ## Completed
 

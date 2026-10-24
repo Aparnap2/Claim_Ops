@@ -2,7 +2,7 @@
 
 **Status**: Partially implemented (slices 1–2 landed #80 main@5cb15f1; slices A/B/C landed APA-34/35/36; remainder pending — the `check`-switch branches are blocked on `docs/KNOWN_LIMITATIONS.md` KL-01)
 **Date**: 2026-09-15 (status line reconciled 2026-10-08)
-**Depends on**: Phase 2 frozen baseline (PR #79, SHA eec02a0); base at time of writing was main@9f7a196 (APA-13). Reconciled 2026-10-08: that pointer was stale, and the base is now main@dffa160 (APA-64).
+**Depends on**: Phase 2 frozen baseline (PR #79, SHA eec02a0); base at time of writing was main@9f7a196 (APA-13). Reconciled 2026-10-08: that pointer was stale, and the base was main@dffa160 (APA-64). Reconciled 2026-10-21: the base is now main@c971727.
 
 ## Summary
 
