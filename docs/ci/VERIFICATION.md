@@ -30,7 +30,10 @@ carve-out below for `ruff format`.
   inside `go test ./...` executes instead of skipping (APA-48);
   `make smoke-liteparse` re-proves it loudly with `REQUIRE=1`.
 - **Security (`security.yml` / `security-posture.yml`):** see
-  `docs/security/POSTURE.md`.
+  `docs/security/POSTURE.md`. Posture runs record a dated outcome in the
+  run's step summary and as a comment on the "Security posture runs"
+  tracking issue (found or created by the workflow; `issues: write` is the
+  only elevated scope on the summary job).
 
 ## Deliberate carve-outs (do not "fix" by gating)
 

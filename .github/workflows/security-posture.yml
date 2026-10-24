@@ -3,6 +3,12 @@
 # drift that no PR touches is still caught, and records a dated outcome
 # summary. Dispatch runs give the same snapshot on demand.
 #
+# The dated outcome is recorded in TWO places: the run's step summary
+# (ephemeral, per-run) and a comment on the "Security posture runs"
+# tracking issue (durable, one comment per run — the latest comment is the
+# current posture). The tracking issue is found or created by the summary
+# job itself, so no manual bootstrap is needed.
+#
 # No pull_request trigger: this is a main-branch posture snapshot. The
 # PR-scoped pip-audit delta inside security.yml is skipped here
 # automatically (github.event_name is schedule/workflow_dispatch in the
@@ -34,6 +40,11 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Least privilege: the summary job needs issues:write to comment on the
+    # tracking issue. contents stays read (no code writes, no releases) —
+    # the reusable suite job inherits only the top-level contents:read.
+    permissions:
+      issues: write
     steps:
       - name: Record posture outcome
         run: |
@@ -45,3 +56,33 @@ jobs:
             echo
             echo "Gates: secret-pattern guard, live-provider build-tag isolation, provider-secret-free PR workflows, go mod verify, uv pip check, govulncheck, pip-audit. Per-gate detail in the \`suite\` job checks of this run."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Find or create the posture tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number="$(gh issue list \
+            --search "Security posture runs in:title" \
+            --state open --json number --limit 1 --jq '.[0].number')"
+          if [ -z "$number" ]; then
+            number="$(gh issue create \
+              --title "Security posture runs" \
+              --body "Dated run summaries from the scheduled security-posture workflow. One comment per run; the latest comment is the current posture.")"
+          fi
+          echo "POSTURE_ISSUE=$number" >> "$GITHUB_ENV"
+
+      - name: Append dated run summary to the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="$(mktemp)"
+          {
+            echo "## Posture run — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "- Ref: \`${{ github.ref }}\` @ \`${{ github.sha }}\`"
+            echo "- Suite result: **${{ needs.suite.result }}**"
+            echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo "Gates: secret-pattern guard, live-provider build-tag isolation, provider-secret-free PR workflows, go mod verify, uv pip check, govulncheck, pip-audit. Per-gate detail in the \`suite\` job checks of the linked run."
+          } > "$body"
+          gh issue comment "$POSTURE_ISSUE" --body-file "$body"

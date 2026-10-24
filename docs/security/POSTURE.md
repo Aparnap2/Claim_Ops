@@ -23,7 +23,11 @@ upgrades dependencies.
 - **Every PR + push to main:** `security.yml` (full suite + PR delta).
 - **Weekly (Mon 06:20 UTC) + on demand:** `security-posture.yml` re-runs the
   suite on main and records a dated summary, so drift no PR touches is
-  still caught.
+  still caught. The dated outcome lands in two places: the run's step
+  summary (ephemeral) and a comment on the **"Security posture runs"
+  tracking issue** (durable, one comment per run — the latest comment is
+  the current posture). The tracking issue is found or created by the
+  workflow itself; no manual bootstrap.
 - **Local:** `make pre-commit` runs the secret guard; the CVE scanners are
   CI-only (network-dependent advisory databases).
 
@@ -43,5 +47,7 @@ upgrades dependencies.
 - 2026-10-24: govulncheck clean (0 reachable; 2 imported-package and
   2 module-level advisories uncalled by this code). pip-audit clean over
   the locked set (pypdf 6.21.2 per #184). Secret-pattern guard clean.
-  Scheduled posture runs keep this section's claims current; a stale
-  section is a finding, not a fact.
+  This section is a point-in-time snapshot, not a live claim: the current
+  posture is the latest comment on the "Security posture runs" tracking
+  issue (written by every scheduled/dispatch posture run). A stale section
+  here is a finding, not a fact.
