@@ -34,6 +34,11 @@ carve-out below for `ruff format`.
   run's step summary and as a comment on the "Security posture runs"
   tracking issue (found or created by the workflow; `issues: write` is the
   only elevated scope on the summary job).
+- **Release gate (`release-gate.yml`, dispatch-only):** re-reads existing
+  CI evidence for a target SHA and emits one machine-readable decision;
+  see `docs/ci/RELEASE_CONTRACT.md`. It never re-executes tests, never
+  runs on push/PR, and never mints a release — green PR checks prove
+  merge-readiness, not release qualification.
 
 ## Deliberate carve-outs (do not "fix" by gating)
 
