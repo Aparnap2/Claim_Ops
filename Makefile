@@ -2,8 +2,9 @@
 #
 # Repo rule: NO docker-compose, here or anywhere else. No target starts
 # containers, services, or background processes, and no target requires a
-# live database: integration-gated tests skip gracefully when Postgres or
-# Mockoon are absent (exit 0 with a printed skip reason).
+# live database by default: `integration` is STRICT — it fails when Postgres
+# or Mockoon are unreachable (set INTEGRATION_ALLOW_DEGRADED=1 to restore the
+# old skip-and-pass behavior for quick local runs).
 #
 # ONE CARVE-OUT (APA-53): `qualify` is the sole target that starts a
 # container. It exists precisely because the rules above make qualification
@@ -15,18 +16,29 @@
 # runs the suite, and tears it down on the way out (success or failure). It
 # never touches `claimops-postgres` — see infra/postgres/qualify.sh.
 #
+# Canonical gate chain (one definition, three surfaces — hooks, CI, manual):
+#   make pre-commit   fast: format-check + ruff lint + secret/credential guards
+#   make check        full: format-check + lint + typecheck + unit tests
+#   make pre-push     check + race-test
+# Git hooks delegate to these targets (install with `make hooks`); the
+# ci.yml `deterministic` job runs the same targets. See docs/ci/VERIFICATION.md.
+#
 # Every target echoes the command(s) it runs before running them.
 
-.PHONY: setup test lint format typecheck integration local check qualify
+.PHONY: setup test lint format format-check typecheck integration local \
+	check qualify pre-commit pre-push race-test smoke-liteparse \
+	terraform-check hooks
 
 # Extra tool groups needed for Python lint/type/test commands.
 UV_RUN := uv run --group dev
-# Go module lives here (module claimops-api, go 1.25.6, stdlib-only metrics).
+# Go module lives here (module claimops-api, go 1.27, stdlib-only metrics).
 GO_DIR := apps/api
 # Integration gates (overridable): Go tests read TEST_POSTGRES_DSN and gate
 # Mockoon on http://localhost:3001; both suites t.Skip when unreachable.
 TEST_POSTGRES_DSN ?= postgres://claimops_app:claimops_app@localhost:5433/claimops
 MOCKOON_URL ?= http://localhost:3001
+# Strict-mode escape hatch for `integration` (see target below).
+INTEGRATION_ALLOW_DEGRADED ?= 0
 
 setup:
 	@echo "setup: uv sync --group dev"
@@ -50,12 +62,19 @@ lint:
 		if [ -n "$$files" ]; then echo "gofmt: unformatted files:"; echo "$$files"; exit 1; fi; \
 		echo "gofmt: clean"
 
+# Writer targets actually rewrite files; format-check is the enforcing gate.
 format:
-	@echo "format: gofmt -l . in $(GO_DIR), enforcing (empty output = clean)"
+	@echo "format: gofmt -w . in $(GO_DIR) (writes)"
+	cd $(GO_DIR) && gofmt -w .
+	@echo "format: ruff format . (writes; advisory surface — a few pre-existing files incl. prd.md are not format-clean, see docs/ci/VERIFICATION.md)"
+	$(UV_RUN) ruff format .
+
+format-check:
+	@echo "format-check: gofmt -l . in $(GO_DIR), enforcing (empty output = clean)"
 	cd $(GO_DIR) && files="$$(gofmt -l .)"; \
 		if [ -n "$$files" ]; then echo "gofmt: unformatted files:"; echo "$$files"; exit 1; fi; \
 		echo "gofmt: clean"
-	@echo "format: ruff format --check . (Python, advisory only — not gated)"
+	@echo "format-check: ruff format --check . (advisory only — not gated; pre-existing unformatted files are tracked in docs/ci/VERIFICATION.md)"
 	$(UV_RUN) ruff format --check . || true
 
 typecheck:
@@ -64,26 +83,27 @@ typecheck:
 	@echo "typecheck: go vet ./... in $(GO_DIR)"
 	cd $(GO_DIR) && go vet ./...
 
+# Strict by default: a service being down is an ERROR, not a silent skip.
+# The old skip-and-pass behavior (green with zero gated tests run) is the
+# explicit degraded escape: INTEGRATION_ALLOW_DEGRADED=1. CI (integration.yml)
+# runs strict — its services are provisioned as preconditions.
 integration:
 	@echo "integration: postgres + mockoon gated go tests (TEST_POSTGRES_DSN=$(TEST_POSTGRES_DSN) MOCKOON_URL=$(MOCKOON_URL))"
-	@echo "integration: probing services (informational only — go tests self-skip when absent)"
-	@printf '%s\n' \
-		'import os, socket, urllib.parse, urllib.request' \
-		"dsn = urllib.parse.urlparse(os.environ['TEST_POSTGRES_DSN'])" \
-		"host, port = dsn.hostname or 'localhost', dsn.port or 5433" \
-		's = socket.socket(); s.settimeout(2)' \
-		"print(f'integration: Postgres {host}:{port} reachable' if s.connect_ex((host, port)) == 0 else f'SKIP: Postgres unreachable at {host}:{port} — postgres-gated tests will self-skip')" \
-		's.close()' \
-		"url = os.environ['MOCKOON_URL'] + '/v1/policies/POL-001'" \
-		'try:' \
-		'    r = urllib.request.urlopen(url, timeout=3)' \
-		"    print(f'integration: Mockoon {url} reachable (status {r.status})' if r.status == 200 else f'SKIP: Mockoon gate returned status {r.status} — mockoon-gated tests will self-skip')" \
-		'except Exception as e:' \
-		"    print(f'SKIP: Mockoon unreachable at {url} ({e}) — mockoon-gated tests will self-skip')" \
-		| TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" MOCKOON_URL="$(MOCKOON_URL)" python3 -
+	@echo "integration: probing services (strict: absent services FAIL; INTEGRATION_ALLOW_DEGRADED=1 restores skip-and-pass)"
+	@if TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" MOCKOON_URL="$(MOCKOON_URL)" python3 scripts/ci/integration_probe.py; then \
+		echo "integration: services up — running gated suites"; \
+	else \
+		rc=$$?; \
+		if [ "$(INTEGRATION_ALLOW_DEGRADED)" = "1" ]; then \
+			echo "integration: degraded mode (INTEGRATION_ALLOW_DEGRADED=1) — gated tests will self-skip and the target will pass"; \
+		else \
+			echo "integration: FAIL — a service is down (probe exit $$rc). Start services (see 'make local') or set INTEGRATION_ALLOW_DEGRADED=1."; \
+			exit 1; \
+		fi; \
+	fi
 	@echo "integration: go test on gated packages in $(GO_DIR)"
 	cd $(GO_DIR) && TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" go test ./internal/repository/postgres/... ./internal/adapters/... -count=1
-	@echo "integration: done (exit 0 — absent services skip, they never fail the target)"
+	@echo "integration: done"
 
 local:
 	@echo "local: service map (this target starts nothing — copy/paste only)"
@@ -113,8 +133,68 @@ localgcp-test:
 	cd $(GO_DIR) && PUBSUB_EMULATOR_HOST=localhost:8085 STORAGE_EMULATOR_HOST=localhost:4443 TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" go test ./internal/adapters/pubsubadapter/ ./internal/adapters/gcsblob/ ./internal/ingest/ ./internal/outbox/ -count=1
 	@echo "localgcp-test: done (exit 0)"
 
-check: format lint typecheck test
-	@echo "check: format + lint + typecheck + unit tests all passed"
+check: format-check lint typecheck test
+	@echo "check: format-check + lint + typecheck + unit tests all passed"
+
+# Fast pre-commit gate (also run by the ci.yml deterministic job and by the
+# git hook installed via `make hooks`). Deliberately fast: no go build/test.
+# Whole-tree structural guards (e.g. check_qual_live_build_isolation.py) stay
+# in CI only: they run on a clean checkout and false-positive on untracked
+# scratch files in a developer's working tree.
+pre-commit:
+	@echo "pre-commit: format-check (gofmt enforced, ruff format advisory)"
+	$(MAKE) --no-print-directory format-check
+	@echo "pre-commit: ruff check ."
+	$(UV_RUN) ruff check .
+	@echo "pre-commit: secret-pattern guard (shared with the security.yml static job)"
+	scripts/ci/check_secret_patterns.sh
+	@echo "pre-commit: live-provider credential guard (pull_request workflows)"
+	python3 scripts/ci/check_live_provider_workflow_secrets.py
+
+# Full pre-push gate (also run by the git hook installed via `make hooks`).
+pre-push:
+	@echo "pre-push: full check gate (format-check + lint + typecheck + unit tests)"
+	$(MAKE) --no-print-directory check
+	@echo "pre-push: race detector on concurrency-sensitive packages"
+	$(MAKE) --no-print-directory race-test
+
+# Race detector over the packages that actually share mutable state
+# (mirrors the ci.yml deterministic job's scoped -race set; live-provider
+# suites stay excluded by build tag and are not compiled here).
+race-test:
+	@echo "race-test: go test -race -count=1 on concurrency-sensitive packages in $(GO_DIR)"
+	cd $(GO_DIR) && go test -race -count=1 \
+		./internal/investigate/... \
+		./internal/ingest/... \
+		./internal/workflow/... \
+		./internal/worker/... \
+		./internal/ports/... \
+		./internal/observability/... \
+		./internal/metrics/... \
+		./internal/adapters/memblob/...
+
+# APA-48: the LiteParse live shim smoke as a standalone, loud gate. Requires
+# the Python env from `make setup` (the shim resolves .venv/bin/python at the
+# repo root); CLAIMOPS_REQUIRE_LITEPARSE=1 turns a broken parser environment
+# into a hard failure instead of a skip.
+smoke-liteparse:
+	@echo "smoke-liteparse: live shim smoke (fails if parser env is broken; run 'make setup' first)"
+	cd $(GO_DIR) && CLAIMOPS_REQUIRE_LITEPARSE=1 go test ./internal/parser/liteparse/ -run TestLiveShimSmoke -count=1 -v
+
+# Terraform gate (mirrors the ci.yml terraform job).
+terraform-check:
+	@echo "terraform-check: fmt -check -recursive + init -backend=false + validate in infra/terraform"
+	command -v terraform >/dev/null 2>&1 || { echo "terraform-check: terraform not on PATH"; exit 1; }
+	cd infra/terraform && terraform fmt -check -recursive
+	cd infra/terraform && terraform init -backend=false && terraform validate
+
+# Install git hooks as symlinks to scripts/hooks/*.sh. The hooks delegate to
+# `make pre-commit` / `make pre-push` so the gate is defined exactly once.
+hooks:
+	@echo "hooks: installing git hooks (symlinks to scripts/hooks/*.sh)"
+	ln -sf ../../scripts/hooks/pre-commit.sh .git/hooks/pre-commit
+	ln -sf ../../scripts/hooks/pre-push.sh .git/hooks/pre-push
+	@echo "hooks: installed — .git/hooks/pre-commit, .git/hooks/pre-push"
 
 # APA-53 — qualification gate. Runs the WHOLE PG-gated suite against a
 # genuinely fresh, ephemeral database (own container, own port, no volume),
