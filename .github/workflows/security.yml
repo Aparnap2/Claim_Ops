@@ -25,6 +25,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Reusable: security-posture.yml calls this suite on a weekly schedule
+  # (and on demand) so main-branch drift no PR touches is still caught.
+  workflow_call:
 
 # Least privilege: checkout + cache only.
 permissions:

@@ -1,0 +1,47 @@
+# Scheduled security posture — re-runs the full security suite
+# (security.yml, reused via workflow_call) on main on a weekly schedule so
+# drift that no PR touches is still caught, and records a dated outcome
+# summary. Dispatch runs give the same snapshot on demand.
+#
+# No pull_request trigger: this is a main-branch posture snapshot. The
+# PR-scoped pip-audit delta inside security.yml is skipped here
+# automatically (github.event_name is schedule/workflow_dispatch in the
+# called workflow).
+
+name: security-posture
+
+on:
+  schedule:
+    # Weekly, Monday 06:20 UTC (off the hour to avoid the runner rush).
+    - cron: '20 6 * * 1'
+  workflow_dispatch:
+
+# Least privilege: checkout + cache only.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-posture
+  cancel-in-progress: false
+
+jobs:
+  suite:
+    # Full security suite, defined once in security.yml.
+    uses: ./.github/workflows/security.yml
+
+  summary:
+    needs: [suite]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record posture outcome
+        run: |
+          {
+            echo "## Security posture — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "- Ref: \`${{ github.ref }}\` @ \`${{ github.sha }}\`"
+            echo "- Suite result: **${{ needs.suite.result }}**"
+            echo
+            echo "Gates: secret-pattern guard, live-provider build-tag isolation, provider-secret-free PR workflows, go mod verify, uv pip check, govulncheck, pip-audit. Per-gate detail in the \`suite\` job checks of this run."
+          } >> "$GITHUB_STEP_SUMMARY"
