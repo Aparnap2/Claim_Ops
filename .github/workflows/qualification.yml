@@ -1,0 +1,131 @@
+# Service-backed live qualification — dispatch-only (no pull_request, no
+# push triggers). This is the workflow that MAY reference provider API-key
+# secrets: scripts/ci/check_live_provider_workflow_secrets.py only scans
+# pull_request-triggered workflows, and this one is never triggered by a PR.
+#
+# What it runs: infra/postgres/qualify.sh — the repo's own qualification
+# harness (APA-53): ephemeral EMPTY Postgres (no volume), production-shaped
+# NOSUPERUSER roles, migrations, a measured genuinely-empty assertion, the
+# full `go test ./...`, and anti-fake-green gates (PG-backed tests must
+# actually run; a declared LLM matrix must be fully measured — a 429, skip,
+# or discard is never a measurement, APA-57).
+#
+# Mockoon topology is reused from integration.yml (digest-pinned image,
+# fatal readiness assertion) so Mockoon-gated tests run inside the suite
+# instead of silently skipping. PG-gated coverage against the shared
+# long-lived database remains integration.yml's business on pushes to main;
+# this workflow's distinct value is fresh-database qualification plus the
+# optional live LLM matrix.
+
+name: qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      llm_scenarios:
+        description: 'Space-separated QUAL_LLM_SCENARIOS (empty = PG-only qualification)'
+        required: false
+        default: ''
+      go_test_flags:
+        description: 'GO_TEST_FLAGS override (e.g. "-run TestAPA55 -v")'
+        required: false
+        default: ''
+      groq_model:
+        description: 'GROQ_MODEL (ADR-002 default: qwen/qwen3.8-27b)'
+        required: false
+        default: 'qwen/qwen3.8-27b'
+
+# Least privilege: checkout + cache only.
+permissions:
+  contents: read
+
+concurrency:
+  group: qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          # Matches the `go 1.27` directive in apps/api/go.mod.
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Precondition — declared LLM scenarios require provider credentials
+        # Fail fast with a clear message instead of letting the harness
+        # report INFRA_BLOCKED after a full suite run on missing secrets.
+        if: inputs.llm_scenarios != ''
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          POOLSIDE_API_KEY: ${{ secrets.POOLSIDE_API_KEY }}
+        run: |
+          if [ -z "${GROQ_API_KEY}" ] && [ -z "${POOLSIDE_API_KEY}" ]; then
+            echo "::error::llm_scenarios declared but neither GROQ_API_KEY nor POOLSIDE_API_KEY is configured as a repo secret"
+            exit 1
+          fi
+
+      - name: Start Mockoon (digest-pinned; topology reused from integration.yml)
+        # APA-83 P12. Image pinned to an immutable digest resolved from
+        # Docker Hub registry metadata for mockoon/cli:latest:
+        #   sha256:c3b41126b87b22657a675574be9167a3d8d9f7f2cb21ec974c89c3631de56167
+        # The entrypoint already includes `start`, so the command is
+        # flags-only. Host :3001 matches the repo gate MOCKOON_URL.
+        run: |
+          docker rm -f claimops-mockoon >/dev/null 2>&1 || true
+          docker run -d --rm --name claimops-mockoon -p 3001:3000 \
+            -v "${GITHUB_WORKSPACE}/mocks/mockoon:/data:ro" \
+            mockoon/cli@sha256:c3b41126b87b22657a675574be9167a3d8d9f7f2cb21ec974c89c3631de56167 \
+            -d /data/claims-systems.json -p 3000
+
+      - name: Assert Mockoon is ready (fatal)
+        # Same precondition as integration.yml: a dead or unhealthy Mockoon
+        # fails the job here, before any test step runs, so Mockoon-gated
+        # tests cannot self-skip a green run.
+        run: |
+          ready=0
+          for i in $(seq 1 30); do
+            if ! docker ps --filter name=^claimops-mockoon$ --filter status=running \
+                 --format '{{.Names}}' | grep -q claimops-mockoon; then
+              echo "::error::Mockoon container exited before becoming ready (attempt ${i})"
+              docker logs claimops-mockoon 2>&1 | tail -30 || true
+              exit 1
+            fi
+            if curl -fsS http://localhost:3001/v1/policies/POL-001 >/dev/null 2>&1; then
+              echo "mockoon: ready after ${i} attempt(s)"
+              ready=1
+              break
+            fi
+            echo "mockoon: not ready yet (attempt ${i})"
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::Mockoon did not become ready at http://localhost:3001 within 60s"
+            docker logs claimops-mockoon 2>&1 | tail -30 || true
+            exit 1
+          fi
+
+      - name: Qualify (ephemeral empty Postgres + full suite + anti-fake-green)
+        # MOCKOON_URL is exported so Mockoon-gated tests run rather than
+        # skip. Provider credentials travel as env references expanded by
+        # the runner shell (never echoed); they are only used when
+        # llm_scenarios declares a live matrix. Empty llm_scenarios keeps
+        # the run PG-only, byte-for-byte the harness's default behaviour.
+        env:
+          MOCKOON_URL: http://localhost:3001
+          QUAL_LLM_SCENARIOS: ${{ inputs.llm_scenarios }}
+          GO_TEST_FLAGS: ${{ inputs.go_test_flags }}
+          GROQ_MODEL: ${{ inputs.groq_model }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          POOLSIDE_API_KEY: ${{ secrets.POOLSIDE_API_KEY }}
+        run: infra/postgres/qualify.sh
+
+      - name: Teardown Mockoon
+        # The ephemeral Postgres is torn down by qualify.sh's own trap.
+        if: always()
+        run: docker rm -f claimops-mockoon >/dev/null 2>&1 || true
