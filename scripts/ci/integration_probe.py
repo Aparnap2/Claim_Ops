@@ -10,11 +10,16 @@ wording as the previous inline probe) and exits:
       may proceed because the gated tests self-skip)
 
 Exit 3 (not 1) so callers can distinguish "service down" from a probe bug.
+
+`--down-list` is the informational mode used by the degraded banner: it
+prints the comma-joined names of the unreachable services (empty line when
+everything is up) and ALWAYS exits 0 — it reports, it does not gate.
 Stdlib only — runs with plain `python3`, no uv env required.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import socket
 import sys
@@ -66,11 +71,37 @@ def mockoon_reachable(url: str) -> tuple[bool, str]:
         )
 
 
+def down_services(dsn: str, mockoon_url: str) -> list[str]:
+    """Return the names of the services that are currently unreachable."""
+    pg_ok, _ = postgres_reachable(dsn)
+    mk_ok, _ = mockoon_reachable(mockoon_url + MOCKOON_PROBE_PATH)
+    down: list[str] = []
+    if not pg_ok:
+        down.append("postgres")
+    if not mk_ok:
+        down.append("mockoon")
+    return down
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Probe integration services (Postgres, Mockoon).")
+    parser.add_argument(
+        "--down-list",
+        action="store_true",
+        help="print comma-joined names of unreachable services and always exit 0 "
+        "(informational; used for the degraded-mode banner)",
+    )
+    args = parser.parse_args()
+
     dsn = os.environ.get("TEST_POSTGRES_DSN", DEFAULT_TEST_POSTGRES_DSN)
-    mockoon_url = os.environ.get("MOCKOON_URL", DEFAULT_MOCKOON_URL) + MOCKOON_PROBE_PATH
+    mockoon_url = os.environ.get("MOCKOON_URL", DEFAULT_MOCKOON_URL)
+
+    if args.down_list:
+        print(",".join(down_services(dsn, mockoon_url)))
+        return EXIT_OK
+
     pg_ok, pg_msg = postgres_reachable(dsn)
-    mk_ok, mk_msg = mockoon_reachable(mockoon_url)
+    mk_ok, mk_msg = mockoon_reachable(mockoon_url + MOCKOON_PROBE_PATH)
     print(pg_msg)
     print(mk_msg)
     return EXIT_OK if (pg_ok and mk_ok) else EXIT_SERVICE_DOWN

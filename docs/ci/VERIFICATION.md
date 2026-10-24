@@ -12,7 +12,7 @@ in CI by construction — not by coincidence.
 | `make check` | `format-check` · `lint` · `typecheck` · `test` | pre-push hook, `ci.yml` deterministic |
 | `make race-test` | scoped `-race` over the concurrency-sensitive package trees | pre-push hook, `ci.yml` deterministic |
 | `make smoke-liteparse` | `TestLiveShimSmoke` with `CLAIMOPS_REQUIRE_LITEPARSE=1` (fails loudly if the shim cannot run) | `ci.yml` deterministic |
-| `make integration` | full suite with live services; **strict by default** — a down service fails the job (probe exit 3), it does not skip-and-pass | `integration.yml` (services up), local with PG :5433 + Mockoon :3001 |
+| `make integration` | full suite with live services; **strict by default** — a down service fails up front (probe exit 3), and the strict path proves execution (sentinel + APA-83 gates), not just exit 0 | `integration.yml` (services up), local with PG :5433 + Mockoon :3001 |
 | `make terraform-check` | `terraform fmt -check` · `init -backend=false` · `validate` | `ci.yml` terraform |
 
 `make format` is the writer (`gofmt -w` + `ruff format .`); `make
@@ -48,12 +48,24 @@ carve-out below for `ruff format`.
    without a build tag) that exist only on developer working trees. It
    runs as its own `ci.yml` step on the clean checkout, never inside
    `make pre-commit`.
-3. **`make integration` is strict by default.** The probe
-   (`scripts/ci/integration_probe.py`) exits 3 when a service is down and
-   the Makefile fails the target — a green integration run always proves
-   the services layer delivered. `INTEGRATION_ALLOW_DEGRADED=1` restores
-   the old skip-and-pass behaviour for explicitly degraded local runs;
-   CI never sets it.
+3. **`make integration` is strict by default — and strict proves execution.**
+   The probe (`scripts/ci/integration_probe.py`) exits 3 when a service is
+   down and the Makefile fails the target before any test runs.
+   `INTEGRATION_ALLOW_DEGRADED=1` restores the old skip-and-pass behaviour
+   for explicitly degraded local runs (loud banner naming the down
+   services); CI never sets it.
+
+   Failure signals, by mode:
+
+   | Signal | Strict (default) | Degraded (`INTEGRATION_ALLOW_DEGRADED=1`) |
+   |--------|------------------|--------------------------------------------|
+   | Service down (probe) | target FAILS before any test runs | banner `DEGRADED RUN — services unavailable, tests skipped: <list>`; target passes |
+   | Service reachable but unusable (wrong creds, wrong DB, TCP-only proxy) | sentinel `TestIntegrationSentinelPostgresRoundTrip` FAILS the suite — armed by `TEST_POSTGRES_STRICT=1`, it does a real connect+DDL+insert+select round-trip and never skips | gated tests self-skip; target passes |
+   | Services healthy but zero gated tests ran | APA-83 post-run gates fail: `check_pg_gated_packages.py` requires every gated package AND the sentinel by name as `--- PASS`; `check_mockoon_gated_tests.py` requires the named Mockoon tests | no execution assertions (the banner says so) |
+   | Everything green | `PASS: all 10 Postgres-gated packages executed tests (PG-gated tests executed: N passed, M skipped)` | `done (DEGRADED — no execution assertions)` |
+
+   The sentinel is inert without `TEST_POSTGRES_STRICT=1`, so `make test` /
+   `make check` (no services) and the deterministic CI job stay green.
 
 ## Local quick reference
 

@@ -87,23 +87,59 @@ typecheck:
 # The old skip-and-pass behavior (green with zero gated tests run) is the
 # explicit degraded escape: INTEGRATION_ALLOW_DEGRADED=1. CI (integration.yml)
 # runs strict — its services are provisioned as preconditions.
+#
+# Strict mode proves EXECUTION, not just exit 0:
+#   1. the probe fails the target up front when a service is down;
+#   2. the suite runs with TEST_POSTGRES_STRICT=1, which arms the sentinel
+#      test (internal/repository/postgres/sentinel_test.go) — a real
+#      connect+DDL+insert+select round-trip that FAILS (never skips) when
+#      the DSN points at a reachable-but-unusable Postgres (wrong creds,
+#      wrong database, TCP-only proxy);
+#   3. post-run, the APA-83 gates re-run the gated packages with -v and
+#      require every Postgres-gated package (and the sentinel by name) plus
+#      the named Mockoon-gated tests to appear as --- PASS.
+# Degraded mode runs the suite WITHOUT the strict signal (gated tests
+# self-skip when their service is down), prints a loud banner naming the
+# down services, and performs no execution assertions — it proves nothing
+# and is never set in CI.
 integration:
 	@echo "integration: postgres + mockoon gated go tests (TEST_POSTGRES_DSN=$(TEST_POSTGRES_DSN) MOCKOON_URL=$(MOCKOON_URL))"
-	@echo "integration: probing services (strict: absent services FAIL; INTEGRATION_ALLOW_DEGRADED=1 restores skip-and-pass)"
-	@if TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" MOCKOON_URL="$(MOCKOON_URL)" python3 scripts/ci/integration_probe.py; then \
-		echo "integration: services up — running gated suites"; \
-	else \
-		rc=$$?; \
-		if [ "$(INTEGRATION_ALLOW_DEGRADED)" = "1" ]; then \
-			echo "integration: degraded mode (INTEGRATION_ALLOW_DEGRADED=1) — gated tests will self-skip and the target will pass"; \
+	@if [ "$(INTEGRATION_ALLOW_DEGRADED)" = "1" ]; then \
+		down="$$(TEST_POSTGRES_DSN='$(TEST_POSTGRES_DSN)' MOCKOON_URL='$(MOCKOON_URL)' python3 scripts/ci/integration_probe.py --down-list)"; \
+		if [ -n "$$down" ]; then \
+			echo "----------------------------------------------------------------------"; \
+			echo "DEGRADED RUN — services unavailable, tests skipped: $$down"; \
+			echo "This pass proves NOTHING about service-backed behavior."; \
+			echo "----------------------------------------------------------------------"; \
 		else \
+			echo "integration: degraded mode requested but all services reachable — gated tests will run for real"; \
+		fi; \
+		echo "integration: go test on gated packages in $(GO_DIR) (degraded: gated tests self-skip when their service is down)"; \
+		( cd $(GO_DIR) && TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" go test ./internal/repository/postgres/... ./internal/adapters/... -count=1 ); \
+		rc=$$?; \
+		echo "integration: done (DEGRADED — no execution assertions; suite exit $$rc)"; \
+		exit $$rc; \
+	else \
+		echo "integration: strict mode — probing services (absent service = FAIL)"; \
+		if TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" MOCKOON_URL="$(MOCKOON_URL)" python3 scripts/ci/integration_probe.py; then \
+			echo "integration: services up — running gated suites"; \
+		else \
+			rc=$$?; \
 			echo "integration: FAIL — a service is down (probe exit $$rc). Start services (see 'make local') or set INTEGRATION_ALLOW_DEGRADED=1."; \
 			exit 1; \
 		fi; \
+		echo "integration: go test on gated packages in $(GO_DIR) (TEST_POSTGRES_STRICT=1 arms the sentinel)"; \
+		( cd $(GO_DIR) && TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" TEST_POSTGRES_STRICT=1 go test ./internal/repository/postgres/... ./internal/adapters/... -count=1 ); \
+		rc=$$?; \
+		if [ $$rc -ne 0 ]; then \
+			echo "integration: FAIL — gated suite exited $$rc (sentinel or a real test failure; see output above)"; \
+			exit $$rc; \
+		fi; \
+		echo "integration: post-run proof that gated tests executed (APA-83 gates)"; \
+		TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" TEST_POSTGRES_STRICT=1 python3 scripts/ci/check_pg_gated_packages.py || exit $$?; \
+		MOCKOON_URL="$(MOCKOON_URL)" TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" TEST_POSTGRES_STRICT=1 python3 scripts/ci/check_mockoon_gated_tests.py || exit $$?; \
+		echo "integration: done (strict — execution proven, not assumed)"; \
 	fi
-	@echo "integration: go test on gated packages in $(GO_DIR)"
-	cd $(GO_DIR) && TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" go test ./internal/repository/postgres/... ./internal/adapters/... -count=1
-	@echo "integration: done"
 
 local:
 	@echo "local: service map (this target starts nothing — copy/paste only)"

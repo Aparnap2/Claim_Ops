@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import socket
+import sys
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,9 @@ class _FakeResponse:
 def test_main_all_services_up_exits_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # main() parses sys.argv (argparse); under pytest that holds pytest's
+    # own arguments, so pin a clean argv for every main() call.
+    monkeypatch.setattr(sys, "argv", ["integration_probe.py"])
     monkeypatch.setattr(PROBE, "postgres_reachable", lambda dsn: (True, "pg up"))
     monkeypatch.setattr(PROBE, "mockoon_reachable", lambda url: (True, "mk up"))
     assert PROBE.main() == PROBE.EXIT_OK
@@ -55,6 +59,7 @@ def test_main_all_services_up_exits_zero(
 def test_main_postgres_down_exits_three(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sys, "argv", ["integration_probe.py"])
     monkeypatch.setattr(PROBE, "postgres_reachable", lambda dsn: (False, "pg down"))
     monkeypatch.setattr(PROBE, "mockoon_reachable", lambda url: (True, "mk up"))
     assert PROBE.main() == PROBE.EXIT_SERVICE_DOWN
@@ -63,6 +68,7 @@ def test_main_postgres_down_exits_three(
 def test_main_mockoon_down_exits_three(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sys, "argv", ["integration_probe.py"])
     monkeypatch.setattr(PROBE, "postgres_reachable", lambda dsn: (True, "pg up"))
     monkeypatch.setattr(PROBE, "mockoon_reachable", lambda url: (False, "mk down"))
     assert PROBE.main() == PROBE.EXIT_SERVICE_DOWN
@@ -110,3 +116,60 @@ def test_mockoon_reachable_reports_exception(monkeypatch: pytest.MonkeyPatch) ->
     ok, msg = PROBE.mockoon_reachable("http://localhost:3001/v1/policies/POL-001")
     assert ok is False
     assert msg.startswith("SKIP: Mockoon unreachable")
+
+
+# --- --down-list (informational mode for the degraded banner) ---------------
+
+
+def _run_down_list(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], pg_up: bool, mk_up: bool
+) -> tuple[int, str]:
+    monkeypatch.setattr(sys, "argv", ["integration_probe.py", "--down-list"])
+    monkeypatch.setattr(PROBE, "postgres_reachable", lambda dsn: (pg_up, "pg"))
+    monkeypatch.setattr(PROBE, "mockoon_reachable", lambda url: (mk_up, "mk"))
+    code = PROBE.main()
+    return code, capsys.readouterr().out
+
+
+def test_down_list_all_up_prints_empty_line_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, out = _run_down_list(monkeypatch, capsys, pg_up=True, mk_up=True)
+    assert code == PROBE.EXIT_OK
+    assert out.strip() == ""
+
+
+def test_down_list_both_down_prints_names_and_still_exits_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, out = _run_down_list(monkeypatch, capsys, pg_up=False, mk_up=False)
+    assert code == PROBE.EXIT_OK  # informational mode never gates
+    assert out.strip() == "postgres,mockoon"
+
+
+def test_down_list_postgres_only_down(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, out = _run_down_list(monkeypatch, capsys, pg_up=False, mk_up=True)
+    assert code == PROBE.EXIT_OK
+    assert out.strip() == "postgres"
+
+
+def test_down_list_mockoon_only_down(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, out = _run_down_list(monkeypatch, capsys, pg_up=True, mk_up=False)
+    assert code == PROBE.EXIT_OK
+    assert out.strip() == "mockoon"
+
+
+def test_down_services_returns_names_not_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(PROBE, "postgres_reachable", lambda dsn: (False, "SKIP: ..."))
+    monkeypatch.setattr(PROBE, "mockoon_reachable", lambda url: (True, "up"))
+    assert PROBE.down_services("dsn", "http://localhost:3001") == ["postgres"]

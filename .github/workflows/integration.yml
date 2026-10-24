@@ -2,9 +2,10 @@
 # to main and on demand (workflow_dispatch), NOT on pull requests.
 #
 # Provenance of each step (proven vs placeholder vs gap):
-# - PROVEN BY REPO DESIGN: `make integration` exits 0 with services absent —
-#   postgres/mockoon-gated Go tests self-skip and the Makefile probes print
-#   SKIP (see Makefile `integration` target).
+# - PROVEN BY REPO DESIGN: `make integration` is STRICT — it fails when a
+#   service is down (probe exit 3) instead of skip-and-pass, and its strict
+#   path proves execution (sentinel + APA-83 gates), not just exit 0. The
+#   degraded escape (INTEGRATION_ALLOW_DEGRADED=1) is never set here.
 # - ANTI-FAKE-GREEN: the assert-services step below fails the job when zero
 #   postgres-backed tests ran, so a green check always proves the services
 #   layer delivered (a 100%-skipped run = infra failure, not success).
@@ -198,8 +199,14 @@ jobs:
         # aggregate count could be satisfied by unrelated tests. This asserts
         # every gated package ran. Mockoon is deliberately excluded here and
         # tracked separately as APA-83 P12.
+        #
+        # TEST_POSTGRES_STRICT=1 arms the sentinel
+        # (TestIntegrationSentinelPostgresRoundTrip), which this gate also
+        # requires by name as `--- PASS`: a reachable-but-unusable Postgres
+        # (wrong creds) must fail here, not pass with everything skipped.
         env:
           TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          TEST_POSTGRES_STRICT: "1"
         run: python3 scripts/ci/check_pg_gated_packages.py
 
       - name: Assert Mockoon-gated tests actually ran (anti-fake-green)
@@ -210,6 +217,7 @@ jobs:
         env:
           MOCKOON_URL: http://localhost:3001
           TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          TEST_POSTGRES_STRICT: "1"
         run: python3 scripts/ci/check_mockoon_gated_tests.py
 
       - name: Teardown Mockoon
