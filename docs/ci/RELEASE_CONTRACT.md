@@ -44,7 +44,7 @@ or is INDETERMINATE; both block (§4).
 | M6 | `security-delta` N/A or satisfied            | `security.yml`, job `security-delta` | on a push/workflow_dispatch run the job is PR-only and absent ⇒ **N/A** (recorded, not silently dropped); on a pull_request run the job must exist and be `success` (exit 2 = indeterminate ⇒ fail) |
 | M7 | `integration` green on the SHA               | `integration.yml`, job `services` | run exists for SHA, run + job `success`. The workflow's own sentinel steps (`check_pg_gated_packages.py`, `check_mockoon_gated_tests.py`, assert-services) make the job conclusion the skip-armor carrier |
 | M8 | live qualification on the SHA                | `qualification.yml` run + its log | run exists for SHA with `success`, **and** its log contains `QUALIFIED: full suite green against a genuinely fresh, ephemeral database`, **and** `postgres-backed passing tests: N` with N ≥ 1. If `LLM cases measured: M/K` is present then M must equal K (a 429/skip is never a measurement); its absence means a PG-only run (recorded as scope). Missing/unreadable log or missing sentinel lines ⇒ INDETERMINATE ⇒ fail |
-| M9 | security posture record fresh                | dated comments on the `Security posture runs` tracking issue | latest comment age ≤ `posture_max_age_hours` (input, default 168 = weekly cadence). No issue, no comments, or unparseable timestamp ⇒ INDETERMINATE ⇒ fail |
+| M9 | security posture record fresh AND suite recorded success | dated comments on the `Security posture runs` tracking issue | the latest comment must (a) carry the exact marker `- Suite result: **success**` written by `security-posture.yml`, and (b) be age ≤ `posture_max_age_hours` (input, default 168 = weekly cadence) — BOTH must hold. The summary job runs `if: always()`, so a FAILED suite still writes a fresh comment; any recorded outcome other than `success` (failure/cancelled/skipped) ⇒ fail with the offending line echoed. No issue, no comments, unparseable timestamp, or a body without a parseable outcome marker ⇒ INDETERMINATE ⇒ fail |
 
 SHA handling: the `target_sha` input may be short; the gate resolves it to
 a full SHA via the commits API before filtering runs. An ambiguous or
@@ -78,7 +78,8 @@ The gate blocks (`BLOCKED`, exit 2) when any of:
   job, run id, and conclusion are named in the JSON);
 - the qualification run's log is unavailable or lacks the sentinel lines
   (INDETERMINATE — never an implicit pass);
-- the posture record is missing, stale, or unparseable (INDETERMINATE);
+- the posture record is missing, stale, unparseable, or records a suite
+  outcome other than `success` (a fresh failure still blocks);
 - the attestation is malformed;
 - any API query fails (INDETERMINATE).
 
@@ -120,7 +121,8 @@ JSON schema (v1):
   "qualification": {"run_id": 0, "conclusion": "", "scope": "pg-only | llm-matrix",
                     "pg_backed_passing_tests": 0, "llm_measured": 0, "llm_expected": 0,
                     "log_evidence": true},
-  "posture": {"issue_number": 0, "latest_comment_at": "", "age_hours": 0.0,
+  "posture": {"issue_number": 0, "latest_comment_at": "", "recorded_outcome": "",
+              "outcome_line": "", "age_hours": 0.0,
               "max_age_hours": 168, "status": "pass | fail | indeterminate"},
   "attestation": {"provided": false, "statement": "", "attested_by": "",
                   "attested_date": "", "status": "pass | missing | malformed"},
@@ -153,6 +155,7 @@ itself indeterminate and must not be produced by design.
 | (a) failed run | a main SHA whose `security` push run failed | `BLOCKED`, naming `security` + run id + conclusion |
 | (b) green but unqualified | a main SHA with green ci/security/integration and no qualification run | `BLOCKED`, naming missing qualification (and missing posture record) |
 | (c) stale posture | fresh posture record exists; gate dispatched with `posture_max_age_hours=0` | `BLOCKED`, naming posture staleness; default bound ⇒ posture passes |
+| (c2) fresh failure | latest posture comment records `- Suite result: **failure**` (the summary job runs `if: always()`, so a failed suite still writes a fresh comment) | `BLOCKED`, naming "latest posture suite failed" and echoing the offending line — freshness alone never passes M9 |
 | (d) attestation | no attestation / malformed attestation / full attestation | missing ⇒ attestation `missing`; malformed ⇒ `BLOCKED`; full ⇒ attestation `pass` while verdict stays `BLOCKED` on missing qualification (attestation alone mints nothing) |
 | (e) skip-prevention | M8 log parsing: `postgres-backed passing tests: N ≥ 1`, `LLM cases measured: M/K` with M = K; missing counts ⇒ INDETERMINATE | unit-tested on fixtures built from real run evidence; the real gate blocks every historical SHA today because `qualification.yml` has never been dispatched — the fail-closed behavior working as designed |
 

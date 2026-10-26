@@ -45,6 +45,14 @@ WORKFLOW_SECURITY = "security"
 WORKFLOW_INTEGRATION = "integration"
 WORKFLOW_QUALIFICATION = "qualification"
 POSTURE_ISSUE_TITLE = "Security posture runs"
+# Exact outcome marker written by .github/workflows/security-posture.yml
+# ("Append dated run summary to the tracking issue"): the template line is
+# `- Suite result: **${{ needs.suite.result }}**` and needs.*.result has a
+# fixed GitHub vocabulary (success | failure | cancelled | skipped | ...).
+# M9 parses THIS line from the latest comment body — freshness alone is not
+# enough, because the summary job runs `if: always()` and a FAILED suite
+# still writes a fresh dated comment.
+POSTURE_OUTCOME_PATTERN = re.compile(r"^- Suite result: \*\*([^*\r\n]+)\*\*\s*$", re.MULTILINE)
 DEFAULT_POSTURE_MAX_AGE_HOURS = 168.0
 
 # Sentinel lines emitted by infra/postgres/qualify.sh (the harness that
@@ -579,15 +587,40 @@ def _latest_posture_comment(gh: GhApi, repo: str, issue_number: int) -> tuple[st
     return created, (body if isinstance(body, str) else "")
 
 
+def _parse_posture_outcome(body: str) -> tuple[str, str] | None:
+    """Parse the recorded suite outcome from a posture comment body.
+
+    Returns (outcome, matched_line) for the exact `- Suite result: **X**`
+    marker, or None when the body carries no marker (or conflicting
+    duplicates) — the caller must treat None as INDETERMINATE, never as a
+    pass. Anything other than the literal value `success` is an explicit
+    failure (failure | cancelled | skipped | ...).
+    """
+    matches = list(POSTURE_OUTCOME_PATTERN.finditer(body))
+    if not matches:
+        return None
+    values = {match.group(1).strip() for match in matches}
+    if len(values) != 1:
+        return None  # ambiguous/conflicting markers — fail closed
+    value = values.pop()
+    return value, matches[-1].group(0).rstrip()
+
+
 def _posture_criterion(
     gh: GhApi, repo: str, max_age_hours: float, now: datetime
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """M9: the latest dated comment on the posture tracking issue must be
-    within the freshness bound. Missing issue/comments/unparseable timestamp
-    is INDETERMINATE — never an implicit pass."""
+    """M9: the latest dated comment on the posture tracking issue must
+    record an EXPLICITLY successful suite result AND be within the
+    freshness bound — both must hold. The summary job runs `if: always()`,
+    so a failed suite still writes a fresh comment; freshness alone would
+    let the gate pass on a failing posture. Missing issue/comments,
+    unparseable timestamp, or a body without a parseable outcome marker is
+    INDETERMINATE — never an implicit pass."""
     posture: dict[str, Any] = {
         "issue_number": None,
         "latest_comment_at": None,
+        "recorded_outcome": None,
+        "outcome_line": None,
         "age_hours": None,
         "max_age_hours": max_age_hours,
         "status": STATUS_INDETERMINATE,
@@ -619,8 +652,38 @@ def _posture_criterion(
             ),
             posture,
         )
-    created_at, _body = latest
+    created_at, body = latest
     posture["latest_comment_at"] = created_at
+    outcome = _parse_posture_outcome(body)
+    if outcome is None:
+        return (
+            _criterion(
+                "M9",
+                "security-posture",
+                "summary",
+                None,
+                STATUS_INDETERMINATE,
+                "posture record has no parseable suite outcome — expected a "
+                f"'- Suite result: **...**' line (issue #{issue_number})",
+            ),
+            posture,
+        )
+    recorded, outcome_line = outcome
+    posture["recorded_outcome"] = recorded
+    posture["outcome_line"] = outcome_line
+    if recorded != "success":
+        posture["status"] = STATUS_FAIL
+        return (
+            _criterion(
+                "M9",
+                "security-posture",
+                "summary",
+                None,
+                STATUS_FAIL,
+                f"latest posture suite failed: {outcome_line!r} (issue #{issue_number})",
+            ),
+            posture,
+        )
     try:
         timestamp = _parse_gh_time(created_at)
     except ValueError:
@@ -659,8 +722,9 @@ def _posture_criterion(
             "summary",
             None,
             STATUS_PASS,
-            f"posture record fresh: {age_hours:.1f}h old within the "
-            f"{max_age_hours:.1f}h bound (issue #{issue_number})",
+            f"posture record fresh ({age_hours:.1f}h old within the "
+            f"{max_age_hours:.1f}h bound) and suite recorded success "
+            f"(issue #{issue_number})",
         ),
         posture,
     )

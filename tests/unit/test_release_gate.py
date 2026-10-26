@@ -317,17 +317,35 @@ def test_qualification_no_run_fails() -> None:
 # --- posture (M9) -----------------------------------------------------------
 
 
-def _posture_gh(comment_at: str | None) -> tuple[GATE.GhApi, int]:
+def _posture_body(outcome: str = "success") -> str:
+    """Body shaped exactly like the security-posture.yml summary comment
+    (the writer emits `- Suite result: **${{ needs.suite.result }}**`)."""
+    return (
+        "## Posture run — 2026-10-24 07:58 UTC\n"
+        "\n"
+        "- Ref: `refs/heads/main` @ `55f4d26`\n"
+        f"- Suite result: **{outcome}**\n"
+        "- Run: https://github.com/Aparnap2/Claim_Ops/actions/runs/40076183279\n"
+        "\n"
+        "Gates: secret-pattern guard, live-provider build-tag isolation, "
+        "provider-secret-free PR workflows, go mod verify, uv pip check, "
+        "govulncheck, pip-audit.\n"
+    )
+
+
+def _posture_gh(comment_at: str | None, body: str | None = None) -> tuple[GATE.GhApi, int]:
     responses: dict[str, Any] = {
         "search/issues?q=": {"items": [{"title": "Security posture runs", "number": 7}]},
         f"repos/{REPO}/issues/7/comments": (
-            [{"created_at": comment_at, "body": "posture summary"}] if comment_at else []
+            [{"created_at": comment_at, "body": body if body is not None else _posture_body()}]
+            if comment_at
+            else []
         ),
     }
     return FakeGh(responses), 7
 
 
-def test_posture_fresh_passes() -> None:
+def test_posture_fresh_success_passes() -> None:
     gh, _ = _posture_gh("2026-10-20T00:00:00Z")
     record, posture = GATE._posture_criterion(
         gh, REPO, 168.0, GATE._parse_gh_time("2026-10-24T00:00:00Z")
@@ -335,6 +353,53 @@ def test_posture_fresh_passes() -> None:
     assert record["status"] == "pass"
     assert posture["status"] == "pass"
     assert posture["age_hours"] == pytest.approx(96.0)
+    assert posture["recorded_outcome"] == "success"
+    assert posture["outcome_line"] == "- Suite result: **success**"
+
+
+def test_posture_fresh_but_suite_failed_blocks() -> None:
+    """Owner-required negative control: the summary job runs `if: always()`,
+    so a FAILED suite still writes a FRESH dated comment. Freshness alone
+    must not pass M9 — the recorded failure must block."""
+    gh, _ = _posture_gh("2026-10-20T00:00:00Z", body=_posture_body("failure"))
+    record, posture = GATE._posture_criterion(
+        gh, REPO, 168.0, GATE._parse_gh_time("2026-10-24T00:00:00Z")
+    )
+    assert record["status"] == "fail"
+    assert posture["status"] == "fail"
+    assert posture["recorded_outcome"] == "failure"
+    assert "latest posture suite failed" in record["reason"]
+    assert "- Suite result: **failure**" in record["reason"]
+
+
+def test_posture_cancelled_outcome_blocks() -> None:
+    """Any non-success recorded outcome is an explicit failure."""
+    gh, _ = _posture_gh("2026-10-20T00:00:00Z", body=_posture_body("cancelled"))
+    record, posture = GATE._posture_criterion(
+        gh, REPO, 168.0, GATE._parse_gh_time("2026-10-24T00:00:00Z")
+    )
+    assert record["status"] == "fail"
+    assert posture["recorded_outcome"] == "cancelled"
+
+
+def test_posture_unparseable_outcome_is_indeterminate() -> None:
+    """A fresh comment without a parseable outcome marker is INDETERMINATE —
+    never an implicit pass."""
+    gh, _ = _posture_gh("2026-10-20T00:00:00Z", body="posture summary, no marker")
+    record, posture = GATE._posture_criterion(
+        gh, REPO, 168.0, GATE._parse_gh_time("2026-10-24T00:00:00Z")
+    )
+    assert record["status"] == "indeterminate"
+    assert posture["recorded_outcome"] is None
+
+
+def test_posture_conflicting_outcome_markers_are_indeterminate() -> None:
+    body = _posture_body("success") + "- Suite result: **failure**\n"
+    gh, _ = _posture_gh("2026-10-20T00:00:00Z", body=body)
+    record, _posture = GATE._posture_criterion(
+        gh, REPO, 168.0, GATE._parse_gh_time("2026-10-24T00:00:00Z")
+    )
+    assert record["status"] == "indeterminate"
 
 
 def test_posture_stale_fails() -> None:
@@ -344,6 +409,7 @@ def test_posture_stale_fails() -> None:
     )
     assert record["status"] == "fail"
     assert posture["status"] == "fail"
+    assert "stale" in record["reason"]
 
 
 def test_posture_missing_issue_is_indeterminate() -> None:
@@ -445,7 +511,7 @@ def test_evaluate_evidence_complete_without_attestation() -> None:
     responses[f"repos/{REPO}/actions/runs/{RUN_QUAL_SYNTHETIC}/jobs"] = {"jobs": [_job("qualify")]}
     responses["search/issues?q="] = {"items": [{"title": "Security posture runs", "number": 7}]}
     responses[f"repos/{REPO}/issues/7/comments"] = [
-        {"created_at": "2026-10-20T00:00:00Z", "body": "posture summary"}
+        {"created_at": "2026-10-20T00:00:00Z", "body": _posture_body()}
     ]
     logs = {RUN_QUAL_SYNTHETIC: _qual_log(pg=12, measured=14, expected=14)}
     decision, exit_code = GATE.evaluate(
@@ -471,7 +537,7 @@ def test_evaluate_passed_with_attestation_still_null_release_decision() -> None:
     responses[f"repos/{REPO}/actions/runs/{RUN_QUAL_SYNTHETIC}/jobs"] = {"jobs": [_job("qualify")]}
     responses["search/issues?q="] = {"items": [{"title": "Security posture runs", "number": 7}]}
     responses[f"repos/{REPO}/issues/7/comments"] = [
-        {"created_at": "2026-10-20T00:00:00Z", "body": "posture summary"}
+        {"created_at": "2026-10-20T00:00:00Z", "body": _posture_body()}
     ]
     logs = {RUN_QUAL_SYNTHETIC: _qual_log(pg=12, measured=14, expected=14)}
     decision, exit_code = GATE.evaluate(
@@ -502,7 +568,7 @@ def test_evaluate_malformed_attestation_blocks_despite_green_evidence() -> None:
     responses[f"repos/{REPO}/actions/runs/{RUN_QUAL_SYNTHETIC}/jobs"] = {"jobs": [_job("qualify")]}
     responses["search/issues?q="] = {"items": [{"title": "Security posture runs", "number": 7}]}
     responses[f"repos/{REPO}/issues/7/comments"] = [
-        {"created_at": "2026-10-20T00:00:00Z", "body": "posture summary"}
+        {"created_at": "2026-10-20T00:00:00Z", "body": _posture_body()}
     ]
     logs = {RUN_QUAL_SYNTHETIC: _qual_log(pg=12, measured=14, expected=14)}
     decision, exit_code = GATE.evaluate(
@@ -527,7 +593,7 @@ def test_evaluate_stale_posture_blocks() -> None:
     responses[f"repos/{REPO}/actions/runs/{RUN_QUAL_SYNTHETIC}/jobs"] = {"jobs": [_job("qualify")]}
     responses["search/issues?q="] = {"items": [{"title": "Security posture runs", "number": 7}]}
     responses[f"repos/{REPO}/issues/7/comments"] = [
-        {"created_at": "2026-10-20T00:00:00Z", "body": "posture summary"}
+        {"created_at": "2026-10-20T00:00:00Z", "body": _posture_body()}
     ]
     logs = {RUN_QUAL_SYNTHETIC: _qual_log(pg=12, measured=14, expected=14)}
     decision, exit_code = GATE.evaluate(
@@ -538,6 +604,36 @@ def test_evaluate_stale_posture_blocks() -> None:
     assert exit_code == GATE.EXIT_BLOCKED
     named = {failure["criterion"] for failure in decision["failures"]}
     assert "M9" in named
+
+
+def test_evaluate_fresh_posture_suite_failure_blocks() -> None:
+    """Gate-level owner-required control: full green evidence + a synthetic
+    qualification run, but the latest posture comment records a FAILED
+    suite. The gate must BLOCK on M9 — a fresh failure is not a pass."""
+    responses = _green_main_responses()
+    responses[f"repos/{REPO}/actions/runs?head_sha="] = {
+        "workflow_runs": [
+            _run(RUN_CI, "ci"),
+            _run(RUN_SECURITY, "security"),
+            _run(RUN_INTEGRATION, "integration"),
+            _run(RUN_QUAL_SYNTHETIC, "qualification"),
+        ]
+    }
+    responses[f"repos/{REPO}/actions/runs/{RUN_QUAL_SYNTHETIC}/jobs"] = {"jobs": [_job("qualify")]}
+    responses["search/issues?q="] = {"items": [{"title": "Security posture runs", "number": 7}]}
+    responses[f"repos/{REPO}/issues/7/comments"] = [
+        {"created_at": "2026-10-20T00:00:00Z", "body": _posture_body("failure")}
+    ]
+    logs = {RUN_QUAL_SYNTHETIC: _qual_log(pg=12, measured=14, expected=14)}
+    decision, exit_code = GATE.evaluate(
+        FakeGh(responses), lambda run_id: logs.get(run_id), _config()
+    )
+    assert exit_code == GATE.EXIT_BLOCKED
+    assert decision["verdict"] == GATE.VERDICT_BLOCKED
+    named = {failure["criterion"] for failure in decision["failures"]}
+    assert "M9" in named
+    m9 = next(f for f in decision["failures"] if f["criterion"] == "M9")
+    assert "latest posture suite failed" in m9["reason"]
 
 
 def test_main_api_failure_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
