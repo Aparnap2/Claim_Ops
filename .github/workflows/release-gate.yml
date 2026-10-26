@@ -115,7 +115,7 @@ jobs:
 
       - name: Upload decision artifact
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540478e38f3861794dae042 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-gate-decision
           path: decision.json
