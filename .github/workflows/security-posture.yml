@@ -60,6 +60,9 @@ jobs:
       - name: Find or create the posture tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job: gh resolves the repo from GH_REPO
+          # instead of probing git remotes (which fails outside a repo).
+          GH_REPO: ${{ github.repository }}
         run: |
           number="$(gh issue list \
             --search "Security posture runs in:title" \
@@ -74,6 +77,7 @@ jobs:
       - name: Append dated run summary to the tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           body="$(mktemp)"
           {

@@ -24,6 +24,23 @@ does not weaken them.
 | `integration` (services) | `integration.yml` (pushes to main) | PG + Mockoon-backed tests with anti-fake-green assertions |
 | `security-posture` | `security-posture.yml` (weekly + dispatch) | re-runs the suite on main; see `docs/security/POSTURE.md` |
 
+## Machine witness (release-gate)
+
+`release-gate.yml` (dispatch-only) re-reads the evidence above for a target
+SHA via the GitHub API and emits one machine-readable decision
+(`docs/ci/RELEASE_CONTRACT.md` defines the criteria map M1–M9, the human
+attestation H1–H4, and the fail-closed rules). It never re-executes tests
+and never mints a release.
+
+- **Distinctness:** green PR checks prove merge-readiness only. They are a
+  different claim from release qualification, which requires a
+  `qualification.yml` run (or `qualify.sh` local equivalent) against a
+  fresh empty database — PR checks green ≠ qualified.
+- **Necessity, not sufficiency:** a green gate run is *necessary* for a
+  release claim and never *sufficient*. `release_decision` is null in
+  every gate artifact; the decisive release action is a human merge/tag
+  that records the gate run id.
+
 ## Release claims
 
 - A release-relevant qualification claim must be backed by
