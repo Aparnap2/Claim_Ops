@@ -1,5 +1,13 @@
-# Layer B — services-backed integration. Manual + push-gated: runs on pushes
-# to main and on demand (workflow_dispatch), NOT on pull requests.
+# Layer B — services-backed integration. Runs on pushes to main, on
+# pull requests that touch integration-relevant paths (#166), and on
+# demand (workflow_dispatch).
+#
+# PR-trigger policy (#166): pull_request runs execute the STRICT suite.
+# Promotion to a required check waits for three consecutive strict-green
+# post-merge run evidences on unrelated PRs; until then a red here is
+# signal, not a merge gate. Historical non-strict green runs prove
+# nothing about the strict design. Path filters spare docs-only PRs the
+# services startup cost.
 #
 # Provenance of each step (proven vs placeholder vs gap):
 # - PROVEN BY REPO DESIGN: `make integration` is STRICT — it fails when a
@@ -26,11 +34,29 @@ name: integration
 on:
   push:
     branches: [main]
+  pull_request:
+    # #166: run the real services suite on PRs whose changes could
+    # affect it. Docs-only, ADR-only, and workflow-unrelated PRs do not
+    # trigger it (cheapest correct filter — a misconfiguration of the
+    # suite itself is covered by the workflow path below).
+    paths:
+      - 'apps/api/**'
+      - 'infra/postgres/**'
+      - 'mocks/**'
+      - 'Makefile'
+      - 'scripts/ci/**'
+      - '.github/workflows/integration.yml'
   workflow_dispatch:
 
 # Least privilege: checkout + cache only.
 permissions:
   contents: read
+
+concurrency:
+  # Cancel superseded runs on the same ref (a force-push or rapid
+  # successive push should not burn two 30-minute service suites).
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   services:
