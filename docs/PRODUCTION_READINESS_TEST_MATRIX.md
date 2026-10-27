@@ -214,3 +214,87 @@ document when each merges, using the same convention as the PR #159 carve-out.
 
 Independent human review remains the merge gate for everything above; green required checks
 are necessary but not approval.
+
+---
+
+## CURRENT BASELINE (84bee20) — revision added 2026-10-27
+
+This section is an **append-only revision** of the matrix above. Everything above the
+horizontal rule is the preserved historical audit snapshot anchored to `main@0f33724`
+(2026-10-14) plus its 2026-10-17 pointer list; none of those lines have been edited. This
+section re-anchors the readiness picture to `main@84bee20eaf2e3e575637adbde53c2f3ffae08ab8`
+(2026-10-27) and supersedes the baseline *status*, not the baseline *findings*.
+
+### (a) Re-anchor evidence: merge chain 0f33724 → 84bee20
+
+| Merge | SHA | What it changed |
+|---|---|---|
+| #186 | `ffc7482` | release gate / M9 fix |
+| #193 | `3096ee3` | upload-artifact pin fix (real v4 SHA) |
+| #194 | `04a0c43` | clock fix |
+| #171 | `f9ba62b` | PR-triggered `integration.yml` (concurrency-controlled) |
+| #139 | `e30987f` | actions/checkout 4.4.0 → 7.0.1 |
+| #140 | `c05c106` | hashicorp/setup-terraform → 4.0.1 |
+| #141 | `46a84a8` | actions/setup-python → 7.1.0 |
+| #174 | `1ee6f81` | actions/setup-go → 7.0.0 |
+| #175 | `84bee20` | astral-sh/setup-uv 5.4.2 → 10.3.2 |
+
+All three required workflows (deterministic / terraform / static) plus the security suite
+(govulncheck, pip-audit, security-delta) are green at `84bee20`.
+
+**#166 promotion counter: 2/3 VALIDATED** — qualifying `services` runs on new main heads:
+`40449725982`, `40452889415`. The third qualifying run is **pending-merge evidence** (see (c)).
+
+PR #159 status update vs the historical carve-out: rebased this session from `879771b` to
+`73b8434` (same +47/−3 diff on `tests/unit/test_golden_deterministic.py`, tolerance-boundary
+assertions intact), all PR checks green (runs `40455189499`, `40455189495`), still
+**open/unmerged** — its changes remain verification-on-PR-head and stay excluded from
+baseline coverage until merge.
+
+### (b) Verified capabilities vs still-open blockers (Gate A register)
+
+**Verified on main@84bee20 (evidence-backed):**
+
+- **Required CI gates green**: deterministic, terraform, static + govulncheck / pip-audit /
+  security-delta, all passing on the current head.
+- **#61 claim durability — RESOLVED** via merged #172 (`b812d34`): `POST /claims` commits
+  claim + event + outbox in ONE tenant-scoped PG transaction, 202 only after commit
+  (`handlers/claim_submit.go` header cites the KL-16/#61 replacement); decision handler is
+  PG-durable (RLS load, CAS, event + audit); the in-memory `workflow.Store` has no
+  production wiring (test-only consumers in `claims/parity_test.go`).
+- **#65 outbox test isolation — RESOLVED**: `outbox_repository_test.go` was rewritten to
+  run-unique pid-scoped tenants with equality-on-full-result assertions and anti-vacuity
+  preconditions; the file header documents the prior defect as fixed.
+- **#172 durable claims** — merged and live on main (see #61 above).
+
+**Still-open blockers (unimplemented on main@84bee20, per the Gate A register):**
+
+- **#163 / PR #162** — durable insufficient-evidence transitions: no
+  `RecordInsufficientEvidenceTransition` on main; `runNewPipeline` launches without
+  persisting `VALIDATING → EXCEPTION`. PR #162 (head `fb8fec3`) is the implementation;
+  independent review outstanding.
+- **#60** — outbox multi-dispatcher: `outbox_store.go:33-35` self-documents the gap
+  ("Locks release at commit; single-dispatcher deployment is assumed (#15) — concurrent
+  dispatchers need advisory-lock fencing"); dispatcher attempt counting is in-process
+  (`attempts` map); single dispatcher wired at `cmd/api/main.go:129`.
+- **#58** — correlation_id absent: closed 7-key `uploadEventKeys` payload set carries no
+  correlation key (contract-locked "no other keys, ever"); the Pub/Sub adapter sets no
+  message attributes at all.
+- **#59** — blob operation deadlines: zero `WithTimeout`/deadline bounding in
+  `gcsblob.go` / `blob_fetch_bridge.go`; `BlobFetchBridge.Fetch` inherits the caller's
+  (server-lifetime) context unbounded in time.
+- **#63** — canonical-report drift risk: the `canonicalReport` marshal with its 8-field
+  list is hand-duplicated at `investigate/tools/report.go:311` and `pg_store.go:43`;
+  field drift between the two sites breaks content-hash verification (`ErrContract`).
+
+### (c) Third #166 evidence — pending-merge only
+
+The `services` run on PR #178's rebased head (`eaa20f7`, run `40455512434`, pass 2m49s) is
+recorded as **CANDIDATE evidence and is NOT counted** toward the #166 counter. Per the
+adoption rule, only post-merge `services` runs on verified new main heads count. The third
+VALIDATED run is expected to come from the merge of #178 and/or #162 onto main; until then
+the counter stands at **2/3**.
+
+This revision does not change the historical verdict structure: **NOT QUALIFIED** remains
+the release-gate status, now carried by the still-open blocker list in (b) rather than the
+2026-10-14 gap list above.
