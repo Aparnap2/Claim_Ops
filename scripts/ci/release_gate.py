@@ -785,9 +785,19 @@ def decide(
     return VERDICT_PASSED, failures
 
 
-def evaluate(gh: GhApi, fetch_log: RunLogFetcher, config: GateConfig) -> tuple[dict[str, Any], int]:
-    """Collect evidence, decide, and build the decision artifact."""
-    now = datetime.now(UTC)
+def evaluate(
+    gh: GhApi,
+    fetch_log: RunLogFetcher,
+    config: GateConfig,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Collect evidence, decide, and build the decision artifact.
+
+    `now` defaults to the real UTC clock; tests inject a fixed instant so
+    the M9 posture-freshness evidence stays deterministic.
+    """
+    if now is None:
+        now = datetime.now(UTC)
     full_sha = resolve_full_sha(gh, config.repo, config.target_sha)
     runs = list_runs(gh, config.repo, full_sha)
 

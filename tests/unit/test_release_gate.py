@@ -29,6 +29,14 @@ REPO = "owner/repo"
 FULL_SHA = "55f4d26f4897dda6bee24efe1a735966f31c2711"
 SHORT_SHA = "55f4d26"
 
+# Controlled clock for evaluate()-level tests: same instant the
+# _posture_criterion-level tests inject, so the 2026-10-20 posture
+# fixture is 96.0h old — deterministically fresh against the 168h
+# bound and deterministically stale against a 0h bound. Without this,
+# evaluate() reads the real clock and the fixtures time-bomb (seen
+# 2026-10-27: age 171.9h > 168h flipped the fresh-pass fixtures red).
+FROZEN_NOW = GATE._parse_gh_time("2026-10-24T00:00:00Z")
+
 # Real run ids from main (verified via gh api during the negative-control plan).
 RUN_CI = 40073487084
 RUN_SECURITY = 40073487102
@@ -515,7 +523,7 @@ def test_evaluate_evidence_complete_without_attestation() -> None:
     ]
     logs = {RUN_QUAL_SYNTHETIC: _qual_log(pg=12, measured=14, expected=14)}
     decision, exit_code = GATE.evaluate(
-        FakeGh(responses), lambda run_id: logs.get(run_id), _config()
+        FakeGh(responses), lambda run_id: logs.get(run_id), _config(), now=FROZEN_NOW
     )
     assert exit_code == GATE.EXIT_PASS
     assert decision["verdict"] == GATE.VERDICT_EVIDENCE_COMPLETE
@@ -548,6 +556,7 @@ def test_evaluate_passed_with_attestation_still_null_release_decision() -> None:
             attested_by="alice",
             attested_date="2026-10-24",
         ),
+        now=FROZEN_NOW,
     )
     assert exit_code == GATE.EXIT_PASS
     assert decision["verdict"] == GATE.VERDICT_PASSED
@@ -575,6 +584,7 @@ def test_evaluate_malformed_attestation_blocks_despite_green_evidence() -> None:
         FakeGh(responses),
         lambda run_id: logs.get(run_id),
         _config(attestation_statement="reviewed", attested_by="alice"),
+        now=FROZEN_NOW,
     )
     assert exit_code == GATE.EXIT_BLOCKED
     assert decision["verdict"] == GATE.VERDICT_BLOCKED
@@ -600,10 +610,18 @@ def test_evaluate_stale_posture_blocks() -> None:
         FakeGh(responses),
         lambda run_id: logs.get(run_id),
         _config(posture_max_age_hours=0.0),
+        now=FROZEN_NOW,
     )
     assert exit_code == GATE.EXIT_BLOCKED
     named = {failure["criterion"] for failure in decision["failures"]}
     assert "M9" in named
+    # Regression guard: the stale fixture must sit on the STALE side of
+    # the bound relative to the CONTROLLED clock (not by real-clock
+    # accident). If the freeze decays or the fixture date drifts, this
+    # fails loudly instead of the staleness check silently flipping.
+    posture = decision["posture"]
+    assert posture["age_hours"] is not None
+    assert posture["age_hours"] > posture["max_age_hours"]
 
 
 def test_evaluate_fresh_posture_suite_failure_blocks() -> None:
@@ -626,7 +644,7 @@ def test_evaluate_fresh_posture_suite_failure_blocks() -> None:
     ]
     logs = {RUN_QUAL_SYNTHETIC: _qual_log(pg=12, measured=14, expected=14)}
     decision, exit_code = GATE.evaluate(
-        FakeGh(responses), lambda run_id: logs.get(run_id), _config()
+        FakeGh(responses), lambda run_id: logs.get(run_id), _config(), now=FROZEN_NOW
     )
     assert exit_code == GATE.EXIT_BLOCKED
     assert decision["verdict"] == GATE.VERDICT_BLOCKED
