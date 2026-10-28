@@ -150,6 +150,9 @@ func (l *errLoader) LoadClaim(_ context.Context, _, _ string) (ClaimView, error)
 func (l *errLoader) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) error {
 	return l.err
 }
+func (l *errLoader) AdvanceToIntakeValidating(context.Context, string, string, string) error {
+	return l.err
+}
 
 type errChecker struct{ err error }
 
