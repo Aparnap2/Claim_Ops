@@ -23,6 +23,17 @@ const TopicClaimSubmitted = "claim.submitted"
 // ClaimSubmitted event payload (convention: <event-name>.vN).
 const ClaimSubmittedSchemaVersion = "claim-submitted.v1"
 
+// TopicClaimException is emitted when the worker durably stamps a claim
+// into EXCEPTION (insufficient evidence, ADR 010 producer boundary): the
+// claim CAS + event row + audit row + this outbox row commit in one
+// transaction. Consumers treat it as the authoritative "claim needs human
+// review" signal (APA-91 D4).
+const TopicClaimException = "claim.exception"
+
+// ClaimExceptionSchemaVersion is the versioned-contract marker for the
+// ClaimException event payload (convention: <event-name>.vN).
+const ClaimExceptionSchemaVersion = "claim-exception.v1"
+
 // DocumentIngestedSchemaVersion is the versioned-contract marker for the
 // DocumentIngested event payload. Convention: every event payload carries
 // a `schema_version` string of the form `<event-name>.vN`
