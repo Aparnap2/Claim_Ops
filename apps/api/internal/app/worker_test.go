@@ -117,9 +117,9 @@ func (s *stubClaims) LoadClaim(_ context.Context, _, _ string) (worker.ClaimView
 // RecordInsufficientEvidenceTransition implements worker.ClaimLoader. A
 // call here would mean the Tier-1 path reached the new-pipeline durable
 // boundary, which it must not; tests assert the recording stays empty.
-func (s *stubClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) (bool, error) {
+func (s *stubClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) error {
 	s.recTenants = append(s.recTenants, tenant)
-	return false, nil
+	return nil
 }
 
 type stubPolicy struct{}

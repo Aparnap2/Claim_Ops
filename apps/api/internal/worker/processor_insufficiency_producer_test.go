@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"claimops-api/internal/claims"
 	"claimops-api/internal/documents"
 	"claimops-api/internal/extract"
 
@@ -187,5 +188,52 @@ func TestProcessor_InsufficientEvidence_IdenticalBundleReplays(t *testing.T) {
 	}
 	if loader1.recEventIDs[0] != loader2.recEventIDs[0] {
 		t.Fatalf("identical insufficiency outcomes produced different event IDs: %q vs %q", loader1.recEventIDs[0], loader2.recEventIDs[0])
+	}
+}
+
+// TestProcessor_InsufficientEvidence_IllegalTransitionAcked (review F1/F2):
+// a claim outside the producer's authorized edge rejects the transition with
+// CodeIllegalTransition — already at EXCEPTION from a prior insufficiency
+// (second insufficient document on the same claim), or still pre-validation
+// (RECEIVED; deliberate fail-closed until the intake progression slice). The
+// state is deterministic, so the delivery must be ACKED (PROCESSED/SUCCESS,
+// no envelope, no FAILED row) — never TRANSIENT, which would poison-loop the
+// redelivery to the DLQ.
+func TestProcessor_InsufficientEvidence_IllegalTransitionAcked(t *testing.T) {
+	const tenant, claim, docID = "t-apa91", "c-1", "doc-apa91-illegal"
+	facts := extract.DocumentFacts{DocumentID: docID, DocType: "CLAIM_FORM", Fields: map[string]extract.ExtractedField{}}
+
+	cases := []struct {
+		name string
+		from claims.ClaimStatus
+	}{
+		{"claim already at EXCEPTION (second insufficient doc)", claims.ClaimStatusException},
+		{"claim still pre-validation at RECEIVED (fail-closed pre-D1)", claims.ClaimStatusReceived},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loader := &fakeClaimLoader{
+				view: ClaimView{PolicyNumber: "POL-1", ClaimVersion: 4},
+				recErr: &claims.TransitionError{
+					Code:    claims.CodeIllegalTransition,
+					ClaimID: claim,
+					From:    string(tc.from),
+					To:      string(claims.ClaimStatusException),
+				},
+			}
+			p := insuffProducerProcessor(facts, "CLAIM_FORM", loader)
+
+			out, _ := p.runNewPipeline(context.Background(), tenant, claim, "abc123", docID, "CLAIM_FORM")
+
+			if len(loader.recTenants) != 1 {
+				t.Fatalf("durable producer calls = %d, want exactly 1 (no retry loop on a deterministic verdict)", len(loader.recTenants))
+			}
+			if out.Kind != OutcomeSuccess || out.Status != documents.StProcessed {
+				t.Fatalf("status=%q kind=%q, want PROCESSED/SUCCESS (illegal transition is acked, not retried)", out.Status, out.Kind)
+			}
+			if out.ExceptionEnvelope != nil {
+				t.Fatal("an illegal-transition ack must not re-open an exception envelope")
+			}
+		})
 	}
 }

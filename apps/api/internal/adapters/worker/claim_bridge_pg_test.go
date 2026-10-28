@@ -44,11 +44,13 @@ func bridgeIDs() string {
 	return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 }
 
-// seedValidatingClaim inserts a claim at VALIDATING, version 1, plus one
-// pre-existing event row at seq 1. The pre-existing event is load-bearing:
-// the producer's new event must be seq 2 (derived from MAX(seq)+1), not a
+// seedClaimAt inserts a claim at the given status, version 1, plus one
+// pre-existing event row at seq 1 representing how the claim reached that
+// status (creation "" -> RECEIVED for a RECEIVED seed, RECEIVED ->
+// VALIDATING otherwise). The pre-existing event is load-bearing: the
+// producer's new event must be seq 2 (derived from MAX(seq)+1), not a
 // hard-coded 1.
-func seedValidatingClaim(t *testing.T, pool *pgxpool.Pool, tenant claims.TenantID, claimID claims.ClaimID, seedEventID string) {
+func seedClaimAt(t *testing.T, pool *pgxpool.Pool, tenant claims.TenantID, claimID claims.ClaimID, status claims.ClaimStatus, seedEventID string) {
 	t.Helper()
 	ctx := postgres.WithTenant(context.Background(), tenant)
 	tx, err := postgres.BeginTenantTx(ctx, pool)
@@ -58,20 +60,24 @@ func seedValidatingClaim(t *testing.T, pool *pgxpool.Pool, tenant claims.TenantI
 	defer func() { _ = tx.Rollback(ctx) }()
 	repo := postgres.New(pool)
 	c, err := claims.NewClaim(claimID, tenant, claims.PolicyID("pol-"+string(claimID)), "ref-"+string(claimID),
-		claims.MustPaise(100, 0), claims.ClaimStatusValidating, 1, time.Time{}, time.Time{}, time.Time{})
+		claims.MustPaise(100, 0), status, 1, time.Time{}, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("NewClaim: %v", err)
 	}
 	if err := repo.SaveClaim(ctx, tx, *c); err != nil {
 		t.Fatalf("SaveClaim(seed): %v", err)
 	}
+	seedFrom := claims.ClaimStatusReceived
+	if status == claims.ClaimStatusReceived {
+		seedFrom = ""
+	}
 	if err := repo.AppendEvent(ctx, tx, workflow.Event{
 		Seq:     1,
 		Type:    "claim.transitioned",
 		ClaimID: claimID,
 		Tenant:  tenant,
-		From:    claims.ClaimStatusReceived,
-		To:      claims.ClaimStatusValidating,
+		From:    seedFrom,
+		To:      status,
 		EventID: seedEventID,
 	}); err != nil {
 		t.Fatalf("AppendEvent(seed): %v", err)
@@ -79,6 +85,13 @@ func seedValidatingClaim(t *testing.T, pool *pgxpool.Pool, tenant claims.TenantI
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit seed: %v", err)
 	}
+}
+
+// seedValidatingClaim inserts a claim at VALIDATING, version 1, plus one
+// pre-existing event row at seq 1 (RECEIVED -> VALIDATING).
+func seedValidatingClaim(t *testing.T, pool *pgxpool.Pool, tenant claims.TenantID, claimID claims.ClaimID, seedEventID string) {
+	t.Helper()
+	seedClaimAt(t, pool, tenant, claimID, claims.ClaimStatusValidating, seedEventID)
 }
 
 // claimRow reads (status, version) for a claim inside a tenant-scoped tx.
@@ -204,12 +217,9 @@ func TestClaimBridge_InsufficientTransition_AppliedReplaySuperseded(t *testing.T
 	eventID := "insufficient-evt-" + id
 
 	// ---- phase 1: first application -------------------------------------
-	replay, err := bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 1, eventID)
+	err := bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 1, eventID)
 	if err != nil {
 		t.Fatalf("apply: unexpected error: %v", err)
-	}
-	if replay {
-		t.Fatal("apply: replay must be false on the first application")
 	}
 	if status, version := claimRow(t, pool, tenant, claimID); status != claims.ClaimStatusException || version != 2 {
 		t.Fatalf("apply: claim=%s v%d, want EXCEPTION v2", status, version)
@@ -237,12 +247,11 @@ func TestClaimBridge_InsufficientTransition_AppliedReplaySuperseded(t *testing.T
 	}
 
 	// ---- phase 2: idempotent replay (still EXCEPTION) --------------------
-	replay, err = bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 2, eventID)
+	// A nil return is the idempotent-replay disposition; the replay
+	// semantics (nothing new written, claim unchanged) are asserted below.
+	err = bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 2, eventID)
 	if err != nil {
 		t.Fatalf("replay: unexpected error: %v", err)
-	}
-	if !replay {
-		t.Fatal("replay: want replay==true for a still-EXCEPTION redelivery")
 	}
 	if got := len(eventRows(t, pool, tenant, claimID)); got != 2 {
 		t.Fatalf("replay: %d event rows, want 2 (no new event)", got)
@@ -258,7 +267,7 @@ func TestClaimBridge_InsufficientTransition_AppliedReplaySuperseded(t *testing.T
 	advanceClaim(t, pool, tenant, claimID, claims.ClaimStatusInvestigationRequired, "human-evt-"+id, 2)
 
 	// ---- phase 4: superseded redelivery must be refused -----------------
-	_, err = bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 3, eventID)
+	err = bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 3, eventID)
 	if !errors.Is(err, coreworker.ErrTransitionSuperseded) {
 		t.Fatalf("superseded: err=%v, want ErrTransitionSuperseded", err)
 	}
@@ -273,7 +282,7 @@ func TestClaimBridge_InsufficientTransition_AppliedReplaySuperseded(t *testing.T
 	}
 
 	// ---- phase 5: stale version conflicts, writes nothing ----------------
-	_, err = bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 1, eventID+"-other")
+	err = bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 1, eventID+"-other")
 	if !errors.Is(err, postgres.ErrVersionConflict) {
 		t.Fatalf("stale: err=%v, want ErrVersionConflict", err)
 	}
@@ -295,7 +304,7 @@ func TestClaimBridge_InsufficientTransition_TenantIsolated(t *testing.T) {
 	seedValidatingClaim(t, pool, tenant, claimID, "seed-evt-"+id)
 
 	bridge := workeradapter.NewClaimBridge(pool)
-	_, err := bridge.RecordInsufficientEvidenceTransition(context.Background(), "t-intruder-"+id, string(claimID), 1, "evt-"+id)
+	err := bridge.RecordInsufficientEvidenceTransition(context.Background(), "t-intruder-"+id, string(claimID), 1, "evt-"+id)
 	if err == nil {
 		t.Fatal("tenant isolation: cross-tenant transition must fail, got nil")
 	}
@@ -349,5 +358,84 @@ func advanceClaim(t *testing.T, pool *pgxpool.Pool, tenant claims.TenantID, clai
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit advance: %v", err)
+	}
+}
+
+// TestClaimBridge_InsufficientTransition_SecondDocIllegal (review F1): a
+// second insufficient document on a claim already at EXCEPTION carries a NEW
+// event identity, so the replay gate does not fire and the state machine
+// rejects EXCEPTION -> EXCEPTION with CodeIllegalTransition. The bridge must
+// surface that error unwrapped — the processor matches it with errors.As and
+// acks the delivery — and write nothing.
+func TestClaimBridge_InsufficientTransition_SecondDocIllegal(t *testing.T) {
+	pool := pgBridgePool(t)
+	id := bridgeIDs()
+	tenant := claims.TenantID("t-pg2-" + id)
+	claimID := claims.ClaimID("c-pg2-" + id)
+	seedValidatingClaim(t, pool, tenant, claimID, "seed-evt-"+id)
+
+	bridge := workeradapter.NewClaimBridge(pool)
+	ctx := context.Background()
+
+	// First insufficient document stamps VALIDATING -> EXCEPTION (v2).
+	first := "insufficient-evt-1-" + id
+	if err := bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 1, first); err != nil {
+		t.Fatalf("first doc: unexpected error: %v", err)
+	}
+
+	// Second insufficient document, new event identity: the state machine
+	// must reject it as illegal and the bridge must surface that error
+	// unwrapped, writing nothing.
+	second := "insufficient-evt-2-" + id
+	err := bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 2, second)
+	var terr *claims.TransitionError
+	if !errors.As(err, &terr) || terr.Code != claims.CodeIllegalTransition {
+		t.Fatalf("second doc: err=%v, want *claims.TransitionError CodeIllegalTransition (the processor's errors.As predicate)", err)
+	}
+	if terr.From != string(claims.ClaimStatusException) || terr.To != string(claims.ClaimStatusException) {
+		t.Fatalf("second doc: transition = %s->%s, want EXCEPTION->EXCEPTION", terr.From, terr.To)
+	}
+	if status, version := claimRow(t, pool, tenant, claimID); status != claims.ClaimStatusException || version != 2 {
+		t.Fatalf("second doc: claim=%s v%d, want unchanged EXCEPTION v2", status, version)
+	}
+	if got := len(eventRows(t, pool, tenant, claimID)); got != 2 {
+		t.Fatalf("second doc: %d event rows, want 2 (seed + first transition only)", got)
+	}
+	if got := len(auditRows(t, pool, tenant, claimID)); got != 1 {
+		t.Fatalf("second doc: %d audit rows, want 1 (first transition only)", got)
+	}
+}
+
+// TestClaimBridge_InsufficientTransition_PreValidationIllegal (review F2):
+// the producer is authorized only for the VALIDATING -> EXCEPTION edge. A
+// claim still pre-validation (RECEIVED) rejects the transition with
+// CodeIllegalTransition and nothing is written. Until the intake
+// progression slice (D1) advances claims into VALIDATING, this documents
+// the deliberate fail-closed disposition: the processor acks the delivery
+// (no poison loop) and the claim stays untouched.
+func TestClaimBridge_InsufficientTransition_PreValidationIllegal(t *testing.T) {
+	pool := pgBridgePool(t)
+	id := bridgeIDs()
+	tenant := claims.TenantID("t-pg3-" + id)
+	claimID := claims.ClaimID("c-pg3-" + id)
+	seedClaimAt(t, pool, tenant, claimID, claims.ClaimStatusReceived, "seed-evt-"+id)
+
+	bridge := workeradapter.NewClaimBridge(pool)
+	err := bridge.RecordInsufficientEvidenceTransition(context.Background(), string(tenant), string(claimID), 1, "insufficient-evt-"+id)
+	var terr *claims.TransitionError
+	if !errors.As(err, &terr) || terr.Code != claims.CodeIllegalTransition {
+		t.Fatalf("pre-validation: err=%v, want *claims.TransitionError CodeIllegalTransition (the processor's errors.As predicate)", err)
+	}
+	if terr.From != string(claims.ClaimStatusReceived) || terr.To != string(claims.ClaimStatusException) {
+		t.Fatalf("pre-validation: transition = %s->%s, want RECEIVED->EXCEPTION", terr.From, terr.To)
+	}
+	if status, version := claimRow(t, pool, tenant, claimID); status != claims.ClaimStatusReceived || version != 1 {
+		t.Fatalf("pre-validation: claim=%s v%d, want unchanged RECEIVED v1", status, version)
+	}
+	if got := len(eventRows(t, pool, tenant, claimID)); got != 1 {
+		t.Fatalf("pre-validation: %d event rows, want 1 (seed only)", got)
+	}
+	if got := len(auditRows(t, pool, tenant, claimID)); got != 0 {
+		t.Fatalf("pre-validation: %d audit rows, want 0 (nothing written)", got)
 	}
 }

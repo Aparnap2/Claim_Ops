@@ -147,10 +147,10 @@ func (c *restartClaims) LoadClaim(_ context.Context, tenant, claimID string) (wo
 // RecordInsufficientEvidenceTransition implements worker.ClaimLoader. It
 // records the tenant scope of each call so the test can prove the durable
 // boundary is never consulted under the swapped tenant; it performs no
-// durable mutation and reports no replay.
-func (c *restartClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) (bool, error) {
+// durable mutation and reports a first-time write.
+func (c *restartClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) error {
 	c.recTenants = append(c.recTenants, tenant)
-	return false, nil
+	return nil
 }
 
 func TestRestartConsistentSwap_DurableBoundaryRejectsNoFalseAck(t *testing.T) {

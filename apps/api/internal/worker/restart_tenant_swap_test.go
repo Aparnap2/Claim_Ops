@@ -139,8 +139,8 @@ func (c *restartClaims) LoadClaim(_ context.Context, tenant, claimID string) (Cl
 	}
 	return v, nil
 }
-func (c *restartClaims) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) (bool, error) {
-	return false, nil
+func (c *restartClaims) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) error {
+	return nil
 }
 
 // restartPolicy is a static upstream stub that records the tenant it was

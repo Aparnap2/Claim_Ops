@@ -124,12 +124,23 @@ type ClaimView struct {
 //
 // RecordInsufficientEvidenceTransition durably persists the initial
 // insufficiency exception transition (ADR 010: VALIDATING -> EXCEPTION)
-// inside a single tenant-scoped transaction and reports whether the
-// event was replayed. Implementations must fail closed; a returned error
-// means no durable state change is presumed.
+// inside a single tenant-scoped transaction. Implementations must fail
+// closed; a returned error means no durable state change is presumed.
+// Recognized dispositions (matched with errors.Is / errors.As):
+//   - nil: the transition is durably recorded — either freshly stamped
+//     now, or already recorded with the claim still at EXCEPTION
+//     (idempotent replay no-op). The caller proceeds to envelope/launch
+//     convergence.
+//   - ErrTransitionSuperseded: the event was recorded but the claim has
+//     advanced past EXCEPTION — the caller acks without re-authorizing.
+//   - *claims.TransitionError with CodeIllegalTransition: the claim sits
+//     outside the producer's authorized edge (already at EXCEPTION from
+//     a prior insufficiency, or still pre-validation) — the caller acks
+//     without re-authorizing; the state is deterministic and retry
+//     cannot heal it.
 type ClaimLoader interface {
 	LoadClaim(ctx context.Context, tenant, claimID string) (ClaimView, error)
-	RecordInsufficientEvidenceTransition(ctx context.Context, tenant, claimID string, expectedVersion int, eventID string) (replay bool, err error)
+	RecordInsufficientEvidenceTransition(ctx context.Context, tenant, claimID string, expectedVersion int, eventID string) error
 }
 
 // PolicyData is the worker-local policy read model.
@@ -979,10 +990,18 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 		reasons := strings.Join(suffRes.ReasonCodes, ",")
 		missing := strings.Join(suffRes.Missing, ",")
 		sufficiencyEventID = fmt.Sprintf("sufficiency-insufficient:%s:%s:%s:%s|%s", tenant, claimID, docID, reasons, missing)
-		// replay==true means the durable transition already exists for this
-		// event identity and the claim is still at EXCEPTION: the envelope
-		// build + EnsureLaunched below are idempotent (S6), so fall through.
-		_, err := p.Claims.RecordInsufficientEvidenceTransition(ctx, tenant, claimID, view.ClaimVersion, sufficiencyEventID)
+		// Identity-separator invariant (review F4, documented not hashed):
+		// the components are collision-free by construction — tenant,
+		// claim, and document IDs are system-minted without ":" or "|",
+		// and ReasonCodes/Missing are closed-vocabulary codes joined with
+		// "," (sorted by sufficiency.Evaluate). If any component source
+		// ever becomes user-controlled, hash the canonical form instead
+		// of widening this format.
+		// A nil return covers both a freshly stamped transition and an
+		// idempotent replay (event already recorded, claim still at
+		// EXCEPTION): the envelope build + EnsureLaunched below are
+		// idempotent (S6), so fall through either way.
+		err := p.Claims.RecordInsufficientEvidenceTransition(ctx, tenant, claimID, view.ClaimVersion, sufficiencyEventID)
 		if err != nil {
 			// ADR 010: a redelivery whose event was already recorded but
 			// whose claim has since advanced past EXCEPTION must not
@@ -990,6 +1009,29 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 			// no side effects (the original delivery owns the envelope; S6
 			// owns launch convergence).
 			if errors.Is(err, ErrTransitionSuperseded) {
+				return Outcome{
+					DocumentID: docID,
+					Status:     documents.StProcessed,
+					Extraction: documents.ExtractionNotAttempted,
+					Kind:       OutcomeSuccess,
+					Attempts:   1,
+				}, effective
+			}
+			// ADR 010 (review F1/F2): a claim outside the producer's
+			// authorized edge rejects the transition with
+			// CodeIllegalTransition — already at EXCEPTION from a prior
+			// insufficiency (a second insufficient document on the same
+			// claim), or still pre-validation (RECEIVED/REGISTERED/
+			// DOCUMENTS_RECEIVED; deliberate fail-closed until the intake
+			// progression slice advances claims into VALIDATING). The
+			// state is deterministic: redelivery can never heal it, so
+			// classifying it TRANSIENT would poison-loop the delivery to
+			// the DLQ. Mirror the superseded precedent: ack with no
+			// envelope, no FAILED row, no launch — the claim-level state
+			// already owns the outcome (EXCEPTION routes to HITL; the
+			// pre-validation claim stays untouched).
+			var terr *claims.TransitionError
+			if errors.As(err, &terr) && terr.Code == claims.CodeIllegalTransition {
 				return Outcome{
 					DocumentID: docID,
 					Status:     documents.StProcessed,
@@ -1015,6 +1057,16 @@ func (p *Processor) runNewPipeline(ctx context.Context, tenant, claimID, blobKey
 		}
 	}
 
+	// Known limitation (review F3, documented not reclassified): if Map
+	// fails here the durable EXCEPTION transition above is already
+	// committed — the claim sits at EXCEPTION with no envelope built for
+	// this delivery. The claim-level state still routes to HITL; the
+	// FAILED outcome is terminal (acked), so a same-process redelivery
+	// short-circuits as DUPLICATE and only a fresh process re-enters the
+	// pipeline, where the producer replays as an idempotent no-op and the
+	// envelope build is retried (S6 convergence). Reclassifying a Map
+	// failure as TRANSIENT after a durable transition is deferred until
+	// the outbox slice gives the exception event a downstream signal.
 	in, unresolved, err := verifywrap.Map(claim, verifywrap.Externals{
 		PolicyNumber:     policy.Number,
 		PolicyPatient:    policy.Patient,

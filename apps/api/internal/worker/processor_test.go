@@ -114,15 +114,12 @@ func (f *fakeClaimLoader) LoadClaim(_ context.Context, _, _ string) (ClaimView, 
 	return f.view, f.err
 }
 
-func (f *fakeClaimLoader) RecordInsufficientEvidenceTransition(_ context.Context, tenant, claimID string, expectedVersion int, eventID string) (bool, error) {
+func (f *fakeClaimLoader) RecordInsufficientEvidenceTransition(_ context.Context, tenant, claimID string, expectedVersion int, eventID string) error {
 	f.recTenants = append(f.recTenants, tenant)
 	f.recClaimIDs = append(f.recClaimIDs, claimID)
 	f.recVersions = append(f.recVersions, expectedVersion)
 	f.recEventIDs = append(f.recEventIDs, eventID)
-	if f.recErr != nil {
-		return false, f.recErr
-	}
-	return false, nil
+	return f.recErr
 }
 
 // fakePolicyChecker returns canned PolicyData.

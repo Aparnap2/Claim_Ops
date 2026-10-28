@@ -117,9 +117,9 @@ func (c *tswapClaims) LoadClaim(context.Context, string, string) (worker.ClaimVi
 // RecordInsufficientEvidenceTransition implements worker.ClaimLoader. A call
 // here would mean the Tier-1 path reached the new-pipeline durable boundary,
 // which it must not; tests assert the recording stays empty.
-func (c *tswapClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) (bool, error) {
+func (c *tswapClaims) RecordInsufficientEvidenceTransition(_ context.Context, tenant, _ string, _ int, _ string) error {
 	c.recTenants = append(c.recTenants, tenant)
-	return false, nil
+	return nil
 }
 
 type tswapPolicy struct{}

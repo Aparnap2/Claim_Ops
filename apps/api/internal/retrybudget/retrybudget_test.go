@@ -126,11 +126,11 @@ func (l *agreeLoader) LoadClaim(_ context.Context, _, _ string) (worker.ClaimVie
 }
 
 // RecordInsufficientEvidenceTransition implements worker.ClaimLoader: it
-// records the call and reports a first-time write with no replay and no
-// durable mutation (the app/retrybudget doubles never mutate durable state).
-func (l *agreeLoader) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) (bool, error) {
+// records the call and reports a first-time durable write with no replay
+// (the app/retrybudget doubles never mutate durable state).
+func (l *agreeLoader) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) error {
 	l.recCalls++
-	return false, nil
+	return nil
 }
 
 // agreeChecker returns an active policy matching the canned content.
