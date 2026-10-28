@@ -108,6 +108,12 @@ type fakeClaimLoader struct {
 	recVersions []int
 	recEventIDs []string
 	recErr      error
+
+	// D1 intake advancer recording (APA-91).
+	advTenants []string
+	advClaims  []string
+	advDocs    []string
+	advErr     error
 }
 
 func (f *fakeClaimLoader) LoadClaim(_ context.Context, _, _ string) (ClaimView, error) {
@@ -120,6 +126,13 @@ func (f *fakeClaimLoader) RecordInsufficientEvidenceTransition(_ context.Context
 	f.recVersions = append(f.recVersions, expectedVersion)
 	f.recEventIDs = append(f.recEventIDs, eventID)
 	return f.recErr
+}
+
+func (f *fakeClaimLoader) AdvanceToIntakeValidating(_ context.Context, tenant, claimID, docID string) error {
+	f.advTenants = append(f.advTenants, tenant)
+	f.advClaims = append(f.advClaims, claimID)
+	f.advDocs = append(f.advDocs, docID)
+	return f.advErr
 }
 
 // fakePolicyChecker returns canned PolicyData.

@@ -138,9 +138,29 @@ type ClaimView struct {
 //     a prior insufficiency, or still pre-validation) — the caller acks
 //     without re-authorizing; the state is deterministic and retry
 //     cannot heal it.
+//
+// AdvanceToIntakeValidating drives the deterministic intake chain
+// (RECEIVED -> REGISTERED -> DOCUMENTS_RECEIVED -> VALIDATING) so the
+// producer's authorized edge (VALIDATING -> EXCEPTION) is reachable in
+// production (APA-91 D1). It must be called before any pipeline work:
+// running validation on a pre-VALIDATING claim could produce an
+// insufficient result the producer legally cannot record, silently
+// losing the outcome. Implementations must fail closed; a returned
+// error means no durable state change is presumed (per step).
+// Recognized dispositions (matched with errors.Is / errors.As):
+//   - nil: the claim is at or past VALIDATING (progression complete or
+//     never needed), or at a non-intake status (EXCEPTION, EXPIRED,
+//     human-review chain) the intake chain must never touch.
+//   - *claims.TransitionError with CodeStaleVersion: a concurrent
+//     writer advanced the claim between load and transition — TRANSIENT
+//     by the locked Phase-1 decision; redelivery reloads fresh state
+//     and converges.
+//   - any other error: store fault or deterministic invariant break,
+//     classified by the caller (retryableStoreErr / TransitionError).
 type ClaimLoader interface {
 	LoadClaim(ctx context.Context, tenant, claimID string) (ClaimView, error)
 	RecordInsufficientEvidenceTransition(ctx context.Context, tenant, claimID string, expectedVersion int, eventID string) error
+	AdvanceToIntakeValidating(ctx context.Context, tenant, claimID, docID string) error
 }
 
 // PolicyData is the worker-local policy read model.
@@ -495,6 +515,63 @@ func (p *Processor) remember(docID, tenant string, out Outcome) {
 // classified doc-type string ("" when fetch never succeeded, for logging).
 func (p *Processor) process(ctx context.Context, ev documentIngestedEvent) (Outcome, string) {
 	if p.Parser != nil {
+		// D1 intake progression (APA-91): advance the claim through the
+		// deterministic intake chain (RECEIVED -> REGISTERED ->
+		// DOCUMENTS_RECEIVED -> VALIDATING) before any pipeline work, so
+		// the producer's authorized edge (VALIDATING -> EXCEPTION) is
+		// reachable in production. Scoped to the new-pipeline path only:
+		// the Tier-1 legacy loop must not mutate durable claim state
+		// (locked invariant, app tenant-swap tests). Fail closed: a
+		// progression failure must block the pipeline — running validation
+		// anyway could produce an insufficient result the producer legally
+		// cannot record (the claim would sit outside its authorized edge),
+		// silently losing the outcome. No FAILED document row is persisted
+		// here: the document is not at fault, the claim state is; the
+		// outcome + observability carry the signal (mirrors the producer's
+		// ack-without-FAILED-row precedent).
+		if err := p.Claims.AdvanceToIntakeValidating(ctx, ev.Tenant, ev.Claim, ev.DocumentID); err != nil {
+			if out, stop := abortedByCtx(ctx, ev.DocumentID, 0, err); stop {
+				return out, ""
+			}
+			var terr *claims.TransitionError
+			if errors.As(err, &terr) {
+				// STALE_VERSION is TRANSIENT by the locked Phase-1
+				// decision: a concurrent writer advanced the claim;
+				// redelivery reloads fresh state and converges. Every
+				// other TransitionError code (TenantMismatch,
+				// IllegalTransition, InvalidEventID, UnknownStatus,
+				// MalformedClaim) is a deterministic state retry cannot
+				// heal — TERMINAL, mirroring the F1/F2
+				// ack-without-retry precedent.
+				kind := OutcomeTerminal
+				if terr.Code == claims.CodeStaleVersion {
+					kind = OutcomeTransient
+				}
+				return Outcome{
+					DocumentID: ev.DocumentID,
+					Status:     documents.StFailed,
+					Extraction: documents.ExtractionNotAttempted,
+					Kind:       kind,
+					Err:        fmt.Errorf("worker: intake progression: %w", err),
+				}, ""
+			}
+			if !retryableStoreErr(err) {
+				return Outcome{
+					DocumentID: ev.DocumentID,
+					Status:     documents.StFailed,
+					Extraction: documents.ExtractionNotAttempted,
+					Kind:       OutcomeTerminal,
+					Err:        fmt.Errorf("worker: intake progression: %w", err),
+				}, ""
+			}
+			return Outcome{
+				DocumentID: ev.DocumentID,
+				Status:     documents.StFailed,
+				Extraction: documents.ExtractionNotAttempted,
+				Kind:       OutcomeTransient,
+				Err:        fmt.Errorf("worker: intake progression: %w", err),
+			}, ""
+		}
 		return p.runNewPipeline(ctx, ev.Tenant, ev.Claim, ev.SHA256, ev.DocumentID, "")
 	}
 	var lastErr error
