@@ -147,6 +147,9 @@ type errLoader struct{ err error }
 func (l *errLoader) LoadClaim(_ context.Context, _, _ string) (ClaimView, error) {
 	return ClaimView{}, l.err
 }
+func (l *errLoader) RecordInsufficientEvidenceTransition(_ context.Context, _, _ string, _ int, _ string) error {
+	return l.err
+}
 
 type errChecker struct{ err error }
 
