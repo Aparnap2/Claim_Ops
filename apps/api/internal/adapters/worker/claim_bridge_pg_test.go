@@ -11,6 +11,7 @@ import (
 
 	workeradapter "claimops-api/internal/adapters/worker"
 	"claimops-api/internal/claims"
+	"claimops-api/internal/ports"
 	"claimops-api/internal/repository/postgres"
 	coreworker "claimops-api/internal/worker"
 	"claimops-api/internal/workflow"
@@ -540,6 +541,69 @@ func TestClaimBridge_IntakeProgression_NonIntakeNoOp(t *testing.T) {
 		if got := len(auditRows(t, pool, tenant, claimID)); got != 0 {
 			t.Fatalf("%s: %d audit rows, want 0 (nothing written)", status, got)
 		}
+	}
+}
+
+// TestClaimBridge_InsufficientTransition_OutboxRow (APA-91 D4): the
+// insufficient-evidence transition commits a claim.exception outbox row in
+// the SAME transaction as the claim CAS + event row + audit row, and an
+// idempotent replay writes no duplicate.
+func TestClaimBridge_InsufficientTransition_OutboxRow(t *testing.T) {
+	pool := pgBridgePool(t)
+	id := bridgeIDs()
+	tenant := claims.TenantID("t-outbox-" + id)
+	claimID := claims.ClaimID("c-outbox-" + id)
+	seedValidatingClaim(t, pool, tenant, claimID, "seed-evt-"+id)
+
+	bridge := workeradapter.NewClaimBridge(pool)
+	ctx := context.Background()
+	eventID := "insufficient-evt-" + id
+
+	if err := bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 1, eventID); err != nil {
+		t.Fatalf("apply: unexpected error: %v", err)
+	}
+
+	// Exactly one outbox row, with the reason-scoped event identity and
+	// the claim.exception topic.
+	ctx = postgres.WithTenant(ctx, tenant)
+	tx, err := postgres.BeginTenantTx(ctx, pool)
+	if err != nil {
+		t.Fatalf("BeginTenantTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var eventType, aggregateType, aggregateID string
+	var payload []byte
+	err = tx.QueryRow(ctx, `SELECT event_type, aggregate_type, aggregate_id, payload FROM outbox_events WHERE event_id = $1`, eventID).
+		Scan(&eventType, &aggregateType, &aggregateID, &payload)
+	if err != nil {
+		t.Fatalf("outbox row: %v", err)
+	}
+	if eventType != ports.TopicClaimException || aggregateType != "claim" || aggregateID != string(claimID) {
+		t.Fatalf("outbox row: type=%s aggregate=%s/%s, want claim.exception/claim/%s", eventType, aggregateType, aggregateID, claimID)
+	}
+	var p map[string]string
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("payload decode: %v", err)
+	}
+	if p["schema_version"] != ports.ClaimExceptionSchemaVersion ||
+		p["event_id"] != eventID ||
+		p["tenant"] != string(tenant) ||
+		p["claim"] != string(claimID) ||
+		p["from_status"] != string(claims.ClaimStatusValidating) ||
+		p["to_status"] != string(claims.ClaimStatusException) {
+		t.Fatalf("payload = %v, want ID-fields-only claim-exception.v1 payload", p)
+	}
+
+	// Replay: no duplicate outbox row.
+	if err := bridge.RecordInsufficientEvidenceTransition(context.Background(), string(tenant), string(claimID), 2, eventID); err != nil {
+		t.Fatalf("replay: unexpected error: %v", err)
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE event_id = $1`, eventID).Scan(&count); err != nil {
+		t.Fatalf("outbox count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("replay: %d outbox rows, want 1 (no duplicate)", count)
 	}
 }
 
