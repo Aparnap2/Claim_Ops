@@ -11,6 +11,14 @@ Process exit 0 proves nothing on its own — a package whose entire suite skippe
 still exits 0. This check reads the verbose per-test output and requires each
 required package to have run at least `MIN_PASSES` tests, so a green result
 means DB-backed tests executed rather than merely that the command finished.
+
+On top of the per-package minimum, REQUIRED_NAMED_TESTS must appear as
+`--- PASS` by name. The sentinel (`TestIntegrationSentinelPostgresRoundTrip`)
+is the strict-mode canary: armed by TEST_POSTGRES_STRICT=1 it performs a real
+connect+DDL+insert+select round-trip and FAILS (never skips) when the DSN
+points at a reachable-but-unusable Postgres. Requiring it by name closes the
+last gap — a package can satisfy MIN_PASSES with unrelated tests while the
+sentinel itself skipped (e.g. the gate was run without the strict signal).
 """
 
 from __future__ import annotations
@@ -46,8 +54,30 @@ REQUIRED_PACKAGES: tuple[str, ...] = (
 # Postgres-backed, so it reports 0 passes when the service is absent.
 MIN_PASSES = 1
 
+# Named tests that must appear as `--- PASS` on top of MIN_PASSES. The
+# sentinel is armed by TEST_POSTGRES_STRICT=1 (strict `make integration` and
+# integration.yml set it); if the gate is run without that signal the
+# sentinel self-skips and this requirement fails closed with a hint.
+REQUIRED_NAMED_TESTS: dict[str, tuple[str, ...]] = {
+    "./internal/repository/postgres": ("TestIntegrationSentinelPostgresRoundTrip",),
+}
+
 PASS_RE = re.compile(r"^--- PASS: (\S+)", re.MULTILINE)
 SKIP_RE = re.compile(r"^--- SKIP: (\S+)", re.MULTILINE)
+
+
+def passed_required(passed: list[str], required: tuple[str, ...]) -> set[str]:
+    """Return the required tests observed as passing.
+
+    A subtest line looks like `TestX/case`; the top-level `go test` line is
+    also emitted on its own, so prefix matching is safe and lets a package
+    that only reports subtests still be recognised.
+    """
+    observed: set[str] = set()
+    for name in required:
+        if any(candidate == name or candidate.startswith(name + "/") for candidate in passed):
+            observed.add(name)
+    return observed
 
 
 class PackageResult:
@@ -119,6 +149,23 @@ def evaluate(results: dict[str, PackageResult]) -> list[str]:
                 f"{package}: executed no tests "
                 f"(pass={len(result.passed)} skip={len(result.skipped)})"
             )
+
+    # Named requirements are checked only for packages that already look
+    # healthy — a package that failed or under-ran is already reported above
+    # and its sentinel absence would only duplicate the signal.
+    for package, required in REQUIRED_NAMED_TESTS.items():
+        result = results.get(package)
+        if result is None or result.failed_tests or result.failed_to_run:
+            continue
+        observed = passed_required(result.passed, required)
+        for name in required:
+            if name not in observed:
+                problems.append(
+                    f"{package}: required test {name} did not pass "
+                    f"(pass={len(result.passed)} skip={len(result.skipped)}) — "
+                    "the sentinel requires TEST_POSTGRES_STRICT=1 (set by strict "
+                    "`make integration` and integration.yml) and a usable Postgres"
+                )
     return problems
 
 
@@ -162,7 +209,12 @@ def main() -> int:
         )
         return 1
 
-    print(f"PASS: all {len(REQUIRED_PACKAGES)} Postgres-gated packages executed tests.")
+    total_passed = sum(len(result.passed) for result in results.values())
+    total_skipped = sum(len(result.skipped) for result in results.values())
+    print(
+        f"PASS: all {len(REQUIRED_PACKAGES)} Postgres-gated packages executed tests "
+        f"(PG-gated tests executed: {total_passed} passed, {total_skipped} skipped)."
+    )
     return 0
 
 

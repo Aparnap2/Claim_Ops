@@ -13,6 +13,16 @@ import (
 // (PRD §10 Stage 2, §34 Event Model: `document.ingested`).
 const TopicDocumentIngested = "document.ingested"
 
+// TopicClaimSubmitted is emitted when a claim is durably accepted at the
+// API edge (issue #61): the claim row + initial event + this outbox row
+// commit in one transaction. Consumers treat it as the authoritative
+// "claim exists, start document intake" signal.
+const TopicClaimSubmitted = "claim.submitted"
+
+// ClaimSubmittedSchemaVersion is the versioned-contract marker for the
+// ClaimSubmitted event payload (convention: <event-name>.vN).
+const ClaimSubmittedSchemaVersion = "claim-submitted.v1"
+
 // DocumentIngestedSchemaVersion is the versioned-contract marker for the
 // DocumentIngested event payload. Convention: every event payload carries
 // a `schema_version` string of the form `<event-name>.vN`

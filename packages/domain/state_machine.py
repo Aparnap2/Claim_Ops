@@ -1,4 +1,12 @@
-"""Deterministic claim-case state machine. Pure functions, no I/O, no LLM."""
+"""Deterministic claim-case state machine. Pure functions, no I/O, no LLM.
+
+Superseded for lifecycle semantics by the authoritative Go edge
+(apps/api/internal/claims) under ADR-001 and ADR-011. This module is a
+demoted specification artifact, NOT a mirror of that graph: it defines
+13 statuses and no EXPIRED, while the Go edge defines 14. Where the two
+differ, the Go edge and ADR-011 are correct. See
+docs/adr/011-claim-expiry-contract.md and docs/KNOWN_LIMITATIONS.md (KL-18).
+"""
 
 from __future__ import annotations
 

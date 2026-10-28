@@ -1,0 +1,122 @@
+# Release gate — machine witness for docs/ci/RELEASE_CONTRACT.md.
+#
+# Dispatch-only: this workflow NEVER runs on push or PR. It re-reads existing
+# CI evidence for a target SHA via the GitHub API and emits one machine-
+# readable JSON decision (decision.json + job summary).
+#
+# It is fail-closed: a missing run, a non-success conclusion, an unreadable
+# qualification log, a missing/stale posture record, a malformed attestation,
+# or any API failure yields verdict BLOCKED (exit 2, red run).
+#
+# It never mints a release: `release_decision` is null in every artifact and
+# the decisive release action is a human merge/tag that records this gate
+# run id. Gate green is NECESSARY-NOT-SUFFICIENT for a release.
+#
+# Permissions (least privilege, per RELEASE_CONTRACT.md §6):
+#   actions: read   — read workflow runs + jobs for the target SHA (M1-M8)
+#   issues: read    — read the `Security posture runs` tracking issue comments (M9)
+#   contents: read  — resolve the target SHA via the commits API + checkout the script
+
+name: release-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Commit SHA to gate (short or full)"
+        required: true
+        type: string
+      release_label:
+        description: "Optional human label for the candidate release"
+        required: false
+        type: string
+        default: ""
+      posture_max_age_hours:
+        description: "Posture freshness bound in hours (default 168 = 1 week)"
+        required: false
+        type: string
+        default: "168"
+      attestation_statement:
+        description: "H1-H4 attestation statement (all three fields required together)"
+        required: false
+        type: string
+        default: ""
+      attested_by:
+        description: "Human attester name (all three fields required together)"
+        required: false
+        type: string
+        default: ""
+      attested_date:
+        description: "Attestation date as ISO YYYY-MM-DD (all three fields required together)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  actions: read
+  issues: read
+  contents: read
+
+concurrency:
+  # One gate evaluation per target SHA; a re-dispatch queues instead of
+  # cancelling so both decision artifacts survive for audit.
+  group: release-gate-${{ inputs.target_sha }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout gate script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # Inputs reach the script only through environment variables — never
+      # via ${{ }} interpolation into the shell command (injection safety).
+      - name: Run release gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          RELEASE_LABEL: ${{ inputs.release_label }}
+          POSTURE_MAX_AGE_HOURS: ${{ inputs.posture_max_age_hours }}
+          ATTESTATION_STATEMENT: ${{ inputs.attestation_statement }}
+          ATTESTED_BY: ${{ inputs.attested_by }}
+          ATTESTED_DATE: ${{ inputs.attested_date }}
+        run: |
+          python scripts/ci/release_gate.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --target-sha "$TARGET_SHA" \
+            --release-label "$RELEASE_LABEL" \
+            --posture-max-age-hours "$POSTURE_MAX_AGE_HOURS" \
+            --attestation-statement "$ATTESTATION_STATEMENT" \
+            --attested-by "$ATTESTED_BY" \
+            --attested-date "$ATTESTED_DATE" \
+            --gate-run-id "$GITHUB_RUN_ID" \
+            --gate-actor "$GITHUB_ACTOR" \
+            --gate-sha "$GITHUB_SHA" \
+            --out decision.json
+
+      - name: Append decision to job summary
+        if: always()
+        run: |
+          if [ -f decision.json ]; then
+            cat decision.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "release-gate: no decision artifact was produced" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload decision artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-gate-decision
+          path: decision.json
+          if-no-files-found: warn

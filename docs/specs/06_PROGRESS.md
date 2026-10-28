@@ -1,7 +1,12 @@
 # ClaimOps — Living Progress Tracker
 
-Last updated: 2026-10-08
-Current base: main@dffa160 (APA-64)
+Last updated: 2026-10-21
+Current base: main@c971727
+
+`Current base` records the commit whose content this file reflects. A
+documentation-only merge advances `main` afterwards, so the pointer trails by
+its own merge — that is expected, not drift. Historical baseline records
+elsewhere (`docs/KNOWN_LIMITATIONS.md`, `docs/adr/`) are left as written.
 
 ## Completed
 
@@ -160,6 +165,7 @@ APA-47 to APA-64.
 - [x] Qualification runs against an ephemeral, confirmed-empty PostgreSQL rather than the accumulating shared volume, and fail closed if the app role is superuser or bypasses RLS (APA-53)
 - [x] Qualification run artefacts live in the issue tracker, not in the repo. The repo holds the harness; the ledger holds the measurement.
 
+- [x] The claim expiry contract is ratified: `EXPIRED` is terminal-for-round, reachable only as `HITL → EXPIRED` or `ACTION_PENDING → EXPIRED` (HITL-wait timeout), and timeout expiry can never approve or decide a claim; re-drive requires an explicit new decision/round (ADR-011, S5/APA-26). No lifecycle behaviour changed — the ADR records what the code already did
 ## Update rule
 Every merged issue must update this file when it materially changes architecture, milestone status, or an explicit decision.
 

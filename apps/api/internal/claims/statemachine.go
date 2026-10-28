@@ -1,10 +1,14 @@
 // Package claims implements the deterministic claim lifecycle core.
 //
-// This file is the Go port of the Python specification in
-// packages/domain/state_machine.py, bound by the behavioral contract in
-// fixtures/golden_cases.json and ADR-001 (docs/adr/001-go-first-edge.md):
-// the Go edge is authoritative for claim lifecycle, idempotency, and
-// concurrency control.
+// This file is the authoritative Go implementation of the claim lifecycle,
+// under ADR-001 (docs/adr/001-go-first-edge.md) and ADR-011
+// (docs/adr/011-claim-expiry-contract.md): the Go edge is authoritative for
+// claim lifecycle, idempotency, and concurrency control. The cross-language
+// behavioral contract is fixtures/golden_cases.json.
+//
+// packages/domain/state_machine.py is a demoted specification artifact under
+// ADR-001. It is NOT a mirror of this graph: it does not define EXPIRED (see
+// ADR-011). Where the two differ, this file and ADR-011 are correct.
 //
 // Design rules: pure value semantics (Transition copies in, copies out and
 // never mutates its input), STDLIB ONLY (no web-framework imports in domain

@@ -1,4 +1,5 @@
-# Static security checks only — no services, no network-dependent scanners.
+# Security checks — no services required; CVE scanners are network-dependent
+# by design (advisory databases).
 #
 # - GitGuardian already runs as a repo check (secret detection on push/PR,
 #   including history). It is NOT duplicated here.
@@ -6,9 +7,17 @@
 #   meaningful offline and would duplicate GitGuardian. GitHub-side
 #   GitGuardian remains the secret-history backstop.
 # - This workflow covers: dependency-integrity audit (go mod verify +
-#   uv pip check) and a repo-tree secret-pattern guard that fails on hits.
-# - No CVE database is consulted here (integrity, not vulnerability
-#   scanning). Tracked follow-up: #39 (govulncheck + pip-audit).
+#   uv pip check), a repo-tree secret-pattern guard that fails on hits,
+#   and dependency CVE scanning (#39): govulncheck (Go, reachable
+#   vulnerabilities) and pip-audit (Python, PyPI advisory DB over the
+#   locked dependency set). The CVE scanners are separate additive jobs;
+#   they report findings by failing the job and never auto-fix or
+#   upgrade dependencies.
+# - security-delta (PRs only) fails on advisories INTRODUCED by the PR:
+#   pip-audit over the base and head locked sets, diffed by
+#   scripts/ci/check_pip_audit_delta.py. Pre-existing findings stay the
+#   pip-audit job's business; indeterminate runs exit 2 (re-run, do not
+#   merge blindly).
 
 name: security
 
@@ -16,6 +25,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Reusable: security-posture.yml calls this suite on a weekly schedule
+  # (and on demand) so main-branch drift no PR touches is still caught.
+  workflow_call:
 
 # Least privilege: checkout + cache only.
 permissions:
@@ -26,14 +38,68 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  govulncheck:
+    # #39: dependency CVE scanning for Go. Fails on any reachable
+    # vulnerability reported by the Go vulnerability database. The finding
+    # IS the report; no suppression, no auto-remediation, no dependency
+    # change in this gate — remediation is a separate, reviewed commit.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Matches the `go 1.27` directive in apps/api/go.mod.
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: govulncheck (Go vulnerability database)
+        working-directory: apps/api
+        # Pinned: v1.1.4 crashes on the go1.27 toolchain (old x/tools SSA
+        # builder); v1.9.0 is the first version verified against this repo.
+        # Exits non-zero on reachable findings — that is the report.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  pip-audit:
+    # #39: dependency CVE scanning for Python. Audits the locked runtime
+    # and dev dependencies (uv.lock is the source of truth) against the
+    # PyPI advisory database. Findings fail the job; no upgrades here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          # Matches the requires-python floor (>=3.12) in pyproject.toml.
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      - name: Export locked requirements
+        # --frozen pins to uv.lock (reproducible per lockfile);
+        # --no-emit-project drops the local package itself (no advisory
+        # entry exists for it); --no-hashes keeps a file pip-audit accepts.
+        run: uv export --frozen --no-emit-project --no-hashes -o /tmp/locked-requirements.txt
+
+      - name: pip-audit (PyPI advisory database)
+        # Fails on any known advisory affecting a locked dependency.
+        # No --ignore-vuln, no auto-upgrade: remediation is a separate,
+        # reviewed commit.
+        run: uvx pip-audit -r /tmp/locked-requirements.txt
+
   static:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # Matches the `go 1.27` directive in apps/api/go.mod.
           go-version: '1.27'
@@ -47,13 +113,13 @@ jobs:
         run: go mod verify
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           # Matches the requires-python floor (>=3.12) in pyproject.toml.
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Sync Python env
         # `--group dev` mirrors `make setup` (dev group holds the tooling).
@@ -64,21 +130,50 @@ jobs:
         run: uv pip check
 
       - name: Secret-pattern guard (fails on hits)
-        # Scans the checked-out tree for common committed-secret shapes.
-        # Excludes .git/ (history is GitGuardian's job) and uv.lock
-        # (dependency hashes only). NOTE on self-match: the patterns below
-        # are regexes with bracket suffixes (e.g. 'AKIA[0-9A-Z]{16}'), so the
-        # literal text in this file does NOT match them.
+        # Shared with `make pre-commit` so hooks and CI run the identical
+        # check (scripts/ci/check_secret_patterns.sh).
+        run: scripts/ci/check_secret_patterns.sh
+
+  security-delta:
+    # Fails only on NEW advisories introduced by this PR's dependency
+    # changes (head-only vs the merge base). Pre-existing findings are the
+    # pip-audit job's business; this gate keeps dependency-bump PRs from
+    # adding new exposure without blocking the repo on old debt.
+    # Indeterminate infrastructure failures exit 2 and fail the job with an
+    # explicit message: re-run, do not merge blindly.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the merge-base tree can be exported for the
+          # base requirements file.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          # Matches the requires-python floor (>=3.12) in pyproject.toml.
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      - name: Export base locked requirements
+        # Same export flags as the pip-audit job (--frozen pins to uv.lock,
+        # --no-emit-project drops the local package, --no-hashes keeps a
+        # file pip-audit accepts) so the two exports are comparable.
         run: |
-          if grep -rEn --exclude-dir=.git --exclude-dir=.venv \
-            --exclude-dir=.mypy_cache --exclude-dir=.pytest_cache --exclude-dir=.ruff_cache \
-            --exclude=uv.lock \
-            -e 'AKIA[0-9A-Z]{16}' \
-            -e 'ghp_[A-Za-z0-9]{36,}' \
-            -e 'gho_[A-Za-z0-9]{36,}' \
-            -e '-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----' \
-            . >/dev/null; then
-            echo "::error::secret-like pattern found — remove before merge (no real secrets or PII/PHI in repo, ever)"
-            exit 1
-          fi
-          echo "secret guard: clean"
+          mkdir -p /tmp/base-project
+          git show ${{ github.event.pull_request.base.sha }}:pyproject.toml > /tmp/base-project/pyproject.toml
+          git show ${{ github.event.pull_request.base.sha }}:uv.lock > /tmp/base-project/uv.lock
+          uv export --frozen --no-emit-project --no-hashes --project /tmp/base-project -o /tmp/base-requirements.txt
+
+      - name: Export head locked requirements
+        run: uv export --frozen --no-emit-project --no-hashes -o /tmp/head-requirements.txt
+
+      - name: pip-audit delta (fail on head-only advisories)
+        # Both audits run in the same job minutes apart, so uvx resolves
+        # the same pip-audit version for both sides of the diff.
+        run: python3 scripts/ci/check_pip_audit_delta.py --base /tmp/base-requirements.txt --head /tmp/head-requirements.txt

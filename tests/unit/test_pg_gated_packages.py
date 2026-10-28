@@ -11,9 +11,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = (
-    Path(__file__).resolve().parents[2] / "scripts" / "ci" / "check_pg_gated_packages.py"
-)
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "check_pg_gated_packages.py"
 SPEC = importlib.util.spec_from_file_location("pg_gated_packages", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 GATE = importlib.util.module_from_spec(SPEC)
@@ -40,10 +38,17 @@ def test_required_packages_cover_every_postgres_gated_package() -> None:
 
 
 def all_results(**overrides: object) -> dict[str, object]:
-    """A healthy result for every required package, with optional overrides."""
-    results = {
-        package: GATE.PackageResult(0, ["TestX"], []) for package in GATE.REQUIRED_PACKAGES
-    }
+    """A healthy result for every required package, with optional overrides.
+
+    Packages with named requirements (the sentinel) include those tests in
+    their passing set, since a healthy run must have them pass by name.
+    """
+    results: dict[str, object] = {}
+    for package in GATE.REQUIRED_PACKAGES:
+        passed = ["TestX"]
+        if package in GATE.REQUIRED_NAMED_TESTS:
+            passed.extend(GATE.REQUIRED_NAMED_TESTS[package])
+        results[package] = GATE.PackageResult(0, passed, [])
     results.update(overrides)
     return results  # type: ignore[return-value]
 
@@ -55,9 +60,7 @@ def test_nonzero_exit_with_passing_tests_still_fails_the_gate() -> None:
     test failed. Counting passes alone classified such a package as healthy and
     let a real Postgres-backed failure through a green gate.
     """
-    results = all_results(
-        **{"./internal/ingest": GATE.PackageResult(1, ["TestA", "TestB"], [])}
-    )
+    results = all_results(**{"./internal/ingest": GATE.PackageResult(1, ["TestA", "TestB"], [])})
     problems = GATE.evaluate(results)
     assert len(problems) == 1
     assert "./internal/ingest" in problems[0]
@@ -66,9 +69,7 @@ def test_nonzero_exit_with_passing_tests_still_fails_the_gate() -> None:
 
 def test_build_error_is_reported_not_swallowed() -> None:
     """A compile error exits nonzero with no passing tests at all."""
-    results = all_results(
-        **{"./internal/worker": GATE.PackageResult(2, [], [])}
-    )
+    results = all_results(**{"./internal/worker": GATE.PackageResult(2, [], [])})
     problems = GATE.evaluate(results)
     assert len(problems) == 1
     assert "./internal/worker" in problems[0]
@@ -76,7 +77,12 @@ def test_build_error_is_reported_not_swallowed() -> None:
 
 
 def test_all_skipped_package_is_still_reported() -> None:
-    """The original failure mode: service down, everything skipped, exit 0."""
+    """The original failure mode: service down, everything skipped, exit 0.
+
+    The named-sentinel gate deliberately does NOT pile on here: a package
+    that under-ran is already reported, and its sentinel absence is the
+    same signal (the named check only runs for otherwise-healthy packages).
+    """
     results = all_results(
         **{"./internal/repository/postgres": GATE.PackageResult(0, [], ["TestA"])}
     )
@@ -103,10 +109,42 @@ def test_count_results_reads_verbose_pass_and_skip_lines() -> None:
 
 
 def test_a_busy_package_cannot_mask_a_silent_one() -> None:
-    """Aggregate counting would pass here; per-package must not."""
+    """Aggregate counting would pass here; per-package must not.
+
+    The Postgres package is healthy (sentinel included); a different gated
+    package running nothing must still be caught on its own.
+    """
+    results = all_results(**{"./internal/ingest": GATE.PackageResult(0, [], ["TestA"])})
+    problems = GATE.evaluate(results)
+    assert len(problems) == 1
+    assert "./internal/ingest" in problems[0]
+    assert "executed no tests" in problems[0]
+
+
+def test_sentinel_absent_from_passing_set_fails_the_gate() -> None:
+    """MIN_PASSES is satisfied by unrelated tests; the sentinel must still
+    have passed by name. This is the gap the named requirement closes: a
+    package can look healthy while the sentinel itself skipped (e.g. the
+    gate ran without TEST_POSTGRES_STRICT=1)."""
     results = all_results()
-    results["./internal/repository/postgres"] = GATE.PackageResult(0, [], ["TestA"])
-    assert len(GATE.evaluate(results)) == 1
+    results["./internal/repository/postgres"] = GATE.PackageResult(
+        0, ["TestX", "TestY"], ["TestIntegrationSentinelPostgresRoundTrip"]
+    )
+    problems = GATE.evaluate(results)
+    assert len(problems) == 1
+    assert "TestIntegrationSentinelPostgresRoundTrip" in problems[0]
+    assert "TEST_POSTGRES_STRICT=1" in problems[0]
+
+
+def test_sentinel_subtest_prefix_match_is_recognised() -> None:
+    """A subtest line (`Sentinel/case`) satisfies the named requirement."""
+    results = all_results()
+    results["./internal/repository/postgres"] = GATE.PackageResult(
+        0,
+        ["TestX", "TestIntegrationSentinelPostgresRoundTrip/case"],
+        [],
+    )
+    assert GATE.evaluate(results) == []
 
 
 def test_a_missing_package_entry_is_reported() -> None:
