@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"claimops-api/internal/claims"
+	"claimops-api/internal/ports"
 	"claimops-api/internal/repository/postgres"
 	"claimops-api/internal/worker"
 	"claimops-api/internal/workflow"
@@ -69,9 +71,10 @@ func ToClaimView(c claims.Claim) worker.ClaimView {
 // Disposition:
 //   - nil   the transition is durably recorded: either a new
 //     VALIDATING -> EXCEPTION transition was just stamped (event row +
-//     audit row appended), or the event identity was already recorded and
-//     the claim is still at EXCEPTION — an idempotent no-op (crash
-//     recovery / redelivery) where nothing new is written.
+//     audit row + claim.exception outbox row appended), or the event
+//     identity was already recorded and the claim is still at EXCEPTION —
+//     an idempotent no-op (crash recovery / redelivery) where nothing new
+//     is written.
 //   - worker.ErrTransitionSuperseded  the event was recorded but the claim
 //     has since advanced past EXCEPTION: refuse to re-authorize.
 //   - *claims.TransitionError (CodeIllegalTransition)  the claim sits
@@ -167,6 +170,35 @@ func (b *ClaimBridge) RecordInsufficientEvidenceTransition(ctx context.Context, 
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log (tenant_id, claim_id, actor_type, actor_id, action, entity, entity_id, "before", "after", trace_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		tenant, claimID, "system", "worker", "transition.insufficient_to_exception", "claim", claimID, string(before), string(after), eventID); err != nil {
+		return err
+	}
+	// Outbox row (APA-91 D4): the ONLY downstream launch signal for the
+	// exception, committed in the same transaction as the claim CAS +
+	// event row + audit row (transactional outbox). Payload carries ID
+	// fields only — no values, no PII/PHI — mirroring the
+	// claim.submitted.v1 payload key set.
+	payload, err := json.Marshal(map[string]string{
+		"schema_version": ports.ClaimExceptionSchemaVersion,
+		"event_id":       eventID,
+		"occurred_at":    time.Now().UTC().Format(time.RFC3339),
+		"tenant":         tenant,
+		"claim":          claimID,
+		"from_status":    string(loaded.Status),
+		"to_status":      string(claims.ClaimStatusException),
+	})
+	if err != nil {
+		return err
+	}
+	if err := b.Repo.AppendOutbox(ctx, tx, postgres.OutboxEvent{
+		EventID:       eventID,
+		Tenant:        claims.TenantID(tenant),
+		AggregateType: "claim",
+		AggregateID:   claimID,
+		EventType:     ports.TopicClaimException,
+		EventVersion:  "v1",
+		Payload:       payload,
+		OccurredAt:    time.Now().UTC(),
+	}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
