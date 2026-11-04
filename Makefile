@@ -150,24 +150,21 @@ local:
 	@echo "local: start services manually (no docker-compose per repo rule); then run 'make integration'"
 
 localgcp-test:
-	@echo "localgcp-test: emulator-gated transport suites (skip, never fail, when emulator down)"
-	@printf '%s\n' \
-		'import socket' \
-		's = socket.socket(); s.settimeout(2)' \
-		"print('localgcp-test: Pub/Sub :8085 reachable' if s.connect_ex(('localhost', 8085)) == 0 else 'SKIP: Pub/Sub emulator down — emulator tests will self-skip')" \
-		's.close()' \
-		| python3 -
-	@printf '%s\n' \
-		'import urllib.request' \
-		'try:' \
-		'    r = urllib.request.urlopen("http://localhost:4443", timeout=3)' \
-		"    print('localgcp-test: Storage :4443 reachable')" \
-		'except Exception as e:' \
-		"    print(f'SKIP: Storage emulator down ({e}) — emulator tests will self-skip')" \
-		| python3 -
+	@echo "localgcp-test: emulator-gated transport suites"
+	@echo "  LOCALGCP_STRICT=1 (default in CI) turns any unreachable emulator into a hard failure."
+	@python3 -c "import os,socket,sys; s=socket.socket(); s.settimeout(2); rc=s.connect_ex(('localhost',8085)); s.close(); \
+msg='localgcp-test: Pub/Sub :8085 reachable' if rc==0 else 'localgcp-test: Pub/Sub :8085 UNREACHABLE'; \
+print(msg); \
+sys.exit(1) if (rc!=0 and os.environ.get('LOCALGCP_STRICT')=='1') else (0 if rc==0 else 0)"
+	@python3 -c "import os,sys,urllib.request; \
+host='localhost:4443'; \
+ok=False; \
+exec('try:\\n    urllib.request.urlopen(\"http://'+host+'\", timeout=3); ok=True\\nexcept Exception as e: ok=False; err=e'); \
+print('localgcp-test: Storage :4443 reachable' if ok else f'localgcp-test: Storage :4443 UNREACHABLE ({err})'); \
+sys.exit(1) if (not ok and os.environ.get('LOCALGCP_STRICT')=='1') else 0"
 	@echo "localgcp-test: go test transport suites in $(GO_DIR)"
-	cd $(GO_DIR) && PUBSUB_EMULATOR_HOST=localhost:8085 STORAGE_EMULATOR_HOST=localhost:4443 TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" go test ./internal/adapters/pubsubadapter/ ./internal/adapters/gcsblob/ ./internal/ingest/ ./internal/outbox/ -count=1
-	@echo "localgcp-test: done (exit 0)"
+	cd $(GO_DIR) && PUBSUB_EMULATOR_HOST=localhost:8085 STORAGE_EMULATOR_HOST=localhost:4443 TEST_POSTGRES_DSN="$(TEST_POSTGRES_DSN)" go test -v ./internal/adapters/pubsubadapter/ ./internal/adapters/gcsblob/ ./internal/ingest/ ./internal/outbox/ -count=1
+	@echo "localgcp-test: done"
 
 check: format-check lint typecheck test
 	@echo "check: format-check + lint + typecheck + unit tests all passed"

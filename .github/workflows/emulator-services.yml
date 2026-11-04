@@ -1,0 +1,208 @@
+# Layer C — emulator-backed integration. Runs on pushes to main and on pull
+# requests touching transport/infra-relevant paths. Provides reproducible
+# Pub/Sub + GCS emulator services with strict startup and operation sentinels.
+#
+# P1 (emulator CI): this job is EVIDENCE, not a required branch-protection
+# context, until it proves reliable. It must never silently skip: a missing or
+# unhealthy emulator, or a skipped designated test, fails the job.
+name: emulator-services
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'apps/api/**'
+      - 'infra/postgres/**'
+      - 'mocks/**'
+      - 'Makefile'
+      - 'scripts/ci/**'
+      - '.github/workflows/emulator-services.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emulator-services-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  emulator-services:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: claimops
+          POSTGRES_PASSWORD: claimops
+          POSTGRES_DB: claimops
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U claimops -d claimops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Bootstrap service roles (pre-migration)
+        env:
+          OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
+          CLAIMOPS_APP_PASSWORD: claimops_app
+          CLAIMOPS_WORKER_PASSWORD: claimops_worker
+        run: |
+          BOOTSTRAP_SQL="DO \$\$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_app') THEN
+              CREATE ROLE claimops_app WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_APP_PASSWORD}';
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_worker') THEN
+              CREATE ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';
+            END IF;
+          END
+          \$\$;
+          ALTER ROLE claimops_app WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_APP_PASSWORD}';
+          ALTER ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';"
+          docker run --rm --network host \
+            postgres:16-alpine \
+            psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -c "$BOOTSTRAP_SQL"
+
+      - name: Bootstrap DB schema (migrations run as owner claimops)
+        env:
+          OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
+        run: |
+          for f in infra/postgres/migrations/*.sql; do
+            echo "applying $f"
+            docker run --rm --network host \
+              -v "${GITHUB_WORKSPACE}/infra/postgres/migrations:/migrations:ro" \
+              postgres:16-alpine \
+              psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -f "/migrations/$(basename "$f")"
+          done
+
+      # --- Emulator startup (pinned, immutable digests) ---
+      - name: Start Pub/Sub emulator (digest-pinned cloud-sdk)
+        run: |
+          docker rm -f claimops-pubsub >/dev/null 2>&1 || true
+          docker run -d --rm --name claimops-pubsub -p 8085:8085 \
+            gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:f098583c0387cf0fe4c64068ed1e1cf0dbc73e04f0621642b9a7e1f8b26ca287 \
+            gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
+          ready=0
+          for i in $(seq 1 60); do
+            if ! docker ps --filter name=^claimops-pubsub$ --filter status=running \
+                 --format '{{.Names}}' | grep -q claimops-pubsub; then
+              echo "::error::Pub/Sub emulator container exited (attempt ${i})"
+              docker logs claimops-pubsub 2>&1 | tail -30 || true
+              exit 1
+            fi
+            if (exec 3<>/dev/tcp/localhost/8085) 2>/dev/null; then
+              exec 3>&- 3<&-
+              echo "pubsub: ready after ${i} attempt(s)"
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::Pub/Sub emulator did not become ready at :8085 within 120s"
+            docker logs claimops-pubsub 2>&1 | tail -30 || true
+            exit 1
+          fi
+
+      - name: Start GCS emulator (digest-pinned fake-gcs-server)
+        run: |
+          docker rm -f claimops-gcs >/dev/null 2>&1 || true
+          docker run -d --rm --name claimops-gcs -p 4443:4443 \
+            fsouza/fake-gcs-server@sha256:3730da0e31f7e5186a90ec4899dc2c336104e7599df400411392ef17e684c31f \
+            -scheme http -port 4443
+          ready=0
+          for i in $(seq 1 30); do
+            if ! docker ps --filter name=^claimops-gcs$ --filter status=running \
+                 --format '{{.Names}}' | grep -q claimops-gcs; then
+              echo "::error::GCS emulator container exited (attempt ${i})"
+              docker logs claimops-gcs 2>&1 | tail -30 || true
+              exit 1
+            fi
+            if curl -fsS http://localhost:4443/storage/v1/b >/dev/null 2>&1 || \
+               curl -fsS http://localhost:4443/ >/dev/null 2>&1; then
+              echo "gcs: ready after ${i} attempt(s)"
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::GCS emulator did not become ready at :4443 within 60s"
+            docker logs claimops-gcs 2>&1 | tail -30 || true
+            exit 1
+          fi
+
+      # --- Operation-level sentinels (prove real emulator operations, not just ports) ---
+      - name: Record emulator versions (evidence)
+        run: |
+          mkdir -p /tmp/emulator-evidence
+          echo "pubsub image: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:f098583c0387cf0fe4c64068ed1e1cf0dbc73e04f0621642b9a7e1f8b26ca287" > /tmp/emulator-evidence/versions.txt
+          echo "pubsub gcloud: $(docker run --rm gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:f098583c0387cf0fe4c64068ed1e1cf0dbc73e04f0621642b9a7e1f8b26ca287 gcloud version 2>/dev/null | head -2)" >> /tmp/emulator-evidence/versions.txt
+          echo "gcs image: fsouza/fake-gcs-server@sha256:3730da0e31f7e5186a90ec4899dc2c336104e7599df400411392ef17e684c31f" >> /tmp/emulator-evidence/versions.txt
+          echo "postgres image: postgres:16-alpine" >> /tmp/emulator-evidence/versions.txt
+          cat /tmp/emulator-evidence/versions.txt
+
+      - name: Operation sentinel — Pub/Sub (create topic + publish + receive)
+        env:
+          PUBSUB_EMULATOR_HOST: localhost:8085
+        run: |
+          cd apps/api
+          PUBSUB_EMULATOR_HOST=localhost:8085 go test -run 'TestEmulatorPublishReceiveRoundTrip' -v -count=1 ./internal/adapters/pubsubadapter/ 2>&1 | tee /tmp/emulator-evidence/pubsub-sentinel.log
+          if ! grep -q '^--- PASS: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log; then
+            echo "::error::Pub/Sub operation sentinel did not PASS"
+            exit 1
+          fi
+
+      - name: Operation sentinel — GCS (put + get + delete round trip)
+        env:
+          STORAGE_EMULATOR_HOST: localhost:4443
+        run: |
+          cd apps/api
+          STORAGE_EMULATOR_HOST=localhost:4443 go test -run 'TestStoreRoundTrip' -v -count=1 ./internal/adapters/gcsblob/ 2>&1 | tee /tmp/emulator-evidence/gcs-sentinel.log
+          if ! grep -q '^--- PASS: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log; then
+            echo "::error::GCS operation sentinel did not PASS"
+            exit 1
+          fi
+
+      - name: make localgcp-test (strict)
+        env:
+          LOCALGCP_STRICT: "1"
+          PUBSUB_EMULATOR_HOST: localhost:8085
+          STORAGE_EMULATOR_HOST: localhost:4443
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+        run: make localgcp-test
+
+      - name: Assert emulator-gated packages actually ran (anti-fake-green)
+        env:
+          PUBSUB_EMULATOR_HOST: localhost:8085
+          STORAGE_EMULATOR_HOST: localhost:4443
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          LOCALGCP_STRICT: "1"
+        run: python3 scripts/ci/check_emulator_gated_tests.py
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@7.0.2
+        with:
+          name: emulator-evidence
+          path: /tmp/emulator-evidence/
+          retention-days: 30
+
+      - name: Teardown emulators
+        if: always()
+        run: |
+          docker rm -f claimops-pubsub claimops-gcs >/dev/null 2>&1 || true
