@@ -74,7 +74,9 @@ def main() -> int:
         if rc != 0:
             problems.append(f"{package}: go test exited {rc}")
         if len(passed) < MIN_PASSES:
-            problems.append(f"{package}: executed no tests (pass={len(passed)} skip={len(skipped)})")
+            problems.append(
+                f"{package}: executed no tests (pass={len(passed)} skip={len(skipped)})"
+            )
         for name in REQUIRED_NAMED_TESTS.get(package, ()):
             if not any(c == name or c.startswith(name + "/") for c in passed):
                 problems.append(
