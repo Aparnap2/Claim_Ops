@@ -1,0 +1,192 @@
+# Layer C — emulator-backed integration. Runs on pushes to main and on pull
+# requests touching transport/infra-relevant paths. Provides reproducible
+# Pub/Sub + GCS emulator services (via the pinned localgcp v0.6.0 CLI) with
+# strict startup and operation sentinels.
+#
+# P1 (emulator CI): this job is EVIDENCE, not a required branch-protection
+# context, until it proves reliable. It must never silently skip: a missing or
+# unhealthy emulator, or a skipped designated test, fails the job.
+name: emulator-services
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'apps/api/**'
+      - 'infra/postgres/**'
+      - 'mocks/**'
+      - 'Makefile'
+      - 'scripts/ci/**'
+      - '.github/workflows/emulator-services.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emulator-services-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  emulator-services:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: claimops
+          POSTGRES_PASSWORD: claimops
+          POSTGRES_DB: claimops
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U claimops -d claimops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Bootstrap service roles (pre-migration)
+        env:
+          OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
+          CLAIMOPS_APP_PASSWORD: claimops_app
+          CLAIMOPS_WORKER_PASSWORD: claimops_worker
+        run: |
+          BOOTSTRAP_SQL="DO \$\$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_app') THEN
+              CREATE ROLE claimops_app WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_APP_PASSWORD}';
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_worker') THEN
+              CREATE ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';
+            END IF;
+          END
+          \$\$;
+          ALTER ROLE claimops_app WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_APP_PASSWORD}';
+          ALTER ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';"
+          docker run --rm --network host \
+            postgres:16-alpine \
+            psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -c "$BOOTSTRAP_SQL"
+
+      - name: Bootstrap DB schema (migrations run as owner claimops)
+        env:
+          OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
+        run: |
+          for f in infra/postgres/migrations/*.sql; do
+            echo "applying $f"
+            docker run --rm --network host \
+              -v "${GITHUB_WORKSPACE}/infra/postgres/migrations:/migrations:ro" \
+              postgres:16-alpine \
+              psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -f "/migrations/$(basename "$f")"
+          done
+
+      - name: Install localgcp v0.6.0 (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/localgcp
+          cd /tmp/localgcp
+          curl -sL -o localgcp.tar.gz \
+            https://github.com/slokam-ai/localgcp/releases/download/v0.6.0/localgcp_0.6.0_linux_amd64.tar.gz
+          echo "7cd5937c7c3856675f4180ced40bd4278db03b5607389a63d1e86502a3131cd4  localgcp.tar.gz" | sha256sum -c -
+          tar -xzf localgcp.tar.gz
+          sudo install -m 0755 localgcp /usr/local/bin/localgcp
+          localgcp --help >/dev/null
+          echo "localgcp installed: $(sha256sum /usr/local/bin/localgcp | cut -d' ' -f1)"
+
+      - name: Start localgcp emulators (Pub/Sub :8085, GCS :4443)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/emulator-evidence
+          nohup localgcp up --quiet --services "" >/tmp/emulator-evidence/localgcp.log 2>&1 &
+          echo $! > /tmp/emulator-evidence/localgcp.pid
+          ready=0
+          for i in $(seq 1 60); do
+            ps_ok=0; gcs_ok=0
+            if (exec 3<>/dev/tcp/localhost/8085) 2>/dev/null; then ps_ok=1; exec 3>&- 3<&-; fi
+            if curl -fsS http://localhost:4443/ >/dev/null 2>&1 || curl -fsS http://localhost:4443/storage/v1/b >/dev/null 2>&1; then gcs_ok=1; fi
+            if [ "$ps_ok" = "1" ] && [ "$gcs_ok" = "1" ]; then
+              echo "emulators: ready after ${i} attempt(s)"
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::emulators did not become ready (pubsub=$ps_ok gcs=$gcs_ok)"
+            tail -40 /tmp/emulator-evidence/localgcp.log
+            exit 1
+          fi
+
+      - name: Record emulator versions (evidence)
+        run: |
+          mkdir -p /tmp/emulator-evidence
+          {
+            echo "localgcp release: v0.6.0"
+            echo "localgcp tarball sha256: 7cd5937c7c3856675f4180ced40bd4278db03b5607389a63d1e86502a3131cd4"
+            echo "localgcp binary sha256: $(sha256sum /usr/local/bin/localgcp | cut -d' ' -f1)"
+            echo "postgres image: postgres:16-alpine"
+          } > /tmp/emulator-evidence/versions.txt
+          cat /tmp/emulator-evidence/versions.txt
+
+      - name: Operation sentinel - Pub/Sub (create topic + publish + receive)
+        env:
+          PUBSUB_EMULATOR_HOST: localhost:8085
+        run: |
+          cd apps/api
+          PUBSUB_EMULATOR_HOST=localhost:8085 go test -run 'TestEmulatorPublishReceiveRoundTrip' -v -count=1 ./internal/adapters/pubsubadapter/ 2>&1 | tee /tmp/emulator-evidence/pubsub-sentinel.log
+          if ! grep -q '^--- PASS: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log; then
+            echo "::error::Pub/Sub operation sentinel did not PASS"
+            exit 1
+          fi
+
+      - name: Operation sentinel - GCS (put + get + delete round trip)
+        env:
+          STORAGE_EMULATOR_HOST: localhost:4443
+        run: |
+          cd apps/api
+          STORAGE_EMULATOR_HOST=localhost:4443 go test -run 'TestStoreRoundTrip' -v -count=1 ./internal/adapters/gcsblob/ 2>&1 | tee /tmp/emulator-evidence/gcs-sentinel.log
+          if ! grep -q '^--- PASS: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log; then
+            echo "::error::GCS operation sentinel did not PASS"
+            exit 1
+          fi
+
+      - name: make localgcp-test (strict)
+        env:
+          LOCALGCP_STRICT: "1"
+          PUBSUB_EMULATOR_HOST: localhost:8085
+          STORAGE_EMULATOR_HOST: localhost:4443
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+        run: make localgcp-test
+
+      - name: Assert emulator-gated packages actually ran (anti-fake-green)
+        env:
+          PUBSUB_EMULATOR_HOST: localhost:8085
+          STORAGE_EMULATOR_HOST: localhost:4443
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          LOCALGCP_STRICT: "1"
+        run: python3 scripts/ci/check_emulator_gated_tests.py
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-evidence
+          path: /tmp/emulator-evidence/
+          retention-days: 30
+
+      - name: Teardown emulators
+        if: always()
+        run: |
+          if [ -f /tmp/emulator-evidence/localgcp.pid ]; then
+            kill "$(cat /tmp/emulator-evidence/localgcp.pid)" 2>/dev/null || true
+          fi
