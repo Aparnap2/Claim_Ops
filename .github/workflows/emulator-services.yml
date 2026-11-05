@@ -147,9 +147,20 @@ jobs:
           PUBSUB_EMULATOR_HOST: localhost:8085
         run: |
           cd apps/api
-          PUBSUB_EMULATOR_HOST=localhost:8085 go test -run 'TestEmulatorPublishReceiveRoundTrip' -v -count=1 ./internal/adapters/pubsubadapter/ 2>&1 | tee /tmp/emulator-evidence/pubsub-sentinel.log
-          if ! grep -q 'PASS: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log; then
+          set -o pipefail
+          PUBSUB_EMULATOR_HOST=localhost:8085 go test -run 'TestEmulatorPublishReceiveRoundTrip' -v -count=1 ./internal/adapters/pubsubadapter/ > /tmp/emulator-evidence/pubsub-sentinel.log 2>&1
+          rc=$?
+          cat /tmp/emulator-evidence/pubsub-sentinel.log
+          if [ $rc -ne 0 ]; then
+            echo "::error::Pub/Sub operation sentinel exited non-zero ($rc)"
+            exit 1
+          fi
+          if ! grep -qF 'PASS: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log; then
             echo "::error::Pub/Sub operation sentinel did not PASS"
+            exit 1
+          fi
+          if grep -qF 'SKIP: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log; then
+            echo "::error::Pub/Sub operation sentinel SKIPPED"
             exit 1
           fi
 
@@ -158,9 +169,20 @@ jobs:
           STORAGE_EMULATOR_HOST: localhost:4443
         run: |
           cd apps/api
-          STORAGE_EMULATOR_HOST=localhost:4443 go test -run 'TestStoreRoundTrip' -v -count=1 ./internal/adapters/gcsblob/ 2>&1 | tee /tmp/emulator-evidence/gcs-sentinel.log
-          if ! grep -q 'PASS: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log; then
+          set -o pipefail
+          STORAGE_EMULATOR_HOST=localhost:4443 go test -run 'TestStoreRoundTrip' -v -count=1 ./internal/adapters/gcsblob/ > /tmp/emulator-evidence/gcs-sentinel.log 2>&1
+          rc=$?
+          cat /tmp/emulator-evidence/gcs-sentinel.log
+          if [ $rc -ne 0 ]; then
+            echo "::error::GCS operation sentinel exited non-zero ($rc)"
+            exit 1
+          fi
+          if ! grep -qF 'PASS: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log; then
             echo "::error::GCS operation sentinel did not PASS"
+            exit 1
+          fi
+          if grep -qF 'SKIP: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log; then
+            echo "::error::GCS operation sentinel SKIPPED"
             exit 1
           fi
 
@@ -181,12 +203,19 @@ jobs:
           MOCKOON_URL: http://localhost:3001
         run: |
           cd apps/api
-          go test -run 'TestLifecycleE2E' -v -count=1 -timeout 300s ./internal/app/ 2>&1 | tee /tmp/emulator-evidence/lifecycle-e2e.log
-          if ! grep -q 'PASS: TestLifecycleE2E_SubmissionToDurableException' /tmp/emulator-evidence/lifecycle-e2e.log; then
+          set -o pipefail
+          go test -run 'TestLifecycleE2E' -v -count=1 -timeout 300s ./internal/app/ > /tmp/emulator-evidence/lifecycle-e2e.log 2>&1
+          rc=$?
+          cat /tmp/emulator-evidence/lifecycle-e2e.log
+          if [ $rc -ne 0 ]; then
+            echo "::error::Lifecycle E2E exited non-zero ($rc)"
+            exit 1
+          fi
+          if ! grep -qF 'PASS: TestLifecycleE2E_SubmissionToDurableException' /tmp/emulator-evidence/lifecycle-e2e.log; then
             echo "::error::Lifecycle E2E did not PASS"
             exit 1
           fi
-          if ! grep -q 'Tier-1 negative control: OK' /tmp/emulator-evidence/lifecycle-e2e.log; then
+          if ! grep -qF 'Tier-1 negative control: OK' /tmp/emulator-evidence/lifecycle-e2e.log; then
             echo "::error::Tier-1 negative control did not run/pass"
             exit 1
           fi
