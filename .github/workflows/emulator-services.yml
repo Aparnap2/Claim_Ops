@@ -116,18 +116,35 @@ jobs:
           echo $! > /tmp/emulator-evidence/localgcp.pid
           ready=0
           for i in $(seq 1 60); do
-            ps_ok=0; gcs_ok=0
-            if (exec 3<>/dev/tcp/localhost/8085) 2>/dev/null; then ps_ok=1; exec 3>&- 3<&-; fi
-            if curl -fsS http://localhost:4443/ >/dev/null 2>&1 || curl -fsS http://localhost:4443/storage/v1/b >/dev/null 2>&1; then gcs_ok=1; fi
-            if [ "$ps_ok" = "1" ] && [ "$gcs_ok" = "1" ]; then
+            if python3 -c "
+import socket,sys
+s=socket.socket(); s.settimeout(2)
+ps_ok = (s.connect_ex(('localhost',8085))==0)
+s.close()
+gcs_ok = False
+try:
+    import urllib.request
+    urllib.request.urlopen('http://localhost:4443/', timeout=2)
+    gcs_ok = True
+except Exception:
+    try:
+        urllib.request.urlopen('http://localhost:4443/storage/v1/b', timeout=2)
+        gcs_ok = True
+    except Exception:
+        gcs_ok = False
+print('ps_ok=%d gcs_ok=%d' % (ps_ok, gcs_ok))
+sys.exit(0 if (ps_ok and gcs_ok) else 1)
+" >/tmp/emulator-evidence/probe.log 2>&1; then
               echo "emulators: ready after ${i} attempt(s)"
               ready=1
               break
             fi
+            cat /tmp/emulator-evidence/probe.log
             sleep 2
           done
           if [ "$ready" != "1" ]; then
-            echo "::error::emulators did not become ready (pubsub=$ps_ok gcs=$gcs_ok)"
+            echo "::error::emulators did not become ready"
+            cat /tmp/emulator-evidence/probe.log
             tail -40 /tmp/emulator-evidence/localgcp.log
             exit 1
           fi
