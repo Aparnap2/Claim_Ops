@@ -134,15 +134,13 @@ jobs:
 
       - name: Start Mockoon (digest-pinned)
         run: |
-          set -euo pipefail
-          docker pull mockoon/cli@sha256:c3b41126b87b22657a675574be9167a3d8d9f7f2cb21ec974c89c3631de56167
           docker rm -f claimops-mockoon >/dev/null 2>&1 || true
           docker run -d --rm --name claimops-mockoon -p 3001:3000 \
             -v "${GITHUB_WORKSPACE}/mocks/mockoon:/data:ro" \
             mockoon/cli@sha256:c3b41126b87b22657a675574be9167a3d8d9f7f2cb21ec974c89c3631de56167 \
             -d /data/claims-systems.json -p 3000
           ready=0
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
             if curl -fsS http://localhost:3001/v1/policies/POL-001 >/dev/null 2>&1; then
               echo "mockoon: ready after ${i} attempt(s)"
               ready=1
