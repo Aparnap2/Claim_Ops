@@ -161,8 +161,16 @@ jobs:
           cd apps/api
           go test -run 'TestLifecycleE2E' -v -count=1 -timeout 300s ./internal/app/ > /tmp/emulator-evidence/lifecycle-e2e.log 2>&1 || true
           cat /tmp/emulator-evidence/lifecycle-e2e.log
+          if grep -qF 'FAIL:' /tmp/emulator-evidence/lifecycle-e2e.log; then
+            echo "::error::Lifecycle E2E has failures"
+            exit 1
+          fi
           if ! grep -qF 'PASS: TestLifecycleE2E_SubmissionToDurableException' /tmp/emulator-evidence/lifecycle-e2e.log; then
             echo "::error::Lifecycle E2E did not PASS"
+            exit 1
+          fi
+          if grep -qF 'SKIP: TestLifecycleE2E' /tmp/emulator-evidence/lifecycle-e2e.log; then
+            echo "::error::Lifecycle E2E SKIPPED"
             exit 1
           fi
           if ! grep -qF 'Tier-1 negative control: OK' /tmp/emulator-evidence/lifecycle-e2e.log; then
