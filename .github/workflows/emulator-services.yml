@@ -1,0 +1,193 @@
+name: emulator-services
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'apps/api/**'
+      - 'infra/postgres/**'
+      - 'mocks/**'
+      - 'Makefile'
+      - 'scripts/ci/**'
+      - '.github/workflows/emulator-services.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emulator-services-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  emulator-services:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: claimops
+          POSTGRES_PASSWORD: claimops
+          POSTGRES_DB: claimops
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U claimops -d claimops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27'
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
+        with:
+          version: '0.11.17'
+
+      - name: Sync Python env (uv sync --group dev, provides liteparse)
+        run: uv sync --group dev
+
+      - name: Bootstrap service roles (pre-migration)
+        env:
+          OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
+          CLAIMOPS_APP_PASSWORD: claimops_app
+          CLAIMOPS_WORKER_PASSWORD: claimops_worker
+        run: |
+          BOOTSTRAP_SQL="DO \$\$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_app') THEN
+              CREATE ROLE claimops_app WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_APP_PASSWORD}';
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'claimops_worker') THEN
+              CREATE ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';
+            END IF;
+          END
+          \$\$;
+          ALTER ROLE claimops_app WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_APP_PASSWORD}';
+          ALTER ROLE claimops_worker WITH NOSUPERUSER LOGIN PASSWORD '${CLAIMOPS_WORKER_PASSWORD}';"
+          docker run --rm --network host \
+            postgres:16-alpine \
+            psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -c "$BOOTSTRAP_SQL"
+
+      - name: Bootstrap DB schema (migrations run as owner claimops)
+        env:
+          OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
+        run: |
+          for f in infra/postgres/migrations/*.sql; do
+            echo "applying $f"
+            docker run --rm --network host \
+              -v "${GITHUB_WORKSPACE}/infra/postgres/migrations:/migrations:ro" \
+              postgres:16-alpine \
+              psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -f "/migrations/$(basename "$f")"
+          done
+
+      - name: Install localgcp v0.6.0 (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/localgcp
+          cd /tmp/localgcp
+          curl -sL -o localgcp.tar.gz \
+            https://github.com/slokam-ai/localgcp/releases/download/v0.6.0/localgcp_0.6.0_linux_amd64.tar.gz
+          echo "7cd5937c7c3856675f4180ced40bd4278db03b5607389a63d1e86502a3131cd4  localgcp.tar.gz" | sha256sum -c -
+          tar -xzf localgcp.tar.gz
+          sudo install -m 0755 localgcp /usr/local/bin/localgcp
+          localgcp --help >/dev/null
+          echo "localgcp installed: $(sha256sum /usr/local/bin/localgcp | cut -d' ' -f1)"
+
+      - name: Start localgcp emulators (Pub/Sub :8085, GCS :4443)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/emulator-evidence
+          nohup localgcp up --quiet --services "" >/tmp/emulator-evidence/localgcp.log 2>&1 &
+          echo $! > /tmp/emulator-evidence/localgcp.pid
+          # localgcp starts in ~2s; avoid fragile TCP/curl probes.
+          # Operation sentinels below prove readiness (fail, not skip).
+          sleep 10
+          echo "emulators: startup wait complete"
+
+      - name: Start Mockoon (digest-pinned)
+        run: |
+          docker rm -f claimops-mockoon >/dev/null 2>&1 || true
+          docker run -d --rm --name claimops-mockoon -p 3001:3000 \
+            -v "${GITHUB_WORKSPACE}/mocks/mockoon:/data:ro" \
+            mockoon/cli@sha256:c3b41126b87b22657a675574be9167a3d8d9f7f2cb21ec974c89c3631de56167 \
+            -d /data/claims-systems.json -p 3000
+          # Mockoon starts in ~3s. Sentinels/E2E prove readiness.
+          sleep 10
+          echo "mockoon: startup wait complete"
+
+      - name: Record emulator versions (evidence)
+        run: |
+          mkdir -p /tmp/emulator-evidence
+          {
+            echo "localgcp release: v0.6.0"
+            echo "localgcp tarball sha256: 7cd5937c7c3856675f4180ced40bd4278db03b5607389a63d1e86502a3131cd4"
+            echo "localgcp binary sha256: $(sha256sum /usr/local/bin/localgcp | cut -d' ' -f1)"
+            echo "postgres image: postgres:16-alpine"
+            echo "mockoon image: mockoon/cli@sha256:c3b41126b87b22657a675574be9167a3d8d9f7f2cb21ec974c89c3631de56167"
+          } > /tmp/emulator-evidence/versions.txt
+          cat /tmp/emulator-evidence/versions.txt
+
+      - name: make localgcp-test (strict)
+        env:
+          LOCALGCP_STRICT: "1"
+          PUBSUB_EMULATOR_HOST: localhost:8085
+          STORAGE_EMULATOR_HOST: localhost:4443
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+        run: make localgcp-test
+
+      - name: Lifecycle E2E (real production path)
+        env:
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          TEST_POSTGRES_WORKER_DSN: postgres://claimops_worker:claimops_worker@localhost:5433/claimops
+          PUBSUB_EMULATOR_HOST: localhost:8085
+          STORAGE_EMULATOR_HOST: localhost:4443
+          MOCKOON_URL: http://localhost:3001
+        run: |
+          cd apps/api
+          go test -run 'TestLifecycleE2E' -v -count=1 -timeout 300s ./internal/app/ > /tmp/emulator-evidence/lifecycle-e2e.log 2>&1
+          rc=$?
+          cat /tmp/emulator-evidence/lifecycle-e2e.log
+          echo "go test exit code: $rc"
+          if [ $rc -ne 0 ]; then
+            echo "::error::Lifecycle E2E failed (exit $rc)"
+            exit 1
+          fi
+
+      - name: Assert emulator-gated packages actually ran (anti-fake-green)
+        env:
+          PUBSUB_EMULATOR_HOST: localhost:8085
+          STORAGE_EMULATOR_HOST: localhost:4443
+          TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
+          LOCALGCP_STRICT: "1"
+        run: python3 scripts/ci/check_emulator_gated_tests.py
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-evidence
+          path: /tmp/emulator-evidence/
+          retention-days: 30
+
+      - name: Teardown emulators
+        if: always()
+        run: |
+          if [ -f /tmp/emulator-evidence/localgcp.pid ]; then
+            kill "$(cat /tmp/emulator-evidence/localgcp.pid)" 2>/dev/null || true
+          fi
+          docker rm -f claimops-pubsub claimops-gcs claimops-mockoon >/dev/null 2>&1 || true

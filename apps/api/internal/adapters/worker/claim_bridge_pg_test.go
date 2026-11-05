@@ -11,6 +11,7 @@ import (
 
 	workeradapter "claimops-api/internal/adapters/worker"
 	"claimops-api/internal/claims"
+	"claimops-api/internal/ports"
 	"claimops-api/internal/repository/postgres"
 	coreworker "claimops-api/internal/worker"
 	"claimops-api/internal/workflow"
@@ -437,5 +438,196 @@ func TestClaimBridge_InsufficientTransition_PreValidationIllegal(t *testing.T) {
 	}
 	if got := len(auditRows(t, pool, tenant, claimID)); got != 0 {
 		t.Fatalf("pre-validation: %d audit rows, want 0 (nothing written)", got)
+	}
+}
+
+// TestClaimBridge_IntakeProgression_FromReceived drives the D1 intake chain
+// end to end against real PostgreSQL: RECEIVED -> REGISTERED ->
+// DOCUMENTS_RECEIVED -> VALIDATING in three independent transactions, each
+// writing claim CAS + claim_events + audit atomically. Then a replay call
+// must be a no-op (progression complete).
+func TestClaimBridge_IntakeProgression_FromReceived(t *testing.T) {
+	pool := pgBridgePool(t)
+	id := bridgeIDs()
+	tenant := claims.TenantID("t-intake-" + id)
+	claimID := claims.ClaimID("c-intake-" + id)
+	docID := "doc-intake-" + id
+	seedClaimAt(t, pool, tenant, claimID, claims.ClaimStatusReceived, "seed-evt-"+id)
+
+	bridge := workeradapter.NewClaimBridge(pool)
+	ctx := context.Background()
+
+	if err := bridge.AdvanceToIntakeValidating(ctx, string(tenant), string(claimID), docID); err != nil {
+		t.Fatalf("advance: unexpected error: %v", err)
+	}
+	if status, version := claimRow(t, pool, tenant, claimID); status != claims.ClaimStatusValidating || version != 4 {
+		t.Fatalf("advance: claim=%s v%d, want VALIDATING v4 (three steps)", status, version)
+	}
+	events := eventRows(t, pool, tenant, claimID)
+	if len(events) != 4 {
+		t.Fatalf("advance: %d event rows, want 4 (seed + three steps)", len(events))
+	}
+	wantSteps := []struct {
+		seq  int
+		to   claims.ClaimStatus
+		from claims.ClaimStatus
+	}{
+		{2, claims.ClaimStatusRegistered, claims.ClaimStatusReceived},
+		{3, claims.ClaimStatusDocumentsReceived, claims.ClaimStatusRegistered},
+		{4, claims.ClaimStatusValidating, claims.ClaimStatusDocumentsReceived},
+	}
+	for i, w := range wantSteps {
+		got := events[i+1]
+		wantID := fmt.Sprintf("intake:%s:%s:%s", claimID, docID, w.to)
+		if got.Seq != w.seq || got.EventID != wantID ||
+			got.From != string(w.from) || got.To != string(w.to) {
+			t.Fatalf("advance: step event = %+v, want seq%d %s->%s eventID %q", got, w.seq, w.from, w.to, wantID)
+		}
+	}
+	audit := auditRows(t, pool, tenant, claimID)
+	if len(audit) != 3 {
+		t.Fatalf("advance: %d audit rows, want 3 (one per step)", len(audit))
+	}
+	for i, w := range wantSteps {
+		if audit[i].Action != "transition.intake" || audit[i].Trace != fmt.Sprintf("intake:%s:%s:%s", claimID, docID, w.to) {
+			t.Fatalf("advance: audit[%d] = %+v, want action transition.intake with the step event identity", i, audit[i])
+		}
+		if b := decodeImage(t, audit[i].Before); b.Status != string(w.from) || b.Version != i+1 {
+			t.Fatalf("advance: audit[%d] before = %+v, want %s v%d", i, b, w.from, i+1)
+		}
+		if a := decodeImage(t, audit[i].After); a.Status != string(w.to) || a.Version != i+2 {
+			t.Fatalf("advance: audit[%d] after = %+v, want %s v%d", i, a, w.to, i+2)
+		}
+	}
+
+	// Replay: progression complete — nothing new written.
+	if err := bridge.AdvanceToIntakeValidating(ctx, string(tenant), string(claimID), docID); err != nil {
+		t.Fatalf("replay: unexpected error: %v", err)
+	}
+	if got := len(eventRows(t, pool, tenant, claimID)); got != 4 {
+		t.Fatalf("replay: %d event rows, want 4 (no new event)", got)
+	}
+	if got := len(auditRows(t, pool, tenant, claimID)); got != 3 {
+		t.Fatalf("replay: %d audit rows, want 3 (no new audit)", got)
+	}
+	if status, version := claimRow(t, pool, tenant, claimID); status != claims.ClaimStatusValidating || version != 4 {
+		t.Fatalf("replay: claim=%s v%d, want unchanged VALIDATING v4", status, version)
+	}
+}
+
+// TestClaimBridge_IntakeProgression_NonIntakeNoOp proves the intake chain
+// never touches claims outside its authorized statuses: EXCEPTION (human
+// review owns it) and EXPIRED (lifecycle owns it) are no-ops.
+func TestClaimBridge_IntakeProgression_NonIntakeNoOp(t *testing.T) {
+	pool := pgBridgePool(t)
+	id := bridgeIDs()
+	bridge := workeradapter.NewClaimBridge(pool)
+	ctx := context.Background()
+
+	for _, status := range []claims.ClaimStatus{claims.ClaimStatusException, claims.ClaimStatusExpired} {
+		tenant := claims.TenantID("t-noop-" + string(status) + "-" + id)
+		claimID := claims.ClaimID("c-noop-" + string(status) + "-" + id)
+		seedClaimAt(t, pool, tenant, claimID, status, "seed-evt-"+id)
+
+		if err := bridge.AdvanceToIntakeValidating(ctx, string(tenant), string(claimID), "doc-noop-"+id); err != nil {
+			t.Fatalf("%s: unexpected error: %v", status, err)
+		}
+		if got, version := claimRow(t, pool, tenant, claimID); got != status || version != 1 {
+			t.Fatalf("%s: claim=%s v%d, want unchanged %s v1", status, got, version, status)
+		}
+		if got := len(eventRows(t, pool, tenant, claimID)); got != 1 {
+			t.Fatalf("%s: %d event rows, want 1 (seed only)", status, got)
+		}
+		if got := len(auditRows(t, pool, tenant, claimID)); got != 0 {
+			t.Fatalf("%s: %d audit rows, want 0 (nothing written)", status, got)
+		}
+	}
+}
+
+// TestClaimBridge_InsufficientTransition_OutboxRow (APA-91 D4): the
+// insufficient-evidence transition commits a claim.exception outbox row in
+// the SAME transaction as the claim CAS + event row + audit row, and an
+// idempotent replay writes no duplicate.
+func TestClaimBridge_InsufficientTransition_OutboxRow(t *testing.T) {
+	pool := pgBridgePool(t)
+	id := bridgeIDs()
+	tenant := claims.TenantID("t-outbox-" + id)
+	claimID := claims.ClaimID("c-outbox-" + id)
+	seedValidatingClaim(t, pool, tenant, claimID, "seed-evt-"+id)
+
+	bridge := workeradapter.NewClaimBridge(pool)
+	ctx := context.Background()
+	eventID := "insufficient-evt-" + id
+
+	if err := bridge.RecordInsufficientEvidenceTransition(ctx, string(tenant), string(claimID), 1, eventID); err != nil {
+		t.Fatalf("apply: unexpected error: %v", err)
+	}
+
+	// Exactly one outbox row, with the reason-scoped event identity and
+	// the claim.exception topic.
+	ctx = postgres.WithTenant(ctx, tenant)
+	tx, err := postgres.BeginTenantTx(ctx, pool)
+	if err != nil {
+		t.Fatalf("BeginTenantTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var eventType, aggregateType, aggregateID string
+	var payload []byte
+	err = tx.QueryRow(ctx, `SELECT event_type, aggregate_type, aggregate_id, payload FROM outbox_events WHERE event_id = $1`, eventID).
+		Scan(&eventType, &aggregateType, &aggregateID, &payload)
+	if err != nil {
+		t.Fatalf("outbox row: %v", err)
+	}
+	if eventType != ports.TopicClaimException || aggregateType != "claim" || aggregateID != string(claimID) {
+		t.Fatalf("outbox row: type=%s aggregate=%s/%s, want claim.exception/claim/%s", eventType, aggregateType, aggregateID, claimID)
+	}
+	var p map[string]string
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("payload decode: %v", err)
+	}
+	if p["schema_version"] != ports.ClaimExceptionSchemaVersion ||
+		p["event_id"] != eventID ||
+		p["tenant"] != string(tenant) ||
+		p["claim"] != string(claimID) ||
+		p["from_status"] != string(claims.ClaimStatusValidating) ||
+		p["to_status"] != string(claims.ClaimStatusException) {
+		t.Fatalf("payload = %v, want ID-fields-only claim-exception.v1 payload", p)
+	}
+
+	// Replay: no duplicate outbox row.
+	if err := bridge.RecordInsufficientEvidenceTransition(context.Background(), string(tenant), string(claimID), 2, eventID); err != nil {
+		t.Fatalf("replay: unexpected error: %v", err)
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE event_id = $1`, eventID).Scan(&count); err != nil {
+		t.Fatalf("outbox count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("replay: %d outbox rows, want 1 (no duplicate)", count)
+	}
+}
+
+// TestClaimBridge_IntakeProgression_TenantIsolated proves the intake chain
+// cannot see or mutate another tenant's claim: RLS makes the row absent.
+func TestClaimBridge_IntakeProgression_TenantIsolated(t *testing.T) {
+	pool := pgBridgePool(t)
+	id := bridgeIDs()
+	tenant := claims.TenantID("t-intake-owner-" + id)
+	claimID := claims.ClaimID("c-intake-" + id)
+	seedClaimAt(t, pool, tenant, claimID, claims.ClaimStatusReceived, "seed-evt-"+id)
+
+	bridge := workeradapter.NewClaimBridge(pool)
+	err := bridge.AdvanceToIntakeValidating(context.Background(), "t-intruder-"+id, string(claimID), "doc-intake-"+id)
+	if err == nil {
+		t.Fatal("tenant isolation: cross-tenant advance must fail, got nil")
+	}
+	if errors.Is(err, coreworker.ErrTransitionSuperseded) {
+		t.Fatalf("tenant isolation: got superseded, want an absence/not-found error: %v", err)
+	}
+	if status, version := claimRow(t, pool, tenant, claimID); status != claims.ClaimStatusReceived || version != 1 {
+		t.Fatalf("tenant isolation: owner claim mutated to %s v%d, want RECEIVED v1", status, version)
+	}
+	if got := len(eventRows(t, pool, tenant, claimID)); got != 1 {
+		t.Fatalf("tenant isolation: %d event rows, want 1 (seed only)", got)
 	}
 }

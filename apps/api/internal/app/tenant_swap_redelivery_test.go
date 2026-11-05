@@ -122,6 +122,14 @@ func (c *tswapClaims) RecordInsufficientEvidenceTransition(_ context.Context, te
 	return nil
 }
 
+// AdvanceToIntakeValidating implements worker.ClaimLoader. A call here on
+// the swapped tenant would mean the intake chain escaped its tenant scope;
+// tests assert the recording stays empty.
+func (c *tswapClaims) AdvanceToIntakeValidating(_ context.Context, tenant, _, _ string) error {
+	c.recTenants = append(c.recTenants, tenant)
+	return nil
+}
+
 type tswapPolicy struct{}
 
 func (tswapPolicy) CheckPolicy(context.Context, string, string) (worker.PolicyData, error) {
