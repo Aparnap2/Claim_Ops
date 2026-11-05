@@ -148,7 +148,7 @@ jobs:
         run: |
           cd apps/api
           PUBSUB_EMULATOR_HOST=localhost:8085 go test -run 'TestEmulatorPublishReceiveRoundTrip' -v -count=1 ./internal/adapters/pubsubadapter/ 2>&1 | tee /tmp/emulator-evidence/pubsub-sentinel.log
-          if ! grep -q '^--- PASS: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log; then
+          if ! grep -q 'PASS: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log; then
             echo "::error::Pub/Sub operation sentinel did not PASS"
             exit 1
           fi
@@ -159,7 +159,7 @@ jobs:
         run: |
           cd apps/api
           STORAGE_EMULATOR_HOST=localhost:4443 go test -run 'TestStoreRoundTrip' -v -count=1 ./internal/adapters/gcsblob/ 2>&1 | tee /tmp/emulator-evidence/gcs-sentinel.log
-          if ! grep -q '^--- PASS: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log; then
+          if ! grep -q 'PASS: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log; then
             echo "::error::GCS operation sentinel did not PASS"
             exit 1
           fi
