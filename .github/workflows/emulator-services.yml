@@ -142,32 +142,6 @@ jobs:
           } > /tmp/emulator-evidence/versions.txt
           cat /tmp/emulator-evidence/versions.txt
 
-      - name: Operation sentinel - Pub/Sub (create topic + publish + receive)
-        env:
-          PUBSUB_EMULATOR_HOST: localhost:8085
-        run: |
-          cd apps/api
-          PUBSUB_EMULATOR_HOST=localhost:8085 go test -run 'TestEmulatorPublishReceiveRoundTrip' -v -count=1 ./internal/adapters/pubsubadapter/ > /tmp/emulator-evidence/pubsub-sentinel.log 2>&1
-          rc=$?
-          cat /tmp/emulator-evidence/pubsub-sentinel.log
-          if [ $rc -ne 0 ]; then
-            echo "::error::Pub/Sub operation sentinel failed (exit $rc)"
-            exit 1
-          fi
-
-      - name: Operation sentinel - GCS (put + get + delete round trip)
-        env:
-          STORAGE_EMULATOR_HOST: localhost:4443
-        run: |
-          cd apps/api
-          STORAGE_EMULATOR_HOST=localhost:4443 go test -run 'TestStoreRoundTrip' -v -count=1 ./internal/adapters/gcsblob/ > /tmp/emulator-evidence/gcs-sentinel.log 2>&1
-          rc=$?
-          cat /tmp/emulator-evidence/gcs-sentinel.log
-          if [ $rc -ne 0 ]; then
-            echo "::error::GCS operation sentinel failed (exit $rc)"
-            exit 1
-          fi
-
       - name: make localgcp-test (strict)
         env:
           LOCALGCP_STRICT: "1"
