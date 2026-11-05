@@ -154,7 +154,9 @@ jobs:
             echo "::error::Pub/Sub operation sentinel failed (exit $rc)"
             exit 1
           fi
-          if ! grep -qF 'PASS: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log; then
+          n=$(grep -cF 'PASS: TestEmulatorPublishReceiveRoundTrip' /tmp/emulator-evidence/pubsub-sentinel.log || true)
+          echo "pubsub pass count: $n"
+          if [ "$n" -lt 1 ]; then
             echo "::error::Pub/Sub operation sentinel did not PASS"
             exit 1
           fi
@@ -171,7 +173,9 @@ jobs:
             echo "::error::GCS operation sentinel failed (exit $rc)"
             exit 1
           fi
-          if ! grep -qF 'PASS: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log; then
+          n=$(grep -cF 'PASS: TestStoreRoundTrip' /tmp/emulator-evidence/gcs-sentinel.log || true)
+          echo "gcs pass count: $n"
+          if [ "$n" -lt 1 ]; then
             echo "::error::GCS operation sentinel did not PASS"
             exit 1
           fi
@@ -200,7 +204,9 @@ jobs:
             echo "::error::Lifecycle E2E failed (exit $rc)"
             exit 1
           fi
-          if ! grep -qF 'PASS: TestLifecycleE2E_SubmissionToDurableException' /tmp/emulator-evidence/lifecycle-e2e.log; then
+          n=$(grep -cF 'PASS: TestLifecycleE2E_SubmissionToDurableException' /tmp/emulator-evidence/lifecycle-e2e.log || true)
+          echo "lifecycle pass count: $n"
+          if [ "$n" -lt 1 ]; then
             echo "::error::Lifecycle E2E did not PASS"
             exit 1
           fi
