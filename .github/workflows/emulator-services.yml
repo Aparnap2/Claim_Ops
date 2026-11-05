@@ -182,7 +182,7 @@ jobs:
         run: |
           cd apps/api
           go test -run 'TestLifecycleE2E' -v -count=1 -timeout 300s ./internal/app/ 2>&1 | tee /tmp/emulator-evidence/lifecycle-e2e.log
-          if ! grep -q '^--- PASS: TestLifecycleE2E_SubmissionToDurableException' /tmp/emulator-evidence/lifecycle-e2e.log; then
+          if ! grep -q 'PASS: TestLifecycleE2E_SubmissionToDurableException' /tmp/emulator-evidence/lifecycle-e2e.log; then
             echo "::error::Lifecycle E2E did not PASS"
             exit 1
           fi
