@@ -161,7 +161,7 @@ jobs:
           cd apps/api
           go test -run 'TestLifecycleE2E' -v -count=1 -timeout 300s ./internal/app/ > /tmp/emulator-evidence/lifecycle-e2e.log 2>&1 || true
           cat /tmp/emulator-evidence/lifecycle-e2e.log
-          if grep -qF 'FAIL:' /tmp/emulator-evidence/lifecycle-e2e.log; then
+          if grep -qF -- '--- FAIL:' /tmp/emulator-evidence/lifecycle-e2e.log; then
             echo "::error::Lifecycle E2E has failures"
             exit 1
           fi
