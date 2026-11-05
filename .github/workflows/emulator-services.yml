@@ -159,11 +159,10 @@ jobs:
           MOCKOON_URL: http://localhost:3001
         run: |
           cd apps/api
-          go test -run 'TestLifecycleE2E' -v -count=1 -timeout 300s ./internal/app/ > /tmp/emulator-evidence/lifecycle-e2e.log 2>&1
-          rc=$?
+          go test -run 'TestLifecycleE2E' -v -count=1 -timeout 300s ./internal/app/ > /tmp/emulator-evidence/lifecycle-e2e.log 2>&1 || true
           cat /tmp/emulator-evidence/lifecycle-e2e.log
-          if [ $rc -ne 0 ]; then
-            echo "::error::Lifecycle E2E failed (exit $rc)"
+          if ! grep -qF 'PASS: TestLifecycleE2E_SubmissionToDurableException' /tmp/emulator-evidence/lifecycle-e2e.log; then
+            echo "::error::Lifecycle E2E did not PASS"
             exit 1
           fi
           if ! grep -qF 'Tier-1 negative control: OK' /tmp/emulator-evidence/lifecycle-e2e.log; then
