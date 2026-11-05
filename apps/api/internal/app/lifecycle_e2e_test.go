@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -54,6 +55,7 @@ import (
 	"claimops-api/internal/handlers"
 	"claimops-api/internal/ingest"
 	"claimops-api/internal/outbox"
+	"claimops-api/internal/parser/liteparse"
 	"claimops-api/internal/repository/postgres"
 	"claimops-api/internal/worker"
 
@@ -66,6 +68,8 @@ import (
 )
 
 var lifecycleSeq atomic.Int64
+
+var lifecyclePyBin, lifecycleShimPath string
 
 func lifecycleDSN() string {
 	if v := os.Getenv("TEST_POSTGRES_DSN"); v != "" {
@@ -131,13 +135,42 @@ func TestLifecycleE2E_SubmissionToDurableException(t *testing.T) {
 	if err := os.Chdir(root); err != nil {
 		t.Fatalf("chdir to repo root %s: %v", root, err)
 	}
-	// The liteparse shim runs under system python3, which needs the
-	// uv-managed site-packages (liteparse module) on PYTHONPATH. In CI
-	// `make setup` (uv sync) provides a working venv; this is a local
-	// fallback so the production parser actually executes in dev.
-	if info, err := os.Stat(".venv/lib/python3.12/site-packages"); err == nil && info.IsDir() {
-		t.Setenv("PYTHONPATH", ".venv/lib/python3.12/site-packages")
+	// Find the liteparse shim + a python that can import liteparse,
+	// mirroring liteparse.liveShim. Production binaries run from the
+	// repo root; tests run from apps/api, so resolve the shim relative
+	// to the repo root.
+	repoRoot := origDir
+	for i := 0; i < 6; i++ {
+		if _, err := os.Stat(repoRoot + "/tools/parsers/liteparse/shim.py"); err == nil {
+			break
+		}
+		repoRoot = filepath.Dir(repoRoot)
 	}
+	shimPath := filepath.Join(repoRoot, "tools", "parsers", "liteparse", "shim.py")
+	if _, err := os.Stat(shimPath); err != nil {
+		t.Skipf("liteparse shim unavailable: %v", err)
+	}
+	venvSite := filepath.Join(repoRoot, ".venv", "lib", "python3.12", "site-packages")
+	// Prefer the uv-managed venv interpreter; fall back to system python
+	// with PYTHONPATH pointing at the venv site-packages (dev fallback).
+	var pyBin string
+	candidates := []string{filepath.Join(repoRoot, ".venv", "bin", "python"), "python3"}
+	for _, cand := range candidates {
+		cmd := exec.Command(cand, "-c", "import liteparse")
+		cmd.Env = append(os.Environ(), "PYTHONPATH="+venvSite)
+		if err := cmd.Run(); err == nil {
+			pyBin = cand
+			break
+		}
+	}
+	if pyBin == "" {
+		t.Skip("liteparse not importable (run `make setup` / uv sync --group dev)")
+	}
+	// Ensure the shim subprocess can import liteparse.
+	t.Setenv("PYTHONPATH", venvSite)
+	// Store for use when constructing the processor.
+	lifecyclePyBin = pyBin
+	lifecycleShimPath = shimPath
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
 	ctx := context.Background()
@@ -167,7 +200,7 @@ func TestLifecycleE2E_SubmissionToDurableException(t *testing.T) {
 	// --- Step 2: real document upload (insufficient evidence) ---
 	// Use a real (synthetic) PDF fixture so the liteparse parser can
 	// actually execute and the sufficiency gate can fire.
-	pdfBytes, err := os.ReadFile("fixtures/parser_eval/v1/CASE-002/document.pdf")
+	pdfBytes, err := os.ReadFile("apps/api/internal/app/testdata/simple.pdf")
 	if err != nil {
 		t.Fatalf("read pdf fixture: %v", err)
 	}
@@ -230,10 +263,15 @@ func TestLifecycleE2E_SubmissionToDurableException(t *testing.T) {
 	defer workerPool.Close()
 
 	// Production-constructed processor
+	// Construct the liteparse parser with the discovered interpreter + shim,
+	// then hand it to the production constructor (proving the concrete
+	// parser implementation is selected, not just a non-nil interface).
+	liteParser := liteparse.New(liteparse.NewExecRunner(lifecyclePyBin, lifecycleShimPath, 0), 0)
 	proc, err := BuildFullProcessor(ProcessorDeps{
 		Blobs:         blobStore,
 		Pool:          pool,
 		PolicyBaseURL: mockoonURL(),
+		Parser:        liteParser,
 	})
 	if err != nil {
 		t.Fatalf("BuildFullProcessor: %v", err)
