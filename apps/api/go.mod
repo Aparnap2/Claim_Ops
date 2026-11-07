@@ -8,7 +8,7 @@ require (
 	cloud.google.com/go/pubsub v1.51.1
 	cloud.google.com/go/storage v1.67.0
 	github.com/gofiber/fiber/v2 v2.52.15
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.12.0
 	google.golang.org/api v0.287.1
 	google.golang.org/grpc v1.83.1
 )
@@ -41,7 +41,7 @@ require (
 	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
