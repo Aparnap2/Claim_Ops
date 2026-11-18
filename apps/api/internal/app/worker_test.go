@@ -122,6 +122,14 @@ func (s *stubClaims) RecordInsufficientEvidenceTransition(_ context.Context, ten
 	return nil
 }
 
+// AdvanceToIntakeValidating implements worker.ClaimLoader. A call here
+// would mean the Tier-1 path reached the intake chain, which it must not;
+// tests assert the recording stays empty.
+func (s *stubClaims) AdvanceToIntakeValidating(_ context.Context, tenant, _, _ string) error {
+	s.recTenants = append(s.recTenants, tenant)
+	return nil
+}
+
 type stubPolicy struct{}
 
 func (stubPolicy) CheckPolicy(_ context.Context, _, _ string) (worker.PolicyData, error) {

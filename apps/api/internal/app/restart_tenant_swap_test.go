@@ -144,6 +144,14 @@ func (c *restartClaims) LoadClaim(_ context.Context, tenant, claimID string) (wo
 	return worker.ClaimView{}, fmt.Errorf("restartclaims: claim %q absent under tenant %q", claimID, tenant)
 }
 
+// AdvanceToIntakeValidating implements worker.ClaimLoader. It records the
+// tenant scope of each call so the test can prove the intake chain is never
+// consulted under the swapped tenant; it performs no state change.
+func (c *restartClaims) AdvanceToIntakeValidating(_ context.Context, tenant, _, _ string) error {
+	c.recTenants = append(c.recTenants, tenant)
+	return nil
+}
+
 // RecordInsufficientEvidenceTransition implements worker.ClaimLoader. It
 // records the tenant scope of each call so the test can prove the durable
 // boundary is never consulted under the swapped tenant; it performs no
