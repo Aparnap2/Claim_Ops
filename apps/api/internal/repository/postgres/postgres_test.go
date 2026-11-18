@@ -14,6 +14,7 @@ import (
 	"claimops-api/internal/workflow"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -187,9 +188,16 @@ func TestTenantIsolation_GetAndEventsHidden(t *testing.T) {
 // (tenant_id, id) key. Two tenants therefore cannot hold separate rows with
 // the same id; B's overwrite attempt collides globally. RLS additionally
 // hides A's row from B's transaction, so the ON CONFLICT ... WHERE
-// claims.version = $oldVersion branch matches zero rows and SaveClaim
-// reports ErrVersionConflict. This test asserts that real behavior (reject
-// + A unaffected) rather than a fictional duplicate row.
+// claims.version = $oldVersion branch matches zero rows. This test asserts
+// that real behavior (reject + A unaffected) rather than a fictional
+// duplicate row.
+//
+// Rejection shape is PostgreSQL-minor dependent: through 16.15 the conflict
+// branch matched zero rows and SaveClaim reported ErrVersionConflict; from
+// 16.16 the invisible conflicting row is reported as SQLSTATE 42501 "new row
+// violates row-level security policy (USING expression)". Both are durable
+// rejections, and crossTenantReject accepts either — the invariant is that B
+// cannot clobber A, never the specific error code.
 func TestCrossTenantOverwriteBlocked(t *testing.T) {
 	pool := requirePool(t)
 	repo := postgres.New(pool)
@@ -210,9 +218,9 @@ func TestCrossTenantOverwriteBlocked(t *testing.T) {
 	b := mustNewClaim(t, claimID, tenantB)
 	bctx, btx := beginAs(t, ctx, pool, tenantB)
 	err := repo.SaveClaim(bctx, btx, b)
-	if !errors.Is(err, postgres.ErrVersionConflict) {
+	if !crossTenantReject(err) {
 		rollback(t, bctx, btx)
-		t.Fatalf("B SaveClaim over A's id = %v, want ErrVersionConflict", err)
+		t.Fatalf("B SaveClaim over A's id = %v, want a durable rejection (ErrVersionConflict or RLS 42501)", err)
 	}
 	rollback(t, bctx, btx)
 
@@ -235,6 +243,17 @@ func TestCrossTenantOverwriteBlocked(t *testing.T) {
 		t.Fatalf("A row changed = %+v", got)
 	}
 	rollback(t, actx, atx)
+}
+
+// crossTenantReject reports whether B's write was durably rejected. Accepts
+// both shapes PostgreSQL has produced for an RLS-invisible ON CONFLICT
+// arbiter row: ErrVersionConflict (<= 16.15) and SQLSTATE 42501 (>= 16.16).
+func crossTenantReject(err error) bool {
+	if errors.Is(err, postgres.ErrVersionConflict) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42501"
 }
 
 // 3. No tenant in context -> BeginTenantTx refuses before touching the pool.
