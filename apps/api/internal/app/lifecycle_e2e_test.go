@@ -43,6 +43,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -740,13 +741,13 @@ func (s *lifecycleOutboxStore) MarkFailed(ctx context.Context, id, lastErr strin
 // application wiring; the unwired launcher is recorded as a known limitation.
 // ---------------------------------------------------------------------------
 
-// lifecycleAckWindow is longer than the emulator's effective ack deadline.
-// The Pub/Sub client keeps extending the deadline while the handler runs, so
-// a redelivery can only appear ~10s after the final ack attempt. Waiting this
-// long turns "no immediate redelivery" into "the ack actually landed": a lost
-// ack resurfaces as a second delivery inside the window and trips the
-// deliveries==1 assertion.
-const lifecycleAckWindow = 12 * time.Second
+// lifecycleAckWindow is twice the emulator's effective ack deadline. The
+// Pub/Sub client keeps extending the deadline while the handler runs, so a
+// redelivery can only appear ~10s after the final ack attempt. Waiting 20s
+// leaves a full deadline of margin, so a lost ack reliably resurfaces as a
+// second delivery inside the window and trips the deliveries==1 assertion
+// instead of landing after the subscriber was stopped.
+const lifecycleAckWindow = 20 * time.Second
 
 // errLifecycleCrashAfterCommit models a worker that dies after its durable work
 // committed but before the transport ack: the handler returns non-nil, so the
@@ -1378,6 +1379,128 @@ func lifecycleEphemeralPassword(t *testing.T) string {
 	return hex.EncodeToString(buf)
 }
 
+// lifecyclePrivilegeStatements lists every grant the role holds DIRECTLY,
+// formatted without the GRANT keyword and target role ("INSERT ON \"claims\"")
+// so the same
+// statements can be compared between roles and replayed with "GRANT <stmt>
+// TO <clone>". Table grants, column grants not already covered by a table
+// grant, and non-table USAGE grants are included; schema USAGE is granted
+// explicitly by the caller because the app role inherits it from PUBLIC.
+func lifecyclePrivilegeStatements(ctx context.Context, pool *pgxpool.Pool, role string) ([]string, error) {
+	var stmts []string
+	tableLevel := make(map[string]bool)
+
+	rows, err := pool.Query(ctx, `
+		SELECT table_name, privilege_type
+		  FROM information_schema.role_table_grants
+		 WHERE grantee = $1 AND table_schema = 'public'
+		 ORDER BY table_name, privilege_type`, role)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var table, priv string
+		if err := rows.Scan(&table, &priv); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		tableLevel[table+"|"+priv] = true
+		stmts = append(stmts, fmt.Sprintf("%s ON %s",
+			priv, pgx.Identifier{table}.Sanitize()))
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Column-level grants are reported for every column when the privilege is
+	// held at table level, so only genuinely column-scoped ones are replayed.
+	rows, err = pool.Query(ctx, `
+		SELECT table_name, column_name, privilege_type
+		  FROM information_schema.role_column_grants
+		 WHERE grantee = $1 AND table_schema = 'public'
+		 ORDER BY table_name, column_name, privilege_type`, role)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var table, column, priv string
+		if err := rows.Scan(&table, &column, &priv); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if tableLevel[table+"|"+priv] {
+			continue
+		}
+		stmts = append(stmts, fmt.Sprintf("%s (%s) ON %s",
+			priv, pgx.Identifier{column}.Sanitize(), pgx.Identifier{table}.Sanitize()))
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Non-table grants matter too: the app role advances audit_log_id_seq and
+	// claim_events_id_seq, so a clone without USAGE would fail at submit time,
+	// i.e. before the injection window ever opens.
+	rows, err = pool.Query(ctx, `
+		SELECT object_type, object_name, privilege_type
+		  FROM information_schema.role_usage_grants
+		 WHERE grantee = $1 AND object_type IN ('SEQUENCE', 'TYPE', 'DOMAIN')
+		 ORDER BY object_type, object_name`, role)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var kind, name, priv string
+		if err := rows.Scan(&kind, &name, &priv); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if kind == "DOMAIN" {
+			kind = "TYPE" // PostgreSQL grants domains as types
+		}
+		stmts = append(stmts, fmt.Sprintf("%s ON %s %s",
+			priv, kind, pgx.Identifier{name}.Sanitize()))
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return stmts, nil
+}
+
+// lifecycleGrantDiff returns a human-readable difference between two grant
+// statement lists ("" when they match), so a clone that silently acquired or
+// lost a privilege fails the test instead of quietly proving something else.
+func lifecycleGrantDiff(source, clone []string) string {
+	count := func(in []string) map[string]int {
+		m := make(map[string]int, len(in))
+		for _, s := range in {
+			m[s]++
+		}
+		return m
+	}
+	src, cln := count(source), count(clone)
+	var missing, extra []string
+	for s, n := range src {
+		for i := cln[s]; i < n; i++ {
+			missing = append(missing, s)
+		}
+	}
+	for s, n := range cln {
+		for i := src[s]; i < n; i++ {
+			extra = append(extra, s)
+		}
+	}
+	if len(missing) == 0 && len(extra) == 0 {
+		return ""
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	return fmt.Sprintf("  missing on clone: %v\n  extra on clone:   %v", missing, extra)
+}
+
 func lifecycleCreateCloneRole(t *testing.T, owner *pgxpool.Pool, sourceRole string) lifecycleCloneRole {
 	t.Helper()
 	ctx := context.Background()
@@ -1402,84 +1525,83 @@ func lifecycleCreateCloneRole(t *testing.T, owner *pgxpool.Pool, sourceRole stri
 	// dropped, and DROP OWNED clears the copied grants.
 	t.Cleanup(func() {
 		bg := context.Background()
-		if _, err := owner.Exec(bg, "DROP OWNED BY "+q); err != nil {
-			t.Logf("drop owned by %s: %v", role, err)
+		conn, err := owner.Acquire(bg)
+		if err != nil {
+			t.Errorf("cleanup: acquire owner connection: %v", err)
+			return
 		}
-		if _, err := owner.Exec(bg, "DROP ROLE "+q); err != nil {
-			t.Logf("drop clone role %s: %v", role, err)
+		defer conn.Release()
+		// DROP OWNED takes ACCESS EXCLUSIVE on every table the clone holds a
+		// grant on. Bound the wait so a sibling connection cannot hang cleanup
+		// into the suite timeout, and run it in a transaction so the bounded
+		// SET LOCAL values never leak onto a pooled connection.
+		tx, err := conn.Begin(bg)
+		if err != nil {
+			t.Errorf("cleanup: begin: %v", err)
+			return
+		}
+		for _, stmt := range []string{
+			"SET LOCAL lock_timeout = '5s'",
+			"SET LOCAL statement_timeout = '30s'",
+		} {
+			if _, err := tx.Exec(bg, stmt); err != nil {
+				_ = tx.Rollback(bg)
+				t.Errorf("cleanup: %s: %v", stmt, err)
+				return
+			}
+		}
+		// A failed drop must FAIL the test: a leftover LOGIN role would hold a
+		// full copy of the app role's grants, and successive runs would accrete
+		// claimops_e2e_* roles with nobody holding their credentials.
+		if _, err := tx.Exec(bg, "DROP OWNED BY "+q); err != nil {
+			_ = tx.Rollback(bg)
+			t.Errorf("cleanup: DROP OWNED BY %s failed (role may persist): %v", role, err)
+			return
+		}
+		if _, err := tx.Exec(bg, "DROP ROLE "+q); err != nil {
+			_ = tx.Rollback(bg)
+			t.Errorf("cleanup: DROP ROLE %s failed: %v", role, err)
+			return
+		}
+		if err := tx.Commit(bg); err != nil {
+			t.Errorf("cleanup: commit drop of %s: %v", role, err)
+			return
+		}
+		var leftover int
+		if err := conn.QueryRow(bg, "SELECT count(*) FROM pg_roles WHERE rolname = $1", role).Scan(&leftover); err != nil {
+			t.Errorf("cleanup: verify clone role dropped: %v", err)
+			return
+		}
+		if leftover != 0 {
+			t.Errorf("cleanup: clone role %s still exists after DROP ROLE", role)
 		}
 	})
 
-	// Copy the source role's table grants one-for-one. A broader "GRANT ALL"
-	// would hand the clone privileges the migrations deliberately withheld and
-	// the test would then prove the wrong thing.
-	rows, err := owner.Query(ctx, `
-		SELECT table_name, privilege_type
-		  FROM information_schema.role_table_grants
-		 WHERE grantee = $1 AND table_schema = 'public'
-		 ORDER BY table_name, privilege_type`, sourceRole)
-	if err != nil {
-		t.Fatalf("read grants for %s: %v", sourceRole, err)
-	}
-	type tableGrant struct{ table, priv string }
-	var grants []tableGrant
-	for rows.Next() {
-		var g tableGrant
-		if err := rows.Scan(&g.table, &g.priv); err != nil {
-			rows.Close()
-			t.Fatalf("scan grant for %s: %v", sourceRole, err)
-		}
-		grants = append(grants, g)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read grants for %s: %v", sourceRole, err)
-	}
-	if len(grants) == 0 {
-		t.Fatalf("role %s has no table grants to copy: the clone would fail for the wrong reason", sourceRole)
-	}
+	// Copy every grant the source role holds directly, one-for-one, then
+	// verify the clone's grant set is IDENTICAL: a broader "GRANT ALL" (or a
+	// silently missing privilege) would make the injection prove the wrong
+	// thing.
 	if _, err := owner.Exec(ctx, "GRANT USAGE ON SCHEMA public TO "+q); err != nil {
 		t.Fatalf("grant schema usage to %s: %v", role, err)
 	}
-	for _, g := range grants {
-		stmt := fmt.Sprintf("GRANT %s ON %s TO %s", g.priv, pgx.Identifier{g.table}.Sanitize(), q)
-		if _, err := owner.Exec(ctx, stmt); err != nil {
+	source, err := lifecyclePrivilegeStatements(ctx, owner, sourceRole)
+	if err != nil {
+		t.Fatalf("read grants for %s: %v", sourceRole, err)
+	}
+	if len(source) == 0 {
+		t.Fatalf("role %s has no grants to copy: the clone would fail for the wrong reason", sourceRole)
+	}
+	for _, stmt := range source {
+		if _, err := owner.Exec(ctx, "GRANT "+stmt+" TO "+q); err != nil {
 			t.Fatalf("copy grant (%s): %v", stmt, err)
 		}
 	}
-
-	// Non-table grants matter too: the app role advances audit_log_id_seq and
-	// claim_events_id_seq, so a clone without USAGE would fail at submit time,
-	// i.e. before the injection window ever opens.
-	urows, err := owner.Query(ctx, `
-		SELECT object_type, object_name, privilege_type
-		  FROM information_schema.role_usage_grants
-		 WHERE grantee = $1
-		   AND object_type IN ('SEQUENCE', 'SCHEMA', 'TYPE', 'DOMAIN')
-		 ORDER BY object_type, object_name`, sourceRole)
+	clone, err := lifecyclePrivilegeStatements(ctx, owner, role)
 	if err != nil {
-		t.Fatalf("read usage grants for %s: %v", sourceRole, err)
+		t.Fatalf("read grants for %s: %v", role, err)
 	}
-	type usageGrant struct{ kind, name, priv string }
-	var usages []usageGrant
-	for urows.Next() {
-		var u usageGrant
-		if err := urows.Scan(&u.kind, &u.name, &u.priv); err != nil {
-			urows.Close()
-			t.Fatalf("scan usage grant for %s: %v", sourceRole, err)
-		}
-		usages = append(usages, u)
-	}
-	urows.Close()
-	if err := urows.Err(); err != nil {
-		t.Fatalf("read usage grants for %s: %v", sourceRole, err)
-	}
-	for _, u := range usages {
-		stmt := fmt.Sprintf("GRANT %s ON %s %s TO %s",
-			u.priv, u.kind, pgx.Identifier{u.name}.Sanitize(), q)
-		if _, err := owner.Exec(ctx, stmt); err != nil {
-			t.Fatalf("copy usage grant (%s): %v", stmt, err)
-		}
+	if diff := lifecycleGrantDiff(source, clone); diff != "" {
+		t.Fatalf("clone role %s does not hold the source role's grants:\n%s", role, diff)
 	}
 
 	return lifecycleCloneRole{role: role, password: password}
@@ -1543,6 +1665,12 @@ func lifecycleRevokeWrites(t *testing.T, owner *pgxpool.Pool, role string) map[l
 	held := make(map[lifecyclePrivilege]bool, len(lifecycleInjectedPrivileges))
 	for _, p := range lifecycleInjectedPrivileges {
 		held[p] = lifecycleRoleHasPrivilege(t, owner, role, p)
+	}
+	for _, required := range []lifecyclePrivilege{{"claims", "INSERT"}, {"claims", "UPDATE"}} {
+		if !held[required] {
+			t.Fatalf("role %s did not hold %s on %s before the REVOKE: the injection would be a no-op and any later failure would be misattributed",
+				role, required.priv, required.table)
+		}
 	}
 	sql := fmt.Sprintf(
 		"REVOKE INSERT, UPDATE ON claims, claim_events, audit_log, documents FROM %s",
