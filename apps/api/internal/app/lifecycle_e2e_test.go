@@ -66,6 +66,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/api/option"
 )
@@ -721,6 +722,14 @@ func (s *lifecycleOutboxStore) MarkFailed(ctx context.Context, id, lastErr strin
 // application wiring; the unwired launcher is recorded as a known limitation.
 // ---------------------------------------------------------------------------
 
+// lifecycleAckWindow is longer than the emulator's effective ack deadline.
+// The Pub/Sub client keeps extending the deadline while the handler runs, so
+// a redelivery can only appear ~10s after the final ack attempt. Waiting this
+// long turns "no immediate redelivery" into "the ack actually landed": a lost
+// ack resurfaces as a second delivery inside the window and trips the
+// deliveries==1 assertion.
+const lifecycleAckWindow = 12 * time.Second
+
 // errLifecycleCrashAfterCommit models a worker that dies after its durable work
 // committed but before the transport ack: the handler returns non-nil, so the
 // subscriber Nacks, yet every effect of the delivery is already durable.
@@ -730,29 +739,29 @@ var errLifecycleCrashAfterCommit = errors.New("lifecycle-e2e: simulated crash af
 // insufficient-evidence lifecycle for the synthetic PDF fixture. It is the
 // single-success baseline both restart scenarios must converge on.
 var lifecycleCanonical = lifecycleSnapshot{
-	Status:          string(claims.ClaimStatusException),
-	Version:         5,
-	Events:          5,
-	Audit:           4,
-	ExceptionOutbox: 1,
-	Launches:        1,
-	Envelopes:       1,
-	Documents:       1,
-	FieldEvidence:   0,
+	Status:        string(claims.ClaimStatusException),
+	Version:       5,
+	Events:        5,
+	Audit:         4,
+	ClaimOutbox:   2, // claim.submitted + claim.exception
+	Launches:      1,
+	Envelopes:     1,
+	Documents:     1,
+	FieldEvidence: 0,
 }
 
 // lifecycleSnapshot is every durable table the lifecycle touches, read
 // tenant-scoped. Equality after a restart is the idempotency claim.
 type lifecycleSnapshot struct {
-	Status          string
-	Version         int
-	Events          int
-	Audit           int
-	ExceptionOutbox int
-	Launches        int
-	Envelopes       int
-	Documents       int
-	FieldEvidence   int
+	Status        string
+	Version       int
+	Events        int
+	Audit         int
+	ClaimOutbox   int // every outbox row for this claim, any event type
+	Launches      int
+	Envelopes     int
+	Documents     int
+	FieldEvidence int
 }
 
 // lifecycleRig is one claim + document submitted through the real HTTP
@@ -817,7 +826,7 @@ func TestLifecycleE2E_RestartRedeliveryDurableIdempotency(t *testing.T) {
 		t.Fatalf("pass-1 durable state = %+v, want canonical %+v", afterPass1, lifecycleCanonical)
 	}
 	if got := rig.provider.startCount(rig.claimID); got != 1 {
-		t.Fatalf("pass-1 workflow starts = %d, want 1", got)
+		t.Fatalf("pass-1 workflow executions started = %d, want 1", got)
 	}
 
 	// --- Pass 2: transport redelivery into a FRESH process ------------------
@@ -851,9 +860,9 @@ func TestLifecycleE2E_RestartRedeliveryDurableIdempotency(t *testing.T) {
 		stop2()
 		t.Fatal("timed out waiting for the transport to redeliver after the simulated crash")
 	}
-	// A Nack redelivers immediately (proven by the adapter suite); a short
-	// grace window distinguishes an Ack from a Nack loop.
-	time.Sleep(3 * time.Second)
+	// A Nack redelivers immediately; waiting out the ack deadline proves the
+	// message was acked, not merely that it was not Nacked yet.
+	time.Sleep(lifecycleAckWindow)
 	stop2()
 	if got := deliveries.Load(); got != 1 {
 		t.Fatalf("fresh-process redelivery attempts = %d, want exactly 1 (message must be acked after convergence); handler errors=%d",
@@ -865,26 +874,30 @@ func TestLifecycleE2E_RestartRedeliveryDurableIdempotency(t *testing.T) {
 		t.Fatalf("restart redelivery changed durable state:\n  after pass 1: %+v\n  after pass 2: %+v", afterPass1, afterPass2)
 	}
 	if got := rig.provider.startCount(rig.claimID); got != 1 {
-		t.Fatalf("workflow starts after restart redelivery = %d, want 1 (duplicate launch)", got)
+		t.Fatalf("workflow executions started after restart redelivery = %d, want 1 (duplicate launch)", got)
 	}
-	t.Logf("restart redelivery converged: %+v (workflow starts=1, deliveries=1)", afterPass2)
+	t.Logf("restart redelivery converged: %+v (workflow executions=1, deliveries=1)", afterPass2)
 }
 
 func TestLifecycleE2E_PersistenceFailureNoAckRecovery(t *testing.T) {
-	rig := newLifecycleRig(t)
-
-	// Owner credentials are required to inject a real privilege failure. This
-	// fails closed (never skips) because a silent skip here would fake-green
-	// the one proof that a persistence failure is not acknowledged.
+	// The failure is injected with real SQL: REVOKE the write privileges the
+	// pipeline needs, so the processor hits SQLSTATE 42501 during commit. That
+	// is a ROLE-level, database-wide effect, so it is applied to a THROWAWAY
+	// clone role rather than to claimops_app: revoking from the shared role
+	// would poison every sibling test in the same package run (and strand the
+	// role if this process were killed mid-test). The clone starts with an
+	// exact copy of claimops_app's grants and is dropped on cleanup.
 	ownerPool := requireLifecycleOwnerPool(t)
-	appRole := lifecycleAppRole(t)
-	t.Cleanup(func() { lifecycleGrantAppWrites(t, ownerPool, appRole) })
-	lifecycleRevokeAppWrites(t, ownerPool, appRole)
+	clone := lifecycleCreateCloneRole(t, ownerPool, lifecycleAppRole(t))
+	rig := newLifecycleRigWithPool(t, lifecycleClonePool(t, lifecycleDSN(), clone))
+	before := rig.snapshot(t)
+
+	prior := lifecycleRevokeWrites(t, ownerPool, clone.role)
 	if lifecycleHasPrivilege(t, rig.pool, "claims", "UPDATE") {
-		t.Fatal("injection did not take effect: app role still has UPDATE on claims")
+		t.Fatal("injection did not take effect: the role still has UPDATE on claims")
 	}
 	if lifecycleHasPrivilege(t, rig.pool, "documents", "INSERT") {
-		t.Fatal("injection did not take effect: app role still has INSERT on documents")
+		t.Fatal("injection did not take effect: the role still has INSERT on documents")
 	}
 
 	// --- Pass 1: valid event, forced DB persistence failure ----------------
@@ -911,28 +924,29 @@ func TestLifecycleE2E_PersistenceFailureNoAckRecovery(t *testing.T) {
 			stop1()
 			t.Fatal("document event was ACKED despite a forced persistence failure (handler returned nil)")
 		}
-		t.Logf("persistence failure surfaced as a Nack, as required: %v", err)
+		lifecycleRequireInjectedFailure(t, err)
+		t.Logf("injected persistence failure surfaced as a Nack, as required: %v", err)
 	case <-time.After(45 * time.Second):
 		stop1()
 		t.Fatal("timed out waiting for the document delivery under the injected failure")
 	}
 	stop1()
 
-	// No partial state may survive the failed delivery: the claim is still at
-	// its pre-processing state and nothing was appended.
+	// No partial state may survive the failed delivery: compare against the
+	// pre-delivery snapshot rather than a hand-written expectation, so the
+	// claim is "nothing changed", not "nothing changed that we thought of".
 	injected := rig.snapshot(t)
+	if injected != before {
+		t.Fatalf("failed delivery mutated durable state:\n  before: %+v\n  after:  %+v", before, injected)
+	}
 	if injected.Status != string(claims.ClaimStatusReceived) || injected.Version != 1 {
 		t.Fatalf("failed delivery advanced the claim: %+v", injected)
 	}
-	if injected.Events != 1 || injected.Audit != 0 || injected.ExceptionOutbox != 0 ||
-		injected.Launches != 0 || injected.Envelopes != 0 {
-		t.Fatalf("failed delivery left partial durable state: %+v", injected)
-	}
 
 	// --- Restore the DB, then redeliver ------------------------------------
-	lifecycleGrantAppWrites(t, ownerPool, appRole)
+	lifecycleRestoreWrites(t, ownerPool, clone.role, prior)
 	if !lifecycleHasPrivilege(t, rig.pool, "claims", "UPDATE") {
-		t.Fatal("grant restore did not take effect: app role still lacks UPDATE on claims")
+		t.Fatal("grant restore did not take effect: role still lacks UPDATE on claims")
 	}
 
 	proc2 := rig.newProcessor(t)
@@ -957,10 +971,10 @@ func TestLifecycleE2E_PersistenceFailureNoAckRecovery(t *testing.T) {
 		stop2()
 		t.Fatal("timed out waiting for redelivery after the DB was restored: the failed delivery was ACKED (message lost)")
 	}
-	time.Sleep(3 * time.Second)
+	time.Sleep(lifecycleAckWindow)
 	stop2()
 	if got := deliveries.Load(); got != 1 {
-		t.Fatalf("recovery delivery attempts = %d, want exactly 1 (message must be acked after success)", got)
+		t.Fatalf("recovery delivery attempts = %d, want exactly 1 (the successful delivery must be acked)", got)
 	}
 
 	final := rig.snapshot(t)
@@ -968,7 +982,7 @@ func TestLifecycleE2E_PersistenceFailureNoAckRecovery(t *testing.T) {
 		t.Fatalf("recovered durable state = %+v, want canonical single-success %+v", final, lifecycleCanonical)
 	}
 	if got := rig.provider.startCount(rig.claimID); got != 1 {
-		t.Fatalf("workflow starts after recovery = %d, want 1", got)
+		t.Fatalf("workflow executions started after recovery = %d, want 1", got)
 	}
 	t.Logf("persistence failure recovered with no duplicate effects: %+v", final)
 }
@@ -979,8 +993,16 @@ func TestLifecycleE2E_PersistenceFailureNoAckRecovery(t *testing.T) {
 
 func newLifecycleRig(t *testing.T) *lifecycleRig {
 	t.Helper()
+	return newLifecycleRigWithPool(t, requireLifecyclePool(t))
+}
+
+// newLifecycleRigWithPool runs the whole lifecycle (HTTP submit, ingest,
+// processor, launcher stores) as the supplied pool. The persistence-failure
+// test supplies a throwaway clone role so its privilege injection cannot
+// affect the role every other test connects as.
+func newLifecycleRigWithPool(t *testing.T, pool *pgxpool.Pool) *lifecycleRig {
+	t.Helper()
 	lifecyclePrepareRepo(t)
-	pool := requireLifecyclePool(t)
 	requireLifecycleEmulators(t)
 
 	ctx := context.Background()
@@ -1137,10 +1159,13 @@ func (r *lifecycleRig) snapshot(t *testing.T) lifecycleSnapshot {
 		return tx.QueryRow(r.ctx, "SELECT count(*) FROM workflow_launches WHERE claim_id=$1", string(r.claimID)).Scan(&s.Launches)
 	})
 	// The outbox is cross-tenant by design: read it as the worker role.
+	// Count EVERY event type for this claim, not just claim.exception: a
+	// duplicate claim.submitted/claim.transitioned row would be just as much
+	// a lost-idempotency defect, and filtering by type would hide it.
 	if err := r.workerPool.QueryRow(r.ctx,
 		`SELECT count(*) FROM outbox_events
-		 WHERE aggregate_type='claim' AND aggregate_id=$1 AND event_type='claim.exception'`,
-		string(r.claimID)).Scan(&s.ExceptionOutbox); err != nil {
+		 WHERE aggregate_type='claim' AND aggregate_id=$1`,
+		string(r.claimID)).Scan(&s.ClaimOutbox); err != nil {
 		t.Fatalf("snapshot outbox query: %v", err)
 	}
 	return s
@@ -1282,8 +1307,10 @@ func requireLifecycleOwnerPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// lifecycleAppRole is the role the processor's pool connects as. Injecting
-// against the owner itself would be a no-op, so that case fails loudly.
+// lifecycleAppRole is the role the processor's pool connects as, and the
+// source of the grant set copied onto the throwaway role used for injection.
+// Injecting against the owner itself would be a no-op, so that case fails
+// loudly.
 func lifecycleAppRole(t *testing.T) string {
 	t.Helper()
 	appCfg, err := pgxpool.ParseConfig(lifecycleDSN())
@@ -1304,29 +1331,243 @@ func lifecycleAppRole(t *testing.T) string {
 	return role
 }
 
-func lifecycleRevokeAppWrites(t *testing.T, owner *pgxpool.Pool, role string) {
+// lifecycleCloneRole is a throwaway login role holding an exact copy of the
+// application role's grants. Injecting a privilege failure against it is a
+// real server-side 42501 that cannot leak into any other test.
+type lifecycleCloneRole struct {
+	role     string
+	password string
+}
+
+func lifecycleCreateCloneRole(t *testing.T, owner *pgxpool.Pool, sourceRole string) lifecycleCloneRole {
 	t.Helper()
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d_%d", os.Getpid(), time.Now().UnixNano())
+	role := "claimops_e2e_" + suffix
+	password := hex.EncodeToString([]byte(suffix))
+	q := pgx.Identifier{role}.Sanitize()
+
+	if _, err := owner.Exec(ctx, fmt.Sprintf(
+		"CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS",
+		q, password)); err != nil {
+		t.Fatalf("create clone role %s: %v", role, err)
+	}
+	// Registered BEFORE the rig exists so LIFO cleanup drops the role only
+	// after the rig's pools have closed: a role with live sessions cannot be
+	// dropped, and DROP OWNED clears the copied grants.
+	t.Cleanup(func() {
+		bg := context.Background()
+		if _, err := owner.Exec(bg, "DROP OWNED BY "+q); err != nil {
+			t.Logf("drop owned by %s: %v", role, err)
+		}
+		if _, err := owner.Exec(bg, "DROP ROLE "+q); err != nil {
+			t.Logf("drop clone role %s: %v", role, err)
+		}
+	})
+
+	// Copy the source role's table grants one-for-one. A broader "GRANT ALL"
+	// would hand the clone privileges the migrations deliberately withheld and
+	// the test would then prove the wrong thing.
+	rows, err := owner.Query(ctx, `
+		SELECT table_name, privilege_type
+		  FROM information_schema.role_table_grants
+		 WHERE grantee = $1 AND table_schema = 'public'
+		 ORDER BY table_name, privilege_type`, sourceRole)
+	if err != nil {
+		t.Fatalf("read grants for %s: %v", sourceRole, err)
+	}
+	type tableGrant struct{ table, priv string }
+	var grants []tableGrant
+	for rows.Next() {
+		var g tableGrant
+		if err := rows.Scan(&g.table, &g.priv); err != nil {
+			rows.Close()
+			t.Fatalf("scan grant for %s: %v", sourceRole, err)
+		}
+		grants = append(grants, g)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read grants for %s: %v", sourceRole, err)
+	}
+	if len(grants) == 0 {
+		t.Fatalf("role %s has no table grants to copy: the clone would fail for the wrong reason", sourceRole)
+	}
+	if _, err := owner.Exec(ctx, "GRANT USAGE ON SCHEMA public TO "+q); err != nil {
+		t.Fatalf("grant schema usage to %s: %v", role, err)
+	}
+	for _, g := range grants {
+		stmt := fmt.Sprintf("GRANT %s ON %s TO %s", g.priv, pgx.Identifier{g.table}.Sanitize(), q)
+		if _, err := owner.Exec(ctx, stmt); err != nil {
+			t.Fatalf("copy grant (%s): %v", stmt, err)
+		}
+	}
+
+	// Non-table grants matter too: the app role advances audit_log_id_seq and
+	// claim_events_id_seq, so a clone without USAGE would fail at submit time,
+	// i.e. before the injection window ever opens.
+	urows, err := owner.Query(ctx, `
+		SELECT object_type, object_name, privilege_type
+		  FROM information_schema.role_usage_grants
+		 WHERE grantee = $1
+		   AND object_type IN ('SEQUENCE', 'SCHEMA', 'TYPE', 'DOMAIN')
+		 ORDER BY object_type, object_name`, sourceRole)
+	if err != nil {
+		t.Fatalf("read usage grants for %s: %v", sourceRole, err)
+	}
+	type usageGrant struct{ kind, name, priv string }
+	var usages []usageGrant
+	for urows.Next() {
+		var u usageGrant
+		if err := urows.Scan(&u.kind, &u.name, &u.priv); err != nil {
+			urows.Close()
+			t.Fatalf("scan usage grant for %s: %v", sourceRole, err)
+		}
+		usages = append(usages, u)
+	}
+	urows.Close()
+	if err := urows.Err(); err != nil {
+		t.Fatalf("read usage grants for %s: %v", sourceRole, err)
+	}
+	for _, u := range usages {
+		stmt := fmt.Sprintf("GRANT %s ON %s %s TO %s",
+			u.priv, u.kind, pgx.Identifier{u.name}.Sanitize(), q)
+		if _, err := owner.Exec(ctx, stmt); err != nil {
+			t.Fatalf("copy usage grant (%s): %v", stmt, err)
+		}
+	}
+
+	return lifecycleCloneRole{role: role, password: password}
+}
+
+// lifecycleClonePool connects as the clone role. The pool is built from a
+// MUTATED pgxpool.Config, not from ConnString(): ConnString() returns the
+// ORIGINAL DSN and silently ignores later ConnConfig.User/Password changes, so
+// a string round-trip would quietly reconnect as claimops_app and the REVOKE
+// would target a role the test never uses (a green run that proves nothing).
+// current_user is asserted for the same reason.
+func lifecycleClonePool(t *testing.T, dsn string, clone lifecycleCloneRole) *pgxpool.Pool {
+	t.Helper()
+	ctx := context.Background()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse app DSN: %v", err)
+	}
+	cfg.ConnConfig.User = clone.role
+	cfg.ConnConfig.Password = clone.password
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("clone role pool: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Fatalf("clone role %s cannot connect (the test would prove the wrong thing): %v", clone.role, err)
+	}
+	var current string
+	if err := pool.QueryRow(ctx, "SELECT current_user").Scan(&current); err != nil {
+		pool.Close()
+		t.Fatalf("clone role identity probe: %v", err)
+	}
+	if current != clone.role {
+		pool.Close()
+		t.Fatalf("clone pool connected as %q, want %q: the privilege injection would target an unused role",
+			current, clone.role)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// lifecyclePrivilege is one (table, privilege) pair the injection may remove.
+type lifecyclePrivilege struct{ table, priv string }
+
+// lifecycleInjectedPrivileges is the exact set the REVOKE targets. It is
+// fixed rather than discovered so the statement cannot silently widen.
+var lifecycleInjectedPrivileges = []lifecyclePrivilege{
+	{"claims", "INSERT"}, {"claims", "UPDATE"},
+	{"claim_events", "INSERT"}, {"claim_events", "UPDATE"},
+	{"audit_log", "INSERT"}, {"audit_log", "UPDATE"},
+	{"documents", "INSERT"}, {"documents", "UPDATE"},
+}
+
+// lifecycleRevokeWrites removes the write privileges and returns WHICH of them
+// the role actually held, so the restore can be their exact inverse: blindly
+// GRANTing the full set back would leave the role holding privileges it never
+// had before the test.
+func lifecycleRevokeWrites(t *testing.T, owner *pgxpool.Pool, role string) map[lifecyclePrivilege]bool {
+	t.Helper()
+	held := make(map[lifecyclePrivilege]bool, len(lifecycleInjectedPrivileges))
+	for _, p := range lifecycleInjectedPrivileges {
+		held[p] = lifecycleRoleHasPrivilege(t, owner, role, p)
+	}
 	sql := fmt.Sprintf(
 		"REVOKE INSERT, UPDATE ON claims, claim_events, audit_log, documents FROM %s",
 		pgx.Identifier{role}.Sanitize())
 	if _, err := owner.Exec(context.Background(), sql); err != nil {
-		t.Fatalf("revoke app writes: %v", err)
+		t.Fatalf("revoke writes from %s: %v", role, err)
+	}
+	return held
+}
+
+func lifecycleRestoreWrites(t *testing.T, owner *pgxpool.Pool, role string, held map[lifecyclePrivilege]bool) {
+	t.Helper()
+	q := pgx.Identifier{role}.Sanitize()
+	for _, p := range lifecycleInjectedPrivileges {
+		if !held[p] {
+			continue
+		}
+		stmt := fmt.Sprintf("GRANT %s ON %s TO %s", p.priv, pgx.Identifier{p.table}.Sanitize(), q)
+		if _, err := owner.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("restore writes (%s): %v", stmt, err)
+		}
+	}
+	for _, p := range lifecycleInjectedPrivileges {
+		if got := lifecycleRoleHasPrivilege(t, owner, role, p); got != held[p] {
+			t.Fatalf("restore mismatch: %s on %s = %v, want %v", p.priv, p.table, got, held[p])
+		}
 	}
 }
 
-func lifecycleGrantAppWrites(t *testing.T, owner *pgxpool.Pool, role string) {
+func lifecycleRoleHasPrivilege(t *testing.T, pool *pgxpool.Pool, role string, p lifecyclePrivilege) bool {
 	t.Helper()
-	q := pgx.Identifier{role}.Sanitize()
-	stmts := []string{
-		fmt.Sprintf("GRANT SELECT, INSERT, UPDATE ON claims TO %s", q),
-		fmt.Sprintf("GRANT SELECT, INSERT ON claim_events TO %s", q),
-		fmt.Sprintf("GRANT SELECT, INSERT ON audit_log TO %s", q),
-		fmt.Sprintf("GRANT SELECT, INSERT ON documents TO %s", q),
+	var ok bool
+	if err := pool.QueryRow(context.Background(),
+		"SELECT has_table_privilege($1, $2, $3)", role, p.table, p.priv).Scan(&ok); err != nil {
+		t.Fatalf("privilege probe %s.%s for %s: %v", p.table, p.priv, role, err)
 	}
-	for _, stmt := range stmts {
-		if _, err := owner.Exec(context.Background(), stmt); err != nil {
-			t.Fatalf("restore app writes (%s): %v", stmt, err)
-		}
+	return ok
+}
+
+// lifecycleRequireInjectedFailure fails unless the handler error IS the
+// injected privilege failure. Without it any transient error (parser, GCS,
+// policy fetch, context cancellation) would satisfy "the handler returned an
+// error", and the test would prove "some failure is not acked" instead of
+// "a persistence failure is not acked".
+func lifecycleRequireInjectedFailure(t *testing.T, err error) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("delivery failed with %v (%T), want the injected PostgreSQL privilege error", err, err)
+	}
+	if pgErr.Code != "42501" {
+		t.Fatalf("delivery failed with SQLSTATE %s (%s), want 42501 insufficient_privilege from the REVOKE",
+			pgErr.Code, pgErr.Message)
+	}
+	// The server does not populate the wire-protocol table field for
+	// insufficient_privilege, so the table has to come from the message text.
+	// 42501 also covers RLS policy violations; this one must be the REVOKE.
+	if !strings.Contains(pgErr.Message, "permission denied") {
+		t.Fatalf("privilege failure message = %q, want 'permission denied' from the REVOKE", pgErr.Message)
+	}
+	table := pgErr.TableName
+	if table == "" {
+		_, after, _ := strings.Cut(pgErr.Message, "permission denied for table ")
+		table = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(after), "public."))
+	}
+	switch table {
+	case "claims", "claim_events", "audit_log", "documents":
+	default:
+		t.Fatalf("privilege failure on table %q (%s), want one of the revoked tables",
+			table, pgErr.Message)
 	}
 }
 
