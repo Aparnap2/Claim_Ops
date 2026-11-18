@@ -30,6 +30,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -95,6 +96,23 @@ func requireLifecyclePool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// requireLifecycleAppReachable applies the suite's "no service => skip" gate
+// without building a pooled rig, for tests that must run fail-closed checks
+// (owner credentials, clone role) after it.
+func requireLifecycleAppReachable(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, lifecycleDSN())
+	if err != nil {
+		t.Skipf("postgres unavailable (dial): %v", err)
+	}
+	if err := conn.Ping(ctx); err != nil {
+		_ = conn.Close(ctx)
+		t.Skipf("postgres unavailable (ping): %v", err)
+	}
+	_ = conn.Close(ctx)
 }
 
 func requireLifecycleEmulators(t *testing.T) {
@@ -887,6 +905,13 @@ func TestLifecycleE2E_PersistenceFailureNoAckRecovery(t *testing.T) {
 	// would poison every sibling test in the same package run (and strand the
 	// role if this process were killed mid-test). The clone starts with an
 	// exact copy of claimops_app's grants and is dropped on cleanup.
+	// Gate on services BEFORE any fail-closed requirement: unit CI has no
+	// Postgres and must skip this test, while the strict jobs turn a skip into
+	// a failure. Only then do owner credentials and the clone role become
+	// mandatory (never skipped), because a silent skip would fake-green the
+	// one proof that a persistence failure is not acknowledged.
+	requireLifecycleEmulators(t)
+	requireLifecycleAppReachable(t)
 	ownerPool := requireLifecycleOwnerPool(t)
 	clone := lifecycleCreateCloneRole(t, ownerPool, lifecycleAppRole(t))
 	rig := newLifecycleRigWithPool(t, lifecycleClonePool(t, lifecycleDSN(), clone))
@@ -1339,17 +1364,37 @@ type lifecycleCloneRole struct {
 	password string
 }
 
+// lifecycleEphemeralPassword mints a per-run credential for the throwaway
+// clone role. Nothing is stored, reused, or shipped: the role is dropped on
+// cleanup. It is generated at runtime rather than written as a literal so the
+// repository holds no credential-shaped constant (secret scanners flag those,
+// correctly, and a test fixture is no exception).
+func lifecycleEphemeralPassword(t *testing.T) string {
+	t.Helper()
+	buf := make([]byte, 18)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("clone role credential: %v", err)
+	}
+	return hex.EncodeToString(buf)
+}
+
 func lifecycleCreateCloneRole(t *testing.T, owner *pgxpool.Pool, sourceRole string) lifecycleCloneRole {
 	t.Helper()
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d_%d", os.Getpid(), time.Now().UnixNano())
 	role := "claimops_e2e_" + suffix
-	password := hex.EncodeToString([]byte(suffix))
 	q := pgx.Identifier{role}.Sanitize()
+	password := lifecycleEphemeralPassword(t)
 
-	if _, err := owner.Exec(ctx, fmt.Sprintf(
-		"CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS",
-		q, password)); err != nil {
+	// format(%I, %L) quotes both the identifier and the credential, so the
+	// DDL needs no manual escaping.
+	var ddl string
+	if err := owner.QueryRow(ctx,
+		"SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS', $1::text, $2::text)",
+		role, password).Scan(&ddl); err != nil {
+		t.Fatalf("build CREATE ROLE for %s: %v", role, err)
+	}
+	if _, err := owner.Exec(ctx, ddl); err != nil {
 		t.Fatalf("create clone role %s: %v", role, err)
 	}
 	// Registered BEFORE the rig exists so LIFO cleanup drops the role only
