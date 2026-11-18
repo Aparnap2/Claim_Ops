@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -253,7 +254,13 @@ func crossTenantReject(err error) bool {
 		return true
 	}
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "42501"
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		return false
+	}
+	// 42501 also covers a missing GRANT; requiring the RLS wording keeps a
+	// broken fixture (app role lost INSERT on claims) from masquerading as a
+	// blocked cross-tenant write.
+	return strings.Contains(pgErr.Message, "row-level security")
 }
 
 // 3. No tenant in context -> BeginTenantTx refuses before touching the pool.
