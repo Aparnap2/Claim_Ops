@@ -125,6 +125,12 @@ func (l *agreeLoader) LoadClaim(_ context.Context, _, _ string) (worker.ClaimVie
 	}, nil
 }
 
+// AdvanceToIntakeValidating implements worker.ClaimLoader: a no-op — the
+// retry-budget tests exercise pipeline retry behavior, not intake state.
+func (l *agreeLoader) AdvanceToIntakeValidating(context.Context, string, string, string) error {
+	return nil
+}
+
 // RecordInsufficientEvidenceTransition implements worker.ClaimLoader: it
 // records the call and reports a first-time durable write with no replay
 // (the app/retrybudget doubles never mutate durable state).

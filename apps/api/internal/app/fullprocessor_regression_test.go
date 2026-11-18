@@ -152,6 +152,11 @@ func TestBuildFullProcessorInjectsSeams(t *testing.T) {
 	fp.Processor.Parser = stub
 	fp.Processor.Fetcher = fetch
 	fp.Processor.Store = store
+	// D1 (APA-91): the intake advancer runs before the pipeline; swap the
+	// nil-pool ClaimBridge for a stub so Handle exercises the seam wiring
+	// without touching postgres (the structural checks above already
+	// proved the real bridge is wired).
+	fp.Processor.Claims = &stubClaims{}
 
 	out := fp.Processor.Handle(context.Background(), fullProcessorEvent(t, "doc-fp-1"))
 

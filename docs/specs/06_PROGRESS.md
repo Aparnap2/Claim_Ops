@@ -166,6 +166,22 @@ APA-47 to APA-64.
 - [x] Qualification run artefacts live in the issue tracker, not in the repo. The repo holds the harness; the ledger holds the measurement.
 
 - [x] The claim expiry contract is ratified: `EXPIRED` is terminal-for-round, reachable only as `HITL → EXPIRED` or `ACTION_PENDING → EXPIRED` (HITL-wait timeout), and timeout expiry can never approve or decide a claim; re-drive requires an explicit new decision/round (ADR-011, S5/APA-26). No lifecycle behaviour changed — the ADR records what the code already did
+## Release qualification ladder (registered 2026-11-18; release NOT QUALIFIED)
+
+Evidence record: `docs/ci/QUALIFICATION_RECORD_2026-11-18.md`. Every gate below
+must be evidenced on a **merged release SHA** via `release-gate.yml` before the
+release status changes; PR-check green on a branch tip is not a release gate
+(`docs/ci/RELEASE_CONTRACT.md` §1).
+
+- [x] **P0** — repository baseline gates green on the candidate SHA `2374666` (`ci` 44305412469: deterministic + terraform; `security` 44305412065: static + govulncheck + pip-audit + security-delta). Candidate SHA only; no release-gate run exists.
+- [x] **P1** — local emulator parity: designated emulator-gated packages executed with zero skips (`emulator-services` 44305412988; `pass=5 skip=0` and `pass=2 skip=0`).
+- [x] **P2 / P2.1** — lifecycle E2E to a durable `EXCEPTION`, plus restart-redelivery idempotency and no-ack-on-persistence-failure, all four tests `--- PASS` in the same run. Component-level only: see P3/KL-19.
+- [x] **P3** — exact-SHA evidence record written, with limitations, owner decisions, and a fail-closed NOT QUALIFIED verdict. Discovered release blocker: production `Processor.Launcher` is nil (#208, KL-19).
+- [ ] **P4** — security depth: OWASP ASVS L2 mapping, authorization matrix, threat model. **Registered only, not started.**
+- [ ] **P5** — resilience/load: throughput, broker outage, dependency timeouts, chaos. **Registered only, not started.**
+- [ ] **P6** — real-GCP staging: IAM, quotas, managed Pub/Sub / GCS / Workflows, deployment. **Registered only, not started.** Requires owner authorization.
+- [ ] **P7** — operator validation: runbooks, rollback, on-call signals, HITL operator dry run. **Registered only, not started.**
+
 ## Update rule
 Every merged issue must update this file when it materially changes architecture, milestone status, or an explicit decision.
 
