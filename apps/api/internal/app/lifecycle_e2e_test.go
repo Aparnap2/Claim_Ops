@@ -33,6 +33,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -54,10 +55,12 @@ import (
 	"claimops-api/internal/claims"
 	"claimops-api/internal/handlers"
 	"claimops-api/internal/ingest"
+	"claimops-api/internal/investigate"
 	"claimops-api/internal/outbox"
 	"claimops-api/internal/parser/liteparse"
 	"claimops-api/internal/repository/postgres"
 	"claimops-api/internal/worker"
+	"claimops-api/internal/workflow"
 
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/storage"
@@ -691,4 +694,713 @@ func (s *lifecycleOutboxStore) MarkFailed(ctx context.Context, id, lastErr strin
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// ---------------------------------------------------------------------------
+// P2.1 — acceptance-gap closure
+//
+// Gap A: redelivery after a worker/process RESTART must not duplicate durable
+// effects. The first subscriber processes the document event to completion and
+// then "crashes" (returns an error) before acknowledging, so the transport
+// Nacks. The subscription is torn down, a brand-new processor (empty in-memory
+// processed-set) is built, and the redelivered event must converge on the
+// durable state already committed by pass 1 — zero new claim events, audit
+// rows, claim.exception outbox rows, envelopes, launch rows or workflow
+// executions.
+//
+// Gap B: a forced persistence failure must NOT acknowledge the document event.
+// Write privileges on the processor's role are revoked at the database level
+// (a real 42501, not an injected fake), the subscriber must Nack, and after the
+// grants are restored the redelivered event must complete with exactly the
+// canonical single-success effects — no partial state from the failed attempt.
+//
+// Both tests wire the REAL investigate.Launcher over the REAL PG envelope and
+// launch stores, with a counting in-memory WorkflowProvider standing in for
+// GCW. Production wiring currently leaves Processor.Launcher nil (cmd/api and
+// cmd/worker), so this exercises the launch-dedupe COMPONENT contract, not the
+// application wiring; the unwired launcher is recorded as a known limitation.
+// ---------------------------------------------------------------------------
+
+// errLifecycleCrashAfterCommit models a worker that dies after its durable work
+// committed but before the transport ack: the handler returns non-nil, so the
+// subscriber Nacks, yet every effect of the delivery is already durable.
+var errLifecycleCrashAfterCommit = errors.New("lifecycle-e2e: simulated crash after durable commit, before ack")
+
+// lifecycleCanonical is the complete durable state of one successful
+// insufficient-evidence lifecycle for the synthetic PDF fixture. It is the
+// single-success baseline both restart scenarios must converge on.
+var lifecycleCanonical = lifecycleSnapshot{
+	Status:          string(claims.ClaimStatusException),
+	Version:         5,
+	Events:          5,
+	Audit:           4,
+	ExceptionOutbox: 1,
+	Launches:        1,
+	Envelopes:       1,
+	Documents:       1,
+	FieldEvidence:   0,
+}
+
+// lifecycleSnapshot is every durable table the lifecycle touches, read
+// tenant-scoped. Equality after a restart is the idempotency claim.
+type lifecycleSnapshot struct {
+	Status          string
+	Version         int
+	Events          int
+	Audit           int
+	ExceptionOutbox int
+	Launches        int
+	Envelopes       int
+	Documents       int
+	FieldEvidence   int
+}
+
+// lifecycleRig is one claim + document submitted through the real HTTP
+// handlers, plus the real outbox dispatcher and Pub/Sub emulator topology.
+type lifecycleRig struct {
+	ctx        context.Context
+	tenant     claims.TenantID
+	claimID    claims.ClaimID
+	docID      string
+	pool       *pgxpool.Pool
+	workerPool *pgxpool.Pool
+	blobs      *gcsblob.Store
+	psClient   *pubsub.Client
+	topicID    string
+	subID      string
+	dispatcher *outbox.Dispatcher
+	provider   *lifecycleWorkflowProvider
+}
+
+func TestLifecycleE2E_RestartRedeliveryDurableIdempotency(t *testing.T) {
+	rig := newLifecycleRig(t)
+
+	// --- Pass 1: full durable processing, then crash before ack ------------
+	proc1 := rig.newProcessor(t)
+	var processed atomic.Int32
+	var tripped atomic.Bool
+	pass1 := make(chan error, 4)
+	handle1 := func(ctx context.Context, payload []byte, attrs map[string]string) error {
+		isDoc := lifecycleIsDocEvent(attrs, rig.docID)
+		if isDoc && tripped.Load() {
+			// The redelivery loop must not re-run the pipeline after the
+			// simulated crash; reject without touching durable state.
+			return errLifecycleCrashAfterCommit
+		}
+		err := DocumentEventHandler(proc1)(ctx, payload)
+		if isDoc {
+			if processed.Add(1) == 1 {
+				pass1 <- err
+				tripped.Store(true)
+			}
+			if err == nil {
+				// Durable work is complete: die before the ack.
+				return errLifecycleCrashAfterCommit
+			}
+		}
+		return err
+	}
+	stop1 := startLifecycleSubscriber(t, rig.psClient, rig.subID, handle1)
+	rig.dispatchUntilDrained(t, 60*time.Second)
+	select {
+	case err := <-pass1:
+		if err != nil {
+			t.Fatalf("pass-1 processing failed before the simulated crash: %v", err)
+		}
+	case <-time.After(45 * time.Second):
+		t.Fatal("timed out waiting for the pass-1 document delivery")
+	}
+	stop1()
+
+	afterPass1 := rig.snapshot(t)
+	if afterPass1 != lifecycleCanonical {
+		t.Fatalf("pass-1 durable state = %+v, want canonical %+v", afterPass1, lifecycleCanonical)
+	}
+	if got := rig.provider.startCount(rig.claimID); got != 1 {
+		t.Fatalf("pass-1 workflow starts = %d, want 1", got)
+	}
+
+	// --- Pass 2: transport redelivery into a FRESH process ------------------
+	// BuildFullProcessor constructs a new worker.Processor, so the in-memory
+	// processed-set is empty: convergence can only come from durable state.
+	proc2 := rig.newProcessor(t)
+	var deliveries atomic.Int32
+	var failErrs atomic.Int32
+	pass2 := make(chan error, 4)
+	handle2 := func(ctx context.Context, payload []byte, attrs map[string]string) error {
+		isDoc := lifecycleIsDocEvent(attrs, rig.docID)
+		err := DocumentEventHandler(proc2)(ctx, payload)
+		if isDoc {
+			if deliveries.Add(1) == 1 {
+				pass2 <- err
+			}
+			if err != nil {
+				failErrs.Add(1)
+			}
+		}
+		return err
+	}
+	stop2 := startLifecycleSubscriber(t, rig.psClient, rig.subID, handle2)
+	select {
+	case err := <-pass2:
+		if err != nil {
+			stop2()
+			t.Fatalf("redelivery into a fresh processor failed: %v", err)
+		}
+	case <-time.After(45 * time.Second):
+		stop2()
+		t.Fatal("timed out waiting for the transport to redeliver after the simulated crash")
+	}
+	// A Nack redelivers immediately (proven by the adapter suite); a short
+	// grace window distinguishes an Ack from a Nack loop.
+	time.Sleep(3 * time.Second)
+	stop2()
+	if got := deliveries.Load(); got != 1 {
+		t.Fatalf("fresh-process redelivery attempts = %d, want exactly 1 (message must be acked after convergence); handler errors=%d",
+			got, failErrs.Load())
+	}
+
+	afterPass2 := rig.snapshot(t)
+	if afterPass2 != afterPass1 {
+		t.Fatalf("restart redelivery changed durable state:\n  after pass 1: %+v\n  after pass 2: %+v", afterPass1, afterPass2)
+	}
+	if got := rig.provider.startCount(rig.claimID); got != 1 {
+		t.Fatalf("workflow starts after restart redelivery = %d, want 1 (duplicate launch)", got)
+	}
+	t.Logf("restart redelivery converged: %+v (workflow starts=1, deliveries=1)", afterPass2)
+}
+
+func TestLifecycleE2E_PersistenceFailureNoAckRecovery(t *testing.T) {
+	rig := newLifecycleRig(t)
+
+	// Owner credentials are required to inject a real privilege failure. This
+	// fails closed (never skips) because a silent skip here would fake-green
+	// the one proof that a persistence failure is not acknowledged.
+	ownerPool := requireLifecycleOwnerPool(t)
+	appRole := lifecycleAppRole(t)
+	t.Cleanup(func() { lifecycleGrantAppWrites(t, ownerPool, appRole) })
+	lifecycleRevokeAppWrites(t, ownerPool, appRole)
+	if lifecycleHasPrivilege(t, rig.pool, "claims", "UPDATE") {
+		t.Fatal("injection did not take effect: app role still has UPDATE on claims")
+	}
+	if lifecycleHasPrivilege(t, rig.pool, "documents", "INSERT") {
+		t.Fatal("injection did not take effect: app role still has INSERT on documents")
+	}
+
+	// --- Pass 1: valid event, forced DB persistence failure ----------------
+	proc1 := rig.newProcessor(t)
+	var tripped atomic.Int32
+	failed := make(chan error, 4)
+	handle1 := func(ctx context.Context, payload []byte, attrs map[string]string) error {
+		isDoc := lifecycleIsDocEvent(attrs, rig.docID)
+		if isDoc && tripped.Load() > 0 {
+			return errors.New("lifecycle-e2e: persistence still unavailable (trip)")
+		}
+		err := DocumentEventHandler(proc1)(ctx, payload)
+		if isDoc {
+			tripped.Store(1)
+			failed <- err
+		}
+		return err
+	}
+	stop1 := startLifecycleSubscriber(t, rig.psClient, rig.subID, handle1)
+	rig.dispatchUntilDrained(t, 60*time.Second)
+	select {
+	case err := <-failed:
+		if err == nil {
+			stop1()
+			t.Fatal("document event was ACKED despite a forced persistence failure (handler returned nil)")
+		}
+		t.Logf("persistence failure surfaced as a Nack, as required: %v", err)
+	case <-time.After(45 * time.Second):
+		stop1()
+		t.Fatal("timed out waiting for the document delivery under the injected failure")
+	}
+	stop1()
+
+	// No partial state may survive the failed delivery: the claim is still at
+	// its pre-processing state and nothing was appended.
+	injected := rig.snapshot(t)
+	if injected.Status != string(claims.ClaimStatusReceived) || injected.Version != 1 {
+		t.Fatalf("failed delivery advanced the claim: %+v", injected)
+	}
+	if injected.Events != 1 || injected.Audit != 0 || injected.ExceptionOutbox != 0 ||
+		injected.Launches != 0 || injected.Envelopes != 0 {
+		t.Fatalf("failed delivery left partial durable state: %+v", injected)
+	}
+
+	// --- Restore the DB, then redeliver ------------------------------------
+	lifecycleGrantAppWrites(t, ownerPool, appRole)
+	if !lifecycleHasPrivilege(t, rig.pool, "claims", "UPDATE") {
+		t.Fatal("grant restore did not take effect: app role still lacks UPDATE on claims")
+	}
+
+	proc2 := rig.newProcessor(t)
+	var deliveries atomic.Int32
+	pass2 := make(chan error, 4)
+	handle2 := func(ctx context.Context, payload []byte, attrs map[string]string) error {
+		isDoc := lifecycleIsDocEvent(attrs, rig.docID)
+		err := DocumentEventHandler(proc2)(ctx, payload)
+		if isDoc && deliveries.Add(1) == 1 {
+			pass2 <- err
+		}
+		return err
+	}
+	stop2 := startLifecycleSubscriber(t, rig.psClient, rig.subID, handle2)
+	select {
+	case err := <-pass2:
+		if err != nil {
+			stop2()
+			t.Fatalf("redelivery after restore failed: %v", err)
+		}
+	case <-time.After(45 * time.Second):
+		stop2()
+		t.Fatal("timed out waiting for redelivery after the DB was restored: the failed delivery was ACKED (message lost)")
+	}
+	time.Sleep(3 * time.Second)
+	stop2()
+	if got := deliveries.Load(); got != 1 {
+		t.Fatalf("recovery delivery attempts = %d, want exactly 1 (message must be acked after success)", got)
+	}
+
+	final := rig.snapshot(t)
+	if final != lifecycleCanonical {
+		t.Fatalf("recovered durable state = %+v, want canonical single-success %+v", final, lifecycleCanonical)
+	}
+	if got := rig.provider.startCount(rig.claimID); got != 1 {
+		t.Fatalf("workflow starts after recovery = %d, want 1", got)
+	}
+	t.Logf("persistence failure recovered with no duplicate effects: %+v", final)
+}
+
+// ---------------------------------------------------------------------------
+// P2.1 rig + helpers
+// ---------------------------------------------------------------------------
+
+func newLifecycleRig(t *testing.T) *lifecycleRig {
+	t.Helper()
+	lifecyclePrepareRepo(t)
+	pool := requireLifecyclePool(t)
+	requireLifecycleEmulators(t)
+
+	ctx := context.Background()
+	tenant := claims.TenantID("tenant-a")
+	claimRef := lifecycleRef("LC-P21")
+
+	gcsClient, err := newLifecycleGCSClient(t)
+	if err != nil {
+		t.Fatalf("gcs client: %v", err)
+	}
+	bucket := fmt.Sprintf("claimops-lc-%d", os.Getpid())
+	ensureLifecycleBucket(t, gcsClient, bucket)
+	blobs := gcsblob.New(bucket, gcsClient)
+
+	fiberApp := NewWithDeps(ingest.NewService(blobs, pool), pool)
+	claimID := lifecycleSubmitClaim(t, fiberApp, tenant, "POL-001", claimRef)
+	docID := lifecycleUploadPDF(t, fiberApp, tenant, claimID, "apps/api/internal/app/testdata/simple.pdf")
+
+	psClient, err := pubsub.NewClient(ctx, "test-project")
+	if err != nil {
+		t.Fatalf("pubsub client: %v", err)
+	}
+	t.Cleanup(func() { psClient.Close() })
+
+	topicID := fmt.Sprintf("lc-topic-%d-%d", os.Getpid(), time.Now().UnixNano())
+	subID := fmt.Sprintf("lc-sub-%d-%d", os.Getpid(), time.Now().UnixNano())
+	topic, err := psClient.CreateTopic(ctx, topicID)
+	if err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	sub, err := psClient.CreateSubscription(ctx, subID, pubsub.SubscriptionConfig{Topic: topic})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = sub.Delete(context.Background())
+		_ = topic.Delete(context.Background())
+	})
+
+	workerPool, err := pgxpool.New(ctx, workerDSN())
+	if err != nil {
+		t.Fatalf("worker pool: %v", err)
+	}
+	t.Cleanup(workerPool.Close)
+
+	publisher := pubsubadapter.NewPublisher(psClient, topicID)
+	dispatcher := outbox.New(
+		workeradapter.NewOutboxStore(workerPool),
+		func(ctx context.Context, e postgres.OutboxEvent) error {
+			_, err := publisher.PublishEvent(ctx, e.EventType, e.Payload, map[string]string{
+				"event_id":  e.EventID,
+				"tenant_id": string(e.Tenant),
+			})
+			return err
+		},
+		10, 5, 1*time.Second, 30*time.Second,
+	)
+
+	return &lifecycleRig{
+		ctx:        ctx,
+		tenant:     tenant,
+		claimID:    claimID,
+		docID:      docID,
+		pool:       pool,
+		workerPool: workerPool,
+		blobs:      blobs,
+		psClient:   psClient,
+		topicID:    topicID,
+		subID:      subID,
+		dispatcher: dispatcher,
+		provider:   newLifecycleWorkflowProvider(),
+	}
+}
+
+// newProcessor builds a production full-chain processor WITH the real
+// investigate.Launcher over real PG stores. Each call returns a fresh
+// worker.Processor, which is what makes the restart real rather than simulated:
+// the processed-set starts empty.
+func (r *lifecycleRig) newProcessor(t *testing.T) *worker.Processor {
+	t.Helper()
+	liteParser := liteparse.New(liteparse.NewExecRunner(lifecyclePyBin, lifecycleShimPath, 0), 0)
+	full, err := BuildFullProcessor(ProcessorDeps{
+		Blobs:         r.blobs,
+		Pool:          r.pool,
+		PolicyBaseURL: mockoonURL(),
+		Parser:        liteParser,
+	})
+	if err != nil {
+		t.Fatalf("BuildFullProcessor: %v", err)
+	}
+	full.Processor.WorkflowID = "claim-investigation"
+	full.Processor.Launcher = investigate.NewLauncher(
+		investigate.NewPGEnvelopeStore(r.pool),
+		r.provider,
+		investigate.NewPGLaunchStore(r.pool),
+	)
+	return full.Processor
+}
+
+func (r *lifecycleRig) dispatchUntilDrained(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		published, dead, err := r.dispatcher.RunOnce(r.ctx)
+		if err != nil {
+			t.Logf("dispatch error: %v", err)
+		}
+		if published == 0 && dead == 0 {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("outbox did not drain within %s", timeout)
+}
+
+func (r *lifecycleRig) snapshot(t *testing.T) lifecycleSnapshot {
+	t.Helper()
+	var s lifecycleSnapshot
+	inTenant := func(fn func(tx pgx.Tx) error) {
+		t.Helper()
+		tctx := postgres.WithTenant(r.ctx, r.tenant)
+		tx, err := postgres.BeginTenantTx(tctx, r.pool)
+		if err != nil {
+			t.Fatalf("begin tenant tx: %v", err)
+		}
+		defer tx.Rollback(tctx)
+		if err := fn(tx); err != nil {
+			t.Fatalf("snapshot query: %v", err)
+		}
+		if err := tx.Commit(tctx); err != nil {
+			t.Fatalf("commit tenant tx: %v", err)
+		}
+	}
+	inTenant(func(tx pgx.Tx) error {
+		return tx.QueryRow(r.ctx, "SELECT status, version FROM claims WHERE id=$1", string(r.claimID)).
+			Scan(&s.Status, &s.Version)
+	})
+	inTenant(func(tx pgx.Tx) error {
+		return tx.QueryRow(r.ctx, "SELECT count(*) FROM claim_events WHERE claim_id=$1", string(r.claimID)).Scan(&s.Events)
+	})
+	inTenant(func(tx pgx.Tx) error {
+		return tx.QueryRow(r.ctx, "SELECT count(*) FROM audit_log WHERE claim_id=$1", string(r.claimID)).Scan(&s.Audit)
+	})
+	inTenant(func(tx pgx.Tx) error {
+		return tx.QueryRow(r.ctx, "SELECT count(*) FROM documents WHERE claim_id=$1", string(r.claimID)).Scan(&s.Documents)
+	})
+	inTenant(func(tx pgx.Tx) error {
+		return tx.QueryRow(r.ctx, "SELECT count(*) FROM field_evidence WHERE claim_id=$1", string(r.claimID)).Scan(&s.FieldEvidence)
+	})
+	inTenant(func(tx pgx.Tx) error {
+		return tx.QueryRow(r.ctx, "SELECT count(*) FROM investigations WHERE claim_id=$1", string(r.claimID)).Scan(&s.Envelopes)
+	})
+	inTenant(func(tx pgx.Tx) error {
+		return tx.QueryRow(r.ctx, "SELECT count(*) FROM workflow_launches WHERE claim_id=$1", string(r.claimID)).Scan(&s.Launches)
+	})
+	// The outbox is cross-tenant by design: read it as the worker role.
+	if err := r.workerPool.QueryRow(r.ctx,
+		`SELECT count(*) FROM outbox_events
+		 WHERE aggregate_type='claim' AND aggregate_id=$1 AND event_type='claim.exception'`,
+		string(r.claimID)).Scan(&s.ExceptionOutbox); err != nil {
+		t.Fatalf("snapshot outbox query: %v", err)
+	}
+	return s
+}
+
+func lifecycleIsDocEvent(attrs map[string]string, docID string) bool {
+	return attrs[pubsubadapter.AttrEventType] == "document.ingested" &&
+		attrs[pubsubadapter.AttrEventID] == "evt-"+docID
+}
+
+// startLifecycleSubscriber runs a real Pub/Sub subscriber until the returned
+// stop func is called. Receive is single-goroutine, so deliveries serialize.
+func startLifecycleSubscriber(t *testing.T, client *pubsub.Client, subID string, handle func(context.Context, []byte, map[string]string) error) func() {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	sub := pubsubadapter.NewSubscriber(client, subID)
+	go func() { done <- sub.ReceiveEvent(ctx, handle) }()
+	return func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				t.Logf("lifecycle subscriber stopped with: %v", err)
+			}
+		case <-time.After(15 * time.Second):
+			t.Log("lifecycle subscriber did not stop within 15s")
+		}
+	}
+}
+
+// lifecyclePrepareRepo chdirs to the repo root (the liteparse shim path is
+// relative to it) and discovers an interpreter that can import liteparse,
+// mirroring what the production worker binary relies on.
+func lifecyclePrepareRepo(t *testing.T) {
+	t.Helper()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	root := origDir
+	for i := 0; i < 6; i++ {
+		if _, err := os.Stat(filepath.Join(root, "tools", "parsers", "liteparse", "shim.py")); err == nil {
+			break
+		}
+		root = filepath.Dir(root)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir to repo root %s: %v", root, err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	shimPath := filepath.Join(root, "tools", "parsers", "liteparse", "shim.py")
+	if _, err := os.Stat(shimPath); err != nil {
+		t.Skipf("liteparse shim unavailable: %v", err)
+	}
+	venvSite := filepath.Join(root, ".venv", "lib", "python3.12", "site-packages")
+	var pyBin string
+	for _, cand := range []string{filepath.Join(root, ".venv", "bin", "python"), "python3"} {
+		cmd := exec.Command(cand, "-c", "import liteparse")
+		cmd.Env = append(os.Environ(), "PYTHONPATH="+venvSite)
+		if err := cmd.Run(); err == nil {
+			pyBin = cand
+			break
+		}
+	}
+	if pyBin == "" {
+		t.Skip("liteparse not importable (run `make setup` / uv sync --group dev)")
+	}
+	t.Setenv("PYTHONPATH", venvSite)
+	lifecyclePyBin = pyBin
+	lifecycleShimPath = shimPath
+}
+
+func lifecycleRef(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d", prefix, os.Getpid(), time.Now().UnixNano())
+}
+
+func lifecycleUploadPDF(t *testing.T, fiberApp *fiber.App, tenant claims.TenantID, claimID claims.ClaimID, path string) string {
+	t.Helper()
+	pdfBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read pdf fixture: %v", err)
+	}
+	docPayload, _ := json.Marshal(map[string]any{
+		"file_name":    "discharge-summary.pdf",
+		"mime":         "application/pdf",
+		"content_text": string(pdfBytes),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/claims/"+string(claimID)+"/documents", bytes.NewReader(docPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", string(tenant))
+	resp, err := fiberApp.Test(req)
+	if err != nil {
+		t.Fatalf("document upload request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("document upload status=%d body=%s", resp.StatusCode, string(body))
+	}
+	var decoded struct {
+		Document struct {
+			ID string
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	if decoded.Document.ID == "" {
+		t.Fatalf("upload response carried no document id: %s", string(body))
+	}
+	return decoded.Document.ID
+}
+
+// --- persistence-failure injection (Gap B) ---
+
+func lifecycleOwnerDSN() string {
+	if v := os.Getenv("TEST_POSTGRES_OWNER_DSN"); v != "" {
+		return v
+	}
+	return "postgres://claimops:claimops@localhost:5433/claimops"
+}
+
+// requireLifecycleOwnerPool fails closed: the injection cannot be performed
+// without it, and skipping would fake-green the no-ack proof.
+func requireLifecycleOwnerPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, lifecycleOwnerDSN())
+	if err != nil {
+		t.Fatalf("owner pool: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Fatalf("TEST_POSTGRES_OWNER_DSN unreachable: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// lifecycleAppRole is the role the processor's pool connects as. Injecting
+// against the owner itself would be a no-op, so that case fails loudly.
+func lifecycleAppRole(t *testing.T) string {
+	t.Helper()
+	appCfg, err := pgxpool.ParseConfig(lifecycleDSN())
+	if err != nil {
+		t.Fatalf("parse app DSN: %v", err)
+	}
+	ownerCfg, err := pgxpool.ParseConfig(lifecycleOwnerDSN())
+	if err != nil {
+		t.Fatalf("parse owner DSN: %v", err)
+	}
+	role := appCfg.ConnConfig.User
+	if role == "" {
+		t.Fatal("app DSN has no user: cannot target the privilege injection")
+	}
+	if role == ownerCfg.ConnConfig.User {
+		t.Fatalf("app and owner DSNs share role %q: privilege injection would be a no-op", role)
+	}
+	return role
+}
+
+func lifecycleRevokeAppWrites(t *testing.T, owner *pgxpool.Pool, role string) {
+	t.Helper()
+	sql := fmt.Sprintf(
+		"REVOKE INSERT, UPDATE ON claims, claim_events, audit_log, documents FROM %s",
+		pgx.Identifier{role}.Sanitize())
+	if _, err := owner.Exec(context.Background(), sql); err != nil {
+		t.Fatalf("revoke app writes: %v", err)
+	}
+}
+
+func lifecycleGrantAppWrites(t *testing.T, owner *pgxpool.Pool, role string) {
+	t.Helper()
+	q := pgx.Identifier{role}.Sanitize()
+	stmts := []string{
+		fmt.Sprintf("GRANT SELECT, INSERT, UPDATE ON claims TO %s", q),
+		fmt.Sprintf("GRANT SELECT, INSERT ON claim_events TO %s", q),
+		fmt.Sprintf("GRANT SELECT, INSERT ON audit_log TO %s", q),
+		fmt.Sprintf("GRANT SELECT, INSERT ON documents TO %s", q),
+	}
+	for _, stmt := range stmts {
+		if _, err := owner.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("restore app writes (%s): %v", stmt, err)
+		}
+	}
+}
+
+func lifecycleHasPrivilege(t *testing.T, pool *pgxpool.Pool, table, privilege string) bool {
+	t.Helper()
+	var ok bool
+	if err := pool.QueryRow(context.Background(),
+		"SELECT has_table_privilege(current_user, $1, $2)", table, privilege).Scan(&ok); err != nil {
+		t.Fatalf("privilege probe %s.%s: %v", table, privilege, err)
+	}
+	return ok
+}
+
+// lifecycleWorkflowProvider is a counting WorkflowProvider: StartExecution
+// mints a deterministic resource name and counts starts PER CLAIM, so the
+// assertion is exact for the claim under test even when the shared outbox
+// publishes a leftover event from another run. GetExecution resolves what was
+// started, so the crash-window reconcile path stays honest.
+type lifecycleWorkflowProvider struct {
+	mu            sync.Mutex
+	started       map[string]string
+	startsByClaim map[string]int
+}
+
+var _ workflow.WorkflowProvider = (*lifecycleWorkflowProvider)(nil)
+
+func newLifecycleWorkflowProvider() *lifecycleWorkflowProvider {
+	return &lifecycleWorkflowProvider{
+		started:       make(map[string]string),
+		startsByClaim: make(map[string]int),
+	}
+}
+
+func (p *lifecycleWorkflowProvider) StartExecution(_ context.Context, workflowID string, argument any) (string, error) {
+	arg, _ := argument.(map[string]string)
+	execID := arg["execution_name"]
+	if execID == "" {
+		return "", errors.New("lifecycle provider: execution_name missing from launch argument")
+	}
+	name := p.ExecutionResourceName(workflowID, execID)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if existing, ok := p.started[execID]; ok {
+		return existing, nil
+	}
+	p.started[execID] = name
+	p.startsByClaim[arg["claim_id"]]++
+	return name, nil
+}
+
+func (p *lifecycleWorkflowProvider) GetExecution(_ context.Context, executionName string) (string, json.RawMessage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, name := range p.started {
+		if name == executionName {
+			return "ACTIVE", nil, nil
+		}
+	}
+	return "", nil, workflow.ErrExecutionNotFound
+}
+
+func (p *lifecycleWorkflowProvider) SendCallback(context.Context, string, any) error { return nil }
+
+func (p *lifecycleWorkflowProvider) DeployWorkflow(context.Context, string, string) error {
+	return nil
+}
+
+func (p *lifecycleWorkflowProvider) ExecutionResourceName(workflowID, executionID string) string {
+	return fmt.Sprintf("projects/test-project/locations/us-central1/workflows/%s/executions/%s",
+		workflowID, executionID)
+}
+
+func (p *lifecycleWorkflowProvider) startCount(claimID claims.ClaimID) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.startsByClaim[string(claimID)]
 }

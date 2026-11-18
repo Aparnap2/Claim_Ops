@@ -154,6 +154,9 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgres://claimops_app:claimops_app@localhost:5433/claimops
           TEST_POSTGRES_WORKER_DSN: postgres://claimops_worker:claimops_worker@localhost:5433/claimops
+          # Owner role: P2.1's persistence-failure test needs a real privilege
+          # injection (REVOKE/GRANT) and fails closed (never skips) without it.
+          TEST_POSTGRES_OWNER_DSN: postgres://claimops:claimops@localhost:5433/claimops
           PUBSUB_EMULATOR_HOST: localhost:8085
           STORAGE_EMULATOR_HOST: localhost:4443
           MOCKOON_URL: http://localhost:3001
@@ -167,6 +170,19 @@ jobs:
             echo "::error::Lifecycle E2E failed (exit $rc)"
             exit 1
           fi
+          # Anti-fake-green: every lifecycle scenario must have actually PASSED.
+          # A self-skip (missing emulator, missing liteparse, missing owner DSN)
+          # produces no `--- PASS` line and fails here.
+          for name in \
+            TestLifecycleE2E_SubmissionToDurableException \
+            TestLifecycleE2E_Tier1NegativeControl \
+            TestLifecycleE2E_RestartRedeliveryDurableIdempotency \
+            TestLifecycleE2E_PersistenceFailureNoAckRecovery; do
+            if ! grep -q -- "--- PASS: ${name} " /tmp/emulator-evidence/lifecycle-e2e.log; then
+              echo "::error::required lifecycle test did not PASS: ${name}"
+              exit 1
+            fi
+          done
 
       - name: Assert emulator-gated packages actually ran (anti-fake-green)
         env:
